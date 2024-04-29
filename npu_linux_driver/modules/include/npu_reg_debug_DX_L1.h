@@ -1,0 +1,960 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Deepx Runtime Driver
+ *
+ * Copyright (C) 2023 Deepx, Inc.
+ *
+ */
+#ifndef __NPU_REG_DEBUG_DX_L1_H
+#define __NPU_REG_DEBUG_DX_L1_H
+
+#include <linux/types.h>
+
+/* Address */
+#define REG_DEBUG_OFFSET 0x100
+#define REG_DEBUG_STAMP0    (REG_DEBUG_OFFSET + 0x00000000) /* 0 */
+#define REG_DEBUG_STAMP1    (REG_DEBUG_OFFSET + 0x00000004) /* 4 */
+#define REG_DEBUG_STAMP2    (REG_DEBUG_OFFSET + 0x00000008) /* 8 */
+#define REG_DEBUG_STAMP3    (REG_DEBUG_OFFSET + 0x0000000c) /* 12 */
+#define REG_DEBUG_STAMP4    (REG_DEBUG_OFFSET + 0x00000010) /* 16 */
+#define REG_DEBUG_STAMP5    (REG_DEBUG_OFFSET + 0x00000014) /* 20 */
+#define REG_DEBUG_STAMP6    (REG_DEBUG_OFFSET + 0x00000018) /* 24 */
+#define REG_DEBUG_STAMP7    (REG_DEBUG_OFFSET + 0x0000001c) /* 28 */
+#define REG_DEBUG_STAMP8    (REG_DEBUG_OFFSET + 0x00000020) /* 32 */
+#define REG_DEBUG_STAMP9    (REG_DEBUG_OFFSET + 0x00000024) /* 36 */
+#define REG_DEBUG_STAMP10    (REG_DEBUG_OFFSET + 0x00000028) /* 40 */
+#define REG_DEBUG_CKSUM0    (REG_DEBUG_OFFSET + 0x0000002c) /* 44 */
+#define REG_DEBUG_CKSUM1    (REG_DEBUG_OFFSET + 0x00000030) /* 48 */
+#define REG_DEBUG_CKSUM2    (REG_DEBUG_OFFSET + 0x00000034) /* 52 */
+#define REG_DEBUG_CKSUM3    (REG_DEBUG_OFFSET + 0x00000038) /* 56 */
+#define REG_DEBUG_CKSUM4    (REG_DEBUG_OFFSET + 0x0000003c) /* 60 */
+#define REG_DEBUG_CKSUM5    (REG_DEBUG_OFFSET + 0x00000040) /* 64 */
+#define REG_DEBUG_CKSUM6    (REG_DEBUG_OFFSET + 0x00000044) /* 68 */
+#define REG_DEBUG_CKSUM7    (REG_DEBUG_OFFSET + 0x00000048) /* 72 */
+#define REG_DEBUG_CKSUM8    (REG_DEBUG_OFFSET + 0x0000004c) /* 76 */
+#define REG_DEBUG_CKSUM9    (REG_DEBUG_OFFSET + 0x00000050) /* 80 */
+#define REG_DEBUG_CKSUM10    (REG_DEBUG_OFFSET + 0x00000054) /* 84 */
+#define REG_DEBUG_CKSUM11    (REG_DEBUG_OFFSET + 0x00000058) /* 88 */
+#define REG_DEBUG_CKSUM12    (REG_DEBUG_OFFSET + 0x0000005c) /* 92 */
+#define REG_DEBUG_FSM_PE0    (REG_DEBUG_OFFSET + 0x00000060) /* 96 */
+#define REG_DEBUG_FSM_PE1    (REG_DEBUG_OFFSET + 0x00000064) /* 100 */
+#define REG_DEBUG_FSM_PE2    (REG_DEBUG_OFFSET + 0x00000068) /* 104 */
+#define REG_DEBUG_FSM_PE3    (REG_DEBUG_OFFSET + 0x0000006c) /* 108 */
+
+/* Register Definition */
+typedef volatile union _DEBUG_STAMP0_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP0*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t LAYER_IDX:16;  /* DEBUG.STAMP0.LAYER_IDX [15:0] (RW, 0x0)  */
+        volatile uint32_t RESERVED0:15;  /* DEBUG.STAMP0.RESERVED0 [30:16] (RW, 0x0)  */
+        volatile uint32_t STAMP_EN:1;  /* DEBUG.STAMP0.STAMP_EN [31:31] (RW, 0x0)  */
+    };
+} DEBUG_STAMP0_t;
+typedef volatile union _DEBUG_STAMP1_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP1*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CLK_CNT:32;  /* DEBUG.STAMP1.CLK_CNT [31:0] (R, 0x0)  */
+    };
+} DEBUG_STAMP1_t;
+typedef volatile union _DEBUG_STAMP2_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP2*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t PSEUDO_CNT:32;  /* DEBUG.STAMP2.PSEUDO_CNT [31:0] (R, 0x0)  */
+    };
+} DEBUG_STAMP2_t;
+typedef volatile union _DEBUG_STAMP3_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP3*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_RD_WR_CNT:32;  /* DEBUG.STAMP3.DMA_RD_WR_CNT [31:0] (R, 0x0)  */
+    };
+} DEBUG_STAMP3_t;
+typedef volatile union _DEBUG_STAMP4_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP4*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_RD_ONLY_CNT:32;  /* DEBUG.STAMP4.DMA_RD_ONLY_CNT [31:0] (R, 0x0)  */
+    };
+} DEBUG_STAMP4_t;
+typedef volatile union _DEBUG_STAMP5_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP5*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_WR_ONLY_CNT:32;  /* DEBUG.STAMP5.DMA_WR_ONLY_CNT [31:0] (R, 0x0)  */
+    };
+} DEBUG_STAMP5_t;
+typedef volatile union _DEBUG_STAMP6_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP6*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CLK_CNT_SEL:24;  /* DEBUG.STAMP6.CLK_CNT_SEL [23:0] (R, 0x0)  */
+        volatile uint32_t RESERVED0:8;  /* DEBUG.STAMP6.RESERVED0 [31:24] (R, 0x0)  */
+    };
+} DEBUG_STAMP6_t;
+typedef volatile union _DEBUG_STAMP7_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP7*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t PSEUDO_CNT_SEL:24;  /* DEBUG.STAMP7.PSEUDO_CNT_SEL [23:0] (R, 0x0)  */
+        volatile uint32_t RESERVED0:8;  /* DEBUG.STAMP7.RESERVED0 [31:24] (R, 0x0)  */
+    };
+} DEBUG_STAMP7_t;
+typedef volatile union _DEBUG_STAMP8_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP8*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_RD_WR_CNT_SEL:24;  /* DEBUG.STAMP8.DMA_RD_WR_CNT_SEL [23:0] (R, 0x0)  */
+        volatile uint32_t RESERVED0:8;  /* DEBUG.STAMP8.RESERVED0 [31:24] (R, 0x0)  */
+    };
+} DEBUG_STAMP8_t;
+typedef volatile union _DEBUG_STAMP9_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP9*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_RD_ONLY_CNT_SEL:24;  /* DEBUG.STAMP9.DMA_RD_ONLY_CNT_SEL [23:0] (R, 0x0)  */
+        volatile uint32_t RESERVED0:8;  /* DEBUG.STAMP9.RESERVED0 [31:24] (R, 0x0)  */
+    };
+} DEBUG_STAMP9_t;
+typedef volatile union _DEBUG_STAMP10_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.STAMP10*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t DMA_WR_ONLY_CNT_SEL:24;  /* DEBUG.STAMP10.DMA_WR_ONLY_CNT_SEL [23:0] (R, 0x0)  */
+        volatile uint32_t RESERVED0:8;  /* DEBUG.STAMP10.RESERVED0 [31:24] (R, 0x0)  */
+    };
+} DEBUG_STAMP10_t;
+typedef volatile union _DEBUG_CKSUM0_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM0*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE0_SFU_IN:32;  /* DEBUG.CKSUM0.CKSUM_PE0_SFU_IN [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM0_t;
+typedef volatile union _DEBUG_CKSUM1_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM1*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE1_SFU_IN:32;  /* DEBUG.CKSUM1.CKSUM_PE1_SFU_IN [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM1_t;
+typedef volatile union _DEBUG_CKSUM2_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM2*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE1_SFU_OUT:8;  /* DEBUG.CKSUM2.CKSUM_PE1_SFU_OUT [7:0] (R, 0x0)  */
+        volatile uint32_t CKSUM_PE0_SFU_OUT:8;  /* DEBUG.CKSUM2.CKSUM_PE0_SFU_OUT [15:8] (R, 0x0)  */
+        volatile uint32_t RESERVED0:16;  /* DEBUG.CKSUM2.RESERVED0 [31:16] (R, 0x0)  */
+    };
+} DEBUG_CKSUM2_t;
+typedef volatile union _DEBUG_CKSUM3_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM3*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t RESERVED0:30;  /* DEBUG.CKSUM3.RESERVED0 [29:0] (R, 0x0)  */
+        volatile uint32_t CKSUM_ACC_RST:1;  /* DEBUG.CKSUM3.CKSUM_ACC_RST [30:30] (RW, 0x0)  */
+        volatile uint32_t CKSUM_EN:1;  /* DEBUG.CKSUM3.CKSUM_EN [31:31] (RW, 0x0)  */
+    };
+} DEBUG_CKSUM3_t;
+typedef volatile union _DEBUG_CKSUM4_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM4*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE0_SFU_IN_ACC:32;  /* DEBUG.CKSUM4.CKSUM_PE0_SFU_IN_ACC [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM4_t;
+typedef volatile union _DEBUG_CKSUM5_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM5*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE1_SFU_IN_ACC:32;  /* DEBUG.CKSUM5.CKSUM_PE1_SFU_IN_ACC [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM5_t;
+typedef volatile union _DEBUG_CKSUM6_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM6*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE1_SFU_OUT_ACC:8;  /* DEBUG.CKSUM6.CKSUM_PE1_SFU_OUT_ACC [7:0] (R, 0x0)  */
+        volatile uint32_t CKSUM_PE0_SFU_OUT_ACC:8;  /* DEBUG.CKSUM6.CKSUM_PE0_SFU_OUT_ACC [15:8] (R, 0x0)  */
+        volatile uint32_t RESERVED0:16;  /* DEBUG.CKSUM6.RESERVED0 [31:16] (R, 0x0)  */
+    };
+} DEBUG_CKSUM6_t;
+typedef volatile union _DEBUG_CKSUM7_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM7*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE2_SFU_IN:32;  /* DEBUG.CKSUM7.CKSUM_PE2_SFU_IN [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM7_t;
+typedef volatile union _DEBUG_CKSUM8_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM8*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE3_SFU_IN:32;  /* DEBUG.CKSUM8.CKSUM_PE3_SFU_IN [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM8_t;
+typedef volatile union _DEBUG_CKSUM9_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM9*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE3_SFU_OUT:8;  /* DEBUG.CKSUM9.CKSUM_PE3_SFU_OUT [7:0] (R, 0x0)  */
+        volatile uint32_t CKSUM_PE2_SFU_OUT:8;  /* DEBUG.CKSUM9.CKSUM_PE2_SFU_OUT [15:8] (R, 0x0)  */
+        volatile uint32_t RESERVED0:16;  /* DEBUG.CKSUM9.RESERVED0 [31:16] (R, 0x0)  */
+    };
+} DEBUG_CKSUM9_t;
+typedef volatile union _DEBUG_CKSUM10_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM10*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE2_SFU_IN_ACC:32;  /* DEBUG.CKSUM10.CKSUM_PE2_SFU_IN_ACC [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM10_t;
+typedef volatile union _DEBUG_CKSUM11_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM11*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE3_SFU_IN_ACC:32;  /* DEBUG.CKSUM11.CKSUM_PE3_SFU_IN_ACC [31:0] (R, 0x0)  */
+    };
+} DEBUG_CKSUM11_t;
+typedef volatile union _DEBUG_CKSUM12_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.CKSUM12*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t CKSUM_PE3_SFU_OUT_ACC:8;  /* DEBUG.CKSUM12.CKSUM_PE3_SFU_OUT_ACC [7:0] (R, 0x0)  */
+        volatile uint32_t CKSUM_PE2_SFU_OUT_ACC:8;  /* DEBUG.CKSUM12.CKSUM_PE2_SFU_OUT_ACC [15:8] (R, 0x0)  */
+        volatile uint32_t RESERVED0:16;  /* DEBUG.CKSUM12.RESERVED0 [31:16] (R, 0x0)  */
+    };
+} DEBUG_CKSUM12_t;
+typedef volatile union _DEBUG_FSM_PE0_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.FSM_PE0*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t FSM_PE0_WR:15;  /* DEBUG.FSM_PE0.FSM_PE0_WR [14:0] (R, 0x1)  */
+        volatile uint32_t RESERVED1:1;  /* DEBUG.FSM_PE0.RESERVED1 [15:15] (R, 0x0)  */
+        volatile uint32_t FSM_PE0_RD:15;  /* DEBUG.FSM_PE0.FSM_PE0_RD [30:16] (R, 0x1)  */
+        volatile uint32_t RESERVED0:1;  /* DEBUG.FSM_PE0.RESERVED0 [31:31] (R, 0x0)  */
+    };
+} DEBUG_FSM_PE0_t;
+typedef volatile union _DEBUG_FSM_PE1_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.FSM_PE1*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t FSM_PE1_WR:15;  /* DEBUG.FSM_PE1.FSM_PE1_WR [14:0] (R, 0x1)  */
+        volatile uint32_t RESERVED1:1;  /* DEBUG.FSM_PE1.RESERVED1 [15:15] (R, 0x0)  */
+        volatile uint32_t FSM_PE1_RD:15;  /* DEBUG.FSM_PE1.FSM_PE1_RD [30:16] (R, 0x1)  */
+        volatile uint32_t RESERVED0:1;  /* DEBUG.FSM_PE1.RESERVED0 [31:31] (R, 0x0)  */
+    };
+} DEBUG_FSM_PE1_t;
+typedef volatile union _DEBUG_FSM_PE2_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.FSM_PE2*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t FSM_PE2_WR:15;  /* DEBUG.FSM_PE2.FSM_PE2_WR [14:0] (R, 0x1)  */
+        volatile uint32_t RESERVED1:1;  /* DEBUG.FSM_PE2.RESERVED1 [15:15] (R, 0x0)  */
+        volatile uint32_t FSM_PE2_RD:15;  /* DEBUG.FSM_PE2.FSM_PE2_RD [30:16] (R, 0x1)  */
+        volatile uint32_t RESERVED0:1;  /* DEBUG.FSM_PE2.RESERVED0 [31:31] (R, 0x0)  */
+    };
+} DEBUG_FSM_PE2_t;
+typedef volatile union _DEBUG_FSM_PE3_t
+{
+    volatile uint32_t U;  /* Register-Access : DEBUG.FSM_PE3*/
+    struct {     /* Register-Bitfields-Access */
+        volatile uint32_t FSM_PE3_WR:15;  /* DEBUG.FSM_PE3.FSM_PE3_WR [14:0] (R, 0x1)  */
+        volatile uint32_t RESERVED1:1;  /* DEBUG.FSM_PE3.RESERVED1 [15:15] (R, 0x0)  */
+        volatile uint32_t FSM_PE3_RD:15;  /* DEBUG.FSM_PE3.FSM_PE3_RD [30:16] (R, 0x1)  */
+        volatile uint32_t RESERVED0:1;  /* DEBUG.FSM_PE3.RESERVED0 [31:31] (R, 0x0)  */
+    };
+} DEBUG_FSM_PE3_t;
+
+/* DEBUG Module Definition */
+typedef volatile struct _dxDEBUG_t
+{
+    DEBUG_STAMP0_t STAMP0;  /* DEBUG 0x0 */
+    DEBUG_STAMP1_t STAMP1;  /* DEBUG 0x4 */
+    DEBUG_STAMP2_t STAMP2;  /* DEBUG 0x8 */
+    DEBUG_STAMP3_t STAMP3;  /* DEBUG 0xc */
+    DEBUG_STAMP4_t STAMP4;  /* DEBUG 0x10 */
+    DEBUG_STAMP5_t STAMP5;  /* DEBUG 0x14 */
+    DEBUG_STAMP6_t STAMP6;  /* DEBUG 0x18 */
+    DEBUG_STAMP7_t STAMP7;  /* DEBUG 0x1c */
+    DEBUG_STAMP8_t STAMP8;  /* DEBUG 0x20 */
+    DEBUG_STAMP9_t STAMP9;  /* DEBUG 0x24 */
+    DEBUG_STAMP10_t STAMP10;  /* DEBUG 0x28 */
+    DEBUG_CKSUM0_t CKSUM0;  /* DEBUG 0x2c */
+    DEBUG_CKSUM1_t CKSUM1;  /* DEBUG 0x30 */
+    DEBUG_CKSUM2_t CKSUM2;  /* DEBUG 0x34 */
+    DEBUG_CKSUM3_t CKSUM3;  /* DEBUG 0x38 */
+    DEBUG_CKSUM4_t CKSUM4;  /* DEBUG 0x3c */
+    DEBUG_CKSUM5_t CKSUM5;  /* DEBUG 0x40 */
+    DEBUG_CKSUM6_t CKSUM6;  /* DEBUG 0x44 */
+    DEBUG_CKSUM7_t CKSUM7;  /* DEBUG 0x48 */
+    DEBUG_CKSUM8_t CKSUM8;  /* DEBUG 0x4c */
+    DEBUG_CKSUM9_t CKSUM9;  /* DEBUG 0x50 */
+    DEBUG_CKSUM10_t CKSUM10;  /* DEBUG 0x54 */
+    DEBUG_CKSUM11_t CKSUM11;  /* DEBUG 0x58 */
+    DEBUG_CKSUM12_t CKSUM12;  /* DEBUG 0x5c */
+    DEBUG_FSM_PE0_t FSM_PE0;  /* DEBUG 0x60 */
+    DEBUG_FSM_PE1_t FSM_PE1;  /* DEBUG 0x64 */
+    DEBUG_FSM_PE2_t FSM_PE2;  /* DEBUG 0x68 */
+    DEBUG_FSM_PE3_t FSM_PE3;  /* DEBUG 0x6c */
+} dxDEBUG_t;
+
+/* Register access API */
+/* DEBUG.STAMP0 (Category: DEBUG) */
+#define READ_DEBUG_STAMP0(base) npu_reg_read(base, REG_DEBUG_STAMP0)
+#define WRITE_DEBUG_STAMP0(base, val) npu_reg_write(base, REG_DEBUG_STAMP0, val)
+/* DEBUG.STAMP0.LAYER_IDX (Category: DEBUG) */
+#define DEBUG_STAMP0_LAYER_IDX_LEN        16
+#define DEBUG_STAMP0_LAYER_IDX_OFFSET     0
+#define DEBUG_STAMP0_LAYER_IDX_MASK_BITS  0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define DEBUG_STAMP0_LAYER_IDX_MASK       0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define READ_DEBUG_STAMP0_LAYER_IDX(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP0, DEBUG_STAMP0_LAYER_IDX_MASK, DEBUG_STAMP0_LAYER_IDX_OFFSET)
+#define WRITE_DEBUG_STAMP0_LAYER_IDX(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP0, val, DEBUG_STAMP0_LAYER_IDX_MASK, DEBUG_STAMP0_LAYER_IDX_OFFSET)
+
+/* DEBUG.STAMP0.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP0_RESERVED0_LEN        15
+#define DEBUG_STAMP0_RESERVED0_OFFSET     16
+#define DEBUG_STAMP0_RESERVED0_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_STAMP0_RESERVED0_MASK       0x7fff0000 /* [30:16] 0b01111111111111110000000000000000 */
+#define READ_DEBUG_STAMP0_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP0, DEBUG_STAMP0_RESERVED0_MASK, DEBUG_STAMP0_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP0_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP0, val, DEBUG_STAMP0_RESERVED0_MASK, DEBUG_STAMP0_RESERVED0_OFFSET)
+
+/* DEBUG.STAMP0.STAMP_EN (Category: DEBUG) */
+#define DEBUG_STAMP0_STAMP_EN_LEN        1
+#define DEBUG_STAMP0_STAMP_EN_OFFSET     31
+#define DEBUG_STAMP0_STAMP_EN_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_STAMP0_STAMP_EN_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_STAMP0_STAMP_EN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP0, DEBUG_STAMP0_STAMP_EN_MASK, DEBUG_STAMP0_STAMP_EN_OFFSET)
+#define WRITE_DEBUG_STAMP0_STAMP_EN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP0, val, DEBUG_STAMP0_STAMP_EN_MASK, DEBUG_STAMP0_STAMP_EN_OFFSET)
+
+/* DEBUG.STAMP1 (Category: DEBUG) */
+#define READ_DEBUG_STAMP1(base) npu_reg_read(base, REG_DEBUG_STAMP1)
+#define WRITE_DEBUG_STAMP1(base, val) npu_reg_write(base, REG_DEBUG_STAMP1, val)
+/* DEBUG.STAMP1.CLK_CNT (Category: DEBUG) */
+#define DEBUG_STAMP1_CLK_CNT_LEN        32
+#define DEBUG_STAMP1_CLK_CNT_OFFSET     0
+#define DEBUG_STAMP1_CLK_CNT_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_STAMP1_CLK_CNT_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_STAMP1_CLK_CNT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP1, DEBUG_STAMP1_CLK_CNT_MASK, DEBUG_STAMP1_CLK_CNT_OFFSET)
+#define WRITE_DEBUG_STAMP1_CLK_CNT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP1, val, DEBUG_STAMP1_CLK_CNT_MASK, DEBUG_STAMP1_CLK_CNT_OFFSET)
+
+/* DEBUG.STAMP2 (Category: DEBUG) */
+#define READ_DEBUG_STAMP2(base) npu_reg_read(base, REG_DEBUG_STAMP2)
+#define WRITE_DEBUG_STAMP2(base, val) npu_reg_write(base, REG_DEBUG_STAMP2, val)
+/* DEBUG.STAMP2.PSEUDO_CNT (Category: DEBUG) */
+#define DEBUG_STAMP2_PSEUDO_CNT_LEN        32
+#define DEBUG_STAMP2_PSEUDO_CNT_OFFSET     0
+#define DEBUG_STAMP2_PSEUDO_CNT_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_STAMP2_PSEUDO_CNT_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_STAMP2_PSEUDO_CNT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP2, DEBUG_STAMP2_PSEUDO_CNT_MASK, DEBUG_STAMP2_PSEUDO_CNT_OFFSET)
+#define WRITE_DEBUG_STAMP2_PSEUDO_CNT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP2, val, DEBUG_STAMP2_PSEUDO_CNT_MASK, DEBUG_STAMP2_PSEUDO_CNT_OFFSET)
+
+/* DEBUG.STAMP3 (Category: DEBUG) */
+#define READ_DEBUG_STAMP3(base) npu_reg_read(base, REG_DEBUG_STAMP3)
+#define WRITE_DEBUG_STAMP3(base, val) npu_reg_write(base, REG_DEBUG_STAMP3, val)
+/* DEBUG.STAMP3.DMA_RD_WR_CNT (Category: DEBUG) */
+#define DEBUG_STAMP3_DMA_RD_WR_CNT_LEN        32
+#define DEBUG_STAMP3_DMA_RD_WR_CNT_OFFSET     0
+#define DEBUG_STAMP3_DMA_RD_WR_CNT_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_STAMP3_DMA_RD_WR_CNT_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_STAMP3_DMA_RD_WR_CNT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP3, DEBUG_STAMP3_DMA_RD_WR_CNT_MASK, DEBUG_STAMP3_DMA_RD_WR_CNT_OFFSET)
+#define WRITE_DEBUG_STAMP3_DMA_RD_WR_CNT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP3, val, DEBUG_STAMP3_DMA_RD_WR_CNT_MASK, DEBUG_STAMP3_DMA_RD_WR_CNT_OFFSET)
+
+/* DEBUG.STAMP4 (Category: DEBUG) */
+#define READ_DEBUG_STAMP4(base) npu_reg_read(base, REG_DEBUG_STAMP4)
+#define WRITE_DEBUG_STAMP4(base, val) npu_reg_write(base, REG_DEBUG_STAMP4, val)
+/* DEBUG.STAMP4.DMA_RD_ONLY_CNT (Category: DEBUG) */
+#define DEBUG_STAMP4_DMA_RD_ONLY_CNT_LEN        32
+#define DEBUG_STAMP4_DMA_RD_ONLY_CNT_OFFSET     0
+#define DEBUG_STAMP4_DMA_RD_ONLY_CNT_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_STAMP4_DMA_RD_ONLY_CNT_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_STAMP4_DMA_RD_ONLY_CNT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP4, DEBUG_STAMP4_DMA_RD_ONLY_CNT_MASK, DEBUG_STAMP4_DMA_RD_ONLY_CNT_OFFSET)
+#define WRITE_DEBUG_STAMP4_DMA_RD_ONLY_CNT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP4, val, DEBUG_STAMP4_DMA_RD_ONLY_CNT_MASK, DEBUG_STAMP4_DMA_RD_ONLY_CNT_OFFSET)
+
+/* DEBUG.STAMP5 (Category: DEBUG) */
+#define READ_DEBUG_STAMP5(base) npu_reg_read(base, REG_DEBUG_STAMP5)
+#define WRITE_DEBUG_STAMP5(base, val) npu_reg_write(base, REG_DEBUG_STAMP5, val)
+/* DEBUG.STAMP5.DMA_WR_ONLY_CNT (Category: DEBUG) */
+#define DEBUG_STAMP5_DMA_WR_ONLY_CNT_LEN        32
+#define DEBUG_STAMP5_DMA_WR_ONLY_CNT_OFFSET     0
+#define DEBUG_STAMP5_DMA_WR_ONLY_CNT_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_STAMP5_DMA_WR_ONLY_CNT_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_STAMP5_DMA_WR_ONLY_CNT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP5, DEBUG_STAMP5_DMA_WR_ONLY_CNT_MASK, DEBUG_STAMP5_DMA_WR_ONLY_CNT_OFFSET)
+#define WRITE_DEBUG_STAMP5_DMA_WR_ONLY_CNT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP5, val, DEBUG_STAMP5_DMA_WR_ONLY_CNT_MASK, DEBUG_STAMP5_DMA_WR_ONLY_CNT_OFFSET)
+
+/* DEBUG.STAMP6 (Category: DEBUG) */
+#define READ_DEBUG_STAMP6(base) npu_reg_read(base, REG_DEBUG_STAMP6)
+#define WRITE_DEBUG_STAMP6(base, val) npu_reg_write(base, REG_DEBUG_STAMP6, val)
+/* DEBUG.STAMP6.CLK_CNT_SEL (Category: DEBUG) */
+#define DEBUG_STAMP6_CLK_CNT_SEL_LEN        24
+#define DEBUG_STAMP6_CLK_CNT_SEL_OFFSET     0
+#define DEBUG_STAMP6_CLK_CNT_SEL_MASK_BITS  0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define DEBUG_STAMP6_CLK_CNT_SEL_MASK       0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define READ_DEBUG_STAMP6_CLK_CNT_SEL(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP6, DEBUG_STAMP6_CLK_CNT_SEL_MASK, DEBUG_STAMP6_CLK_CNT_SEL_OFFSET)
+#define WRITE_DEBUG_STAMP6_CLK_CNT_SEL(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP6, val, DEBUG_STAMP6_CLK_CNT_SEL_MASK, DEBUG_STAMP6_CLK_CNT_SEL_OFFSET)
+
+/* DEBUG.STAMP6.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP6_RESERVED0_LEN        8
+#define DEBUG_STAMP6_RESERVED0_OFFSET     24
+#define DEBUG_STAMP6_RESERVED0_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_STAMP6_RESERVED0_MASK       0xff000000 /* [31:24] 0b11111111000000000000000000000000 */
+#define READ_DEBUG_STAMP6_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP6, DEBUG_STAMP6_RESERVED0_MASK, DEBUG_STAMP6_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP6_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP6, val, DEBUG_STAMP6_RESERVED0_MASK, DEBUG_STAMP6_RESERVED0_OFFSET)
+
+/* DEBUG.STAMP7 (Category: DEBUG) */
+#define READ_DEBUG_STAMP7(base) npu_reg_read(base, REG_DEBUG_STAMP7)
+#define WRITE_DEBUG_STAMP7(base, val) npu_reg_write(base, REG_DEBUG_STAMP7, val)
+/* DEBUG.STAMP7.PSEUDO_CNT_SEL (Category: DEBUG) */
+#define DEBUG_STAMP7_PSEUDO_CNT_SEL_LEN        24
+#define DEBUG_STAMP7_PSEUDO_CNT_SEL_OFFSET     0
+#define DEBUG_STAMP7_PSEUDO_CNT_SEL_MASK_BITS  0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define DEBUG_STAMP7_PSEUDO_CNT_SEL_MASK       0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define READ_DEBUG_STAMP7_PSEUDO_CNT_SEL(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP7, DEBUG_STAMP7_PSEUDO_CNT_SEL_MASK, DEBUG_STAMP7_PSEUDO_CNT_SEL_OFFSET)
+#define WRITE_DEBUG_STAMP7_PSEUDO_CNT_SEL(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP7, val, DEBUG_STAMP7_PSEUDO_CNT_SEL_MASK, DEBUG_STAMP7_PSEUDO_CNT_SEL_OFFSET)
+
+/* DEBUG.STAMP7.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP7_RESERVED0_LEN        8
+#define DEBUG_STAMP7_RESERVED0_OFFSET     24
+#define DEBUG_STAMP7_RESERVED0_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_STAMP7_RESERVED0_MASK       0xff000000 /* [31:24] 0b11111111000000000000000000000000 */
+#define READ_DEBUG_STAMP7_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP7, DEBUG_STAMP7_RESERVED0_MASK, DEBUG_STAMP7_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP7_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP7, val, DEBUG_STAMP7_RESERVED0_MASK, DEBUG_STAMP7_RESERVED0_OFFSET)
+
+/* DEBUG.STAMP8 (Category: DEBUG) */
+#define READ_DEBUG_STAMP8(base) npu_reg_read(base, REG_DEBUG_STAMP8)
+#define WRITE_DEBUG_STAMP8(base, val) npu_reg_write(base, REG_DEBUG_STAMP8, val)
+/* DEBUG.STAMP8.DMA_RD_WR_CNT_SEL (Category: DEBUG) */
+#define DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_LEN        24
+#define DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_OFFSET     0
+#define DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_MASK_BITS  0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_MASK       0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define READ_DEBUG_STAMP8_DMA_RD_WR_CNT_SEL(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP8, DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_MASK, DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_OFFSET)
+#define WRITE_DEBUG_STAMP8_DMA_RD_WR_CNT_SEL(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP8, val, DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_MASK, DEBUG_STAMP8_DMA_RD_WR_CNT_SEL_OFFSET)
+
+/* DEBUG.STAMP8.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP8_RESERVED0_LEN        8
+#define DEBUG_STAMP8_RESERVED0_OFFSET     24
+#define DEBUG_STAMP8_RESERVED0_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_STAMP8_RESERVED0_MASK       0xff000000 /* [31:24] 0b11111111000000000000000000000000 */
+#define READ_DEBUG_STAMP8_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP8, DEBUG_STAMP8_RESERVED0_MASK, DEBUG_STAMP8_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP8_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP8, val, DEBUG_STAMP8_RESERVED0_MASK, DEBUG_STAMP8_RESERVED0_OFFSET)
+
+/* DEBUG.STAMP9 (Category: DEBUG) */
+#define READ_DEBUG_STAMP9(base) npu_reg_read(base, REG_DEBUG_STAMP9)
+#define WRITE_DEBUG_STAMP9(base, val) npu_reg_write(base, REG_DEBUG_STAMP9, val)
+/* DEBUG.STAMP9.DMA_RD_ONLY_CNT_SEL (Category: DEBUG) */
+#define DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_LEN        24
+#define DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_OFFSET     0
+#define DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_MASK_BITS  0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_MASK       0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define READ_DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP9, DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_MASK, DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_OFFSET)
+#define WRITE_DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP9, val, DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_MASK, DEBUG_STAMP9_DMA_RD_ONLY_CNT_SEL_OFFSET)
+
+/* DEBUG.STAMP9.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP9_RESERVED0_LEN        8
+#define DEBUG_STAMP9_RESERVED0_OFFSET     24
+#define DEBUG_STAMP9_RESERVED0_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_STAMP9_RESERVED0_MASK       0xff000000 /* [31:24] 0b11111111000000000000000000000000 */
+#define READ_DEBUG_STAMP9_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP9, DEBUG_STAMP9_RESERVED0_MASK, DEBUG_STAMP9_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP9_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP9, val, DEBUG_STAMP9_RESERVED0_MASK, DEBUG_STAMP9_RESERVED0_OFFSET)
+
+/* DEBUG.STAMP10 (Category: DEBUG) */
+#define READ_DEBUG_STAMP10(base) npu_reg_read(base, REG_DEBUG_STAMP10)
+#define WRITE_DEBUG_STAMP10(base, val) npu_reg_write(base, REG_DEBUG_STAMP10, val)
+/* DEBUG.STAMP10.DMA_WR_ONLY_CNT_SEL (Category: DEBUG) */
+#define DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_LEN        24
+#define DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_OFFSET     0
+#define DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_MASK_BITS  0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_MASK       0x00ffffff /* [23:0] 0b00000000111111111111111111111111 */
+#define READ_DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP10, DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_MASK, DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_OFFSET)
+#define WRITE_DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP10, val, DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_MASK, DEBUG_STAMP10_DMA_WR_ONLY_CNT_SEL_OFFSET)
+
+/* DEBUG.STAMP10.RESERVED0 (Category: DEBUG) */
+#define DEBUG_STAMP10_RESERVED0_LEN        8
+#define DEBUG_STAMP10_RESERVED0_OFFSET     24
+#define DEBUG_STAMP10_RESERVED0_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_STAMP10_RESERVED0_MASK       0xff000000 /* [31:24] 0b11111111000000000000000000000000 */
+#define READ_DEBUG_STAMP10_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_STAMP10, DEBUG_STAMP10_RESERVED0_MASK, DEBUG_STAMP10_RESERVED0_OFFSET)
+#define WRITE_DEBUG_STAMP10_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_STAMP10, val, DEBUG_STAMP10_RESERVED0_MASK, DEBUG_STAMP10_RESERVED0_OFFSET)
+
+/* DEBUG.CKSUM0 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM0(base) npu_reg_read(base, REG_DEBUG_CKSUM0)
+#define WRITE_DEBUG_CKSUM0(base, val) npu_reg_write(base, REG_DEBUG_CKSUM0, val)
+/* DEBUG.CKSUM0.CKSUM_PE0_SFU_IN (Category: DEBUG) */
+#define DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_LEN        32
+#define DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_OFFSET     0
+#define DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM0_CKSUM_PE0_SFU_IN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM0, DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_MASK, DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_OFFSET)
+#define WRITE_DEBUG_CKSUM0_CKSUM_PE0_SFU_IN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM0, val, DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_MASK, DEBUG_CKSUM0_CKSUM_PE0_SFU_IN_OFFSET)
+
+/* DEBUG.CKSUM1 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM1(base) npu_reg_read(base, REG_DEBUG_CKSUM1)
+#define WRITE_DEBUG_CKSUM1(base, val) npu_reg_write(base, REG_DEBUG_CKSUM1, val)
+/* DEBUG.CKSUM1.CKSUM_PE1_SFU_IN (Category: DEBUG) */
+#define DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_LEN        32
+#define DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_OFFSET     0
+#define DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM1_CKSUM_PE1_SFU_IN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM1, DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_MASK, DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_OFFSET)
+#define WRITE_DEBUG_CKSUM1_CKSUM_PE1_SFU_IN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM1, val, DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_MASK, DEBUG_CKSUM1_CKSUM_PE1_SFU_IN_OFFSET)
+
+/* DEBUG.CKSUM2 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM2(base) npu_reg_read(base, REG_DEBUG_CKSUM2)
+#define WRITE_DEBUG_CKSUM2(base, val) npu_reg_write(base, REG_DEBUG_CKSUM2, val)
+/* DEBUG.CKSUM2.CKSUM_PE1_SFU_OUT (Category: DEBUG) */
+#define DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_LEN        8
+#define DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_OFFSET     0
+#define DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_MASK       0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define READ_DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM2, DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_MASK, DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_OFFSET)
+#define WRITE_DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM2, val, DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_MASK, DEBUG_CKSUM2_CKSUM_PE1_SFU_OUT_OFFSET)
+
+/* DEBUG.CKSUM2.CKSUM_PE0_SFU_OUT (Category: DEBUG) */
+#define DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_LEN        8
+#define DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_OFFSET     8
+#define DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_MASK       0x0000ff00 /* [15:8] 0b00000000000000001111111100000000 */
+#define READ_DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM2, DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_MASK, DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_OFFSET)
+#define WRITE_DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM2, val, DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_MASK, DEBUG_CKSUM2_CKSUM_PE0_SFU_OUT_OFFSET)
+
+/* DEBUG.CKSUM2.RESERVED0 (Category: DEBUG) */
+#define DEBUG_CKSUM2_RESERVED0_LEN        16
+#define DEBUG_CKSUM2_RESERVED0_OFFSET     16
+#define DEBUG_CKSUM2_RESERVED0_MASK_BITS  0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define DEBUG_CKSUM2_RESERVED0_MASK       0xffff0000 /* [31:16] 0b11111111111111110000000000000000 */
+#define READ_DEBUG_CKSUM2_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM2, DEBUG_CKSUM2_RESERVED0_MASK, DEBUG_CKSUM2_RESERVED0_OFFSET)
+#define WRITE_DEBUG_CKSUM2_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM2, val, DEBUG_CKSUM2_RESERVED0_MASK, DEBUG_CKSUM2_RESERVED0_OFFSET)
+
+/* DEBUG.CKSUM3 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM3(base) npu_reg_read(base, REG_DEBUG_CKSUM3)
+#define WRITE_DEBUG_CKSUM3(base, val) npu_reg_write(base, REG_DEBUG_CKSUM3, val)
+/* DEBUG.CKSUM3.RESERVED0 (Category: DEBUG) */
+#define DEBUG_CKSUM3_RESERVED0_LEN        30
+#define DEBUG_CKSUM3_RESERVED0_OFFSET     0
+#define DEBUG_CKSUM3_RESERVED0_MASK_BITS  0x3fffffff /* [29:0] 0b00111111111111111111111111111111 */
+#define DEBUG_CKSUM3_RESERVED0_MASK       0x3fffffff /* [29:0] 0b00111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM3_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM3, DEBUG_CKSUM3_RESERVED0_MASK, DEBUG_CKSUM3_RESERVED0_OFFSET)
+#define WRITE_DEBUG_CKSUM3_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM3, val, DEBUG_CKSUM3_RESERVED0_MASK, DEBUG_CKSUM3_RESERVED0_OFFSET)
+
+/* DEBUG.CKSUM3.CKSUM_ACC_RST (Category: DEBUG) */
+#define DEBUG_CKSUM3_CKSUM_ACC_RST_LEN        1
+#define DEBUG_CKSUM3_CKSUM_ACC_RST_OFFSET     30
+#define DEBUG_CKSUM3_CKSUM_ACC_RST_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_CKSUM3_CKSUM_ACC_RST_MASK       0x40000000 /* [30:30] 0b01000000000000000000000000000000 */
+#define READ_DEBUG_CKSUM3_CKSUM_ACC_RST(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM3, DEBUG_CKSUM3_CKSUM_ACC_RST_MASK, DEBUG_CKSUM3_CKSUM_ACC_RST_OFFSET)
+#define WRITE_DEBUG_CKSUM3_CKSUM_ACC_RST(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM3, val, DEBUG_CKSUM3_CKSUM_ACC_RST_MASK, DEBUG_CKSUM3_CKSUM_ACC_RST_OFFSET)
+
+/* DEBUG.CKSUM3.CKSUM_EN (Category: DEBUG) */
+#define DEBUG_CKSUM3_CKSUM_EN_LEN        1
+#define DEBUG_CKSUM3_CKSUM_EN_OFFSET     31
+#define DEBUG_CKSUM3_CKSUM_EN_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_CKSUM3_CKSUM_EN_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_CKSUM3_CKSUM_EN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM3, DEBUG_CKSUM3_CKSUM_EN_MASK, DEBUG_CKSUM3_CKSUM_EN_OFFSET)
+#define WRITE_DEBUG_CKSUM3_CKSUM_EN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM3, val, DEBUG_CKSUM3_CKSUM_EN_MASK, DEBUG_CKSUM3_CKSUM_EN_OFFSET)
+
+/* DEBUG.CKSUM4 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM4(base) npu_reg_read(base, REG_DEBUG_CKSUM4)
+#define WRITE_DEBUG_CKSUM4(base, val) npu_reg_write(base, REG_DEBUG_CKSUM4, val)
+/* DEBUG.CKSUM4.CKSUM_PE0_SFU_IN_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_LEN        32
+#define DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_OFFSET     0
+#define DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM4, DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_MASK, DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM4, val, DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_MASK, DEBUG_CKSUM4_CKSUM_PE0_SFU_IN_ACC_OFFSET)
+
+/* DEBUG.CKSUM5 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM5(base) npu_reg_read(base, REG_DEBUG_CKSUM5)
+#define WRITE_DEBUG_CKSUM5(base, val) npu_reg_write(base, REG_DEBUG_CKSUM5, val)
+/* DEBUG.CKSUM5.CKSUM_PE1_SFU_IN_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_LEN        32
+#define DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_OFFSET     0
+#define DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM5, DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_MASK, DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM5, val, DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_MASK, DEBUG_CKSUM5_CKSUM_PE1_SFU_IN_ACC_OFFSET)
+
+/* DEBUG.CKSUM6 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM6(base) npu_reg_read(base, REG_DEBUG_CKSUM6)
+#define WRITE_DEBUG_CKSUM6(base, val) npu_reg_write(base, REG_DEBUG_CKSUM6, val)
+/* DEBUG.CKSUM6.CKSUM_PE1_SFU_OUT_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_LEN        8
+#define DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_OFFSET     0
+#define DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_MASK       0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define READ_DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM6, DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_MASK, DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM6, val, DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_MASK, DEBUG_CKSUM6_CKSUM_PE1_SFU_OUT_ACC_OFFSET)
+
+/* DEBUG.CKSUM6.CKSUM_PE0_SFU_OUT_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_LEN        8
+#define DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_OFFSET     8
+#define DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_MASK       0x0000ff00 /* [15:8] 0b00000000000000001111111100000000 */
+#define READ_DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM6, DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_MASK, DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM6, val, DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_MASK, DEBUG_CKSUM6_CKSUM_PE0_SFU_OUT_ACC_OFFSET)
+
+/* DEBUG.CKSUM6.RESERVED0 (Category: DEBUG) */
+#define DEBUG_CKSUM6_RESERVED0_LEN        16
+#define DEBUG_CKSUM6_RESERVED0_OFFSET     16
+#define DEBUG_CKSUM6_RESERVED0_MASK_BITS  0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define DEBUG_CKSUM6_RESERVED0_MASK       0xffff0000 /* [31:16] 0b11111111111111110000000000000000 */
+#define READ_DEBUG_CKSUM6_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM6, DEBUG_CKSUM6_RESERVED0_MASK, DEBUG_CKSUM6_RESERVED0_OFFSET)
+#define WRITE_DEBUG_CKSUM6_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM6, val, DEBUG_CKSUM6_RESERVED0_MASK, DEBUG_CKSUM6_RESERVED0_OFFSET)
+
+/* DEBUG.CKSUM7 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM7(base) npu_reg_read(base, REG_DEBUG_CKSUM7)
+#define WRITE_DEBUG_CKSUM7(base, val) npu_reg_write(base, REG_DEBUG_CKSUM7, val)
+/* DEBUG.CKSUM7.CKSUM_PE2_SFU_IN (Category: DEBUG) */
+#define DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_LEN        32
+#define DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_OFFSET     0
+#define DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM7_CKSUM_PE2_SFU_IN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM7, DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_MASK, DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_OFFSET)
+#define WRITE_DEBUG_CKSUM7_CKSUM_PE2_SFU_IN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM7, val, DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_MASK, DEBUG_CKSUM7_CKSUM_PE2_SFU_IN_OFFSET)
+
+/* DEBUG.CKSUM8 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM8(base) npu_reg_read(base, REG_DEBUG_CKSUM8)
+#define WRITE_DEBUG_CKSUM8(base, val) npu_reg_write(base, REG_DEBUG_CKSUM8, val)
+/* DEBUG.CKSUM8.CKSUM_PE3_SFU_IN (Category: DEBUG) */
+#define DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_LEN        32
+#define DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_OFFSET     0
+#define DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM8_CKSUM_PE3_SFU_IN(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM8, DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_MASK, DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_OFFSET)
+#define WRITE_DEBUG_CKSUM8_CKSUM_PE3_SFU_IN(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM8, val, DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_MASK, DEBUG_CKSUM8_CKSUM_PE3_SFU_IN_OFFSET)
+
+/* DEBUG.CKSUM9 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM9(base) npu_reg_read(base, REG_DEBUG_CKSUM9)
+#define WRITE_DEBUG_CKSUM9(base, val) npu_reg_write(base, REG_DEBUG_CKSUM9, val)
+/* DEBUG.CKSUM9.CKSUM_PE3_SFU_OUT (Category: DEBUG) */
+#define DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_LEN        8
+#define DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_OFFSET     0
+#define DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_MASK       0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define READ_DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM9, DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_MASK, DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_OFFSET)
+#define WRITE_DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM9, val, DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_MASK, DEBUG_CKSUM9_CKSUM_PE3_SFU_OUT_OFFSET)
+
+/* DEBUG.CKSUM9.CKSUM_PE2_SFU_OUT (Category: DEBUG) */
+#define DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_LEN        8
+#define DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_OFFSET     8
+#define DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_MASK       0x0000ff00 /* [15:8] 0b00000000000000001111111100000000 */
+#define READ_DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM9, DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_MASK, DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_OFFSET)
+#define WRITE_DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM9, val, DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_MASK, DEBUG_CKSUM9_CKSUM_PE2_SFU_OUT_OFFSET)
+
+/* DEBUG.CKSUM9.RESERVED0 (Category: DEBUG) */
+#define DEBUG_CKSUM9_RESERVED0_LEN        16
+#define DEBUG_CKSUM9_RESERVED0_OFFSET     16
+#define DEBUG_CKSUM9_RESERVED0_MASK_BITS  0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define DEBUG_CKSUM9_RESERVED0_MASK       0xffff0000 /* [31:16] 0b11111111111111110000000000000000 */
+#define READ_DEBUG_CKSUM9_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM9, DEBUG_CKSUM9_RESERVED0_MASK, DEBUG_CKSUM9_RESERVED0_OFFSET)
+#define WRITE_DEBUG_CKSUM9_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM9, val, DEBUG_CKSUM9_RESERVED0_MASK, DEBUG_CKSUM9_RESERVED0_OFFSET)
+
+/* DEBUG.CKSUM10 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM10(base) npu_reg_read(base, REG_DEBUG_CKSUM10)
+#define WRITE_DEBUG_CKSUM10(base, val) npu_reg_write(base, REG_DEBUG_CKSUM10, val)
+/* DEBUG.CKSUM10.CKSUM_PE2_SFU_IN_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_LEN        32
+#define DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_OFFSET     0
+#define DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM10, DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_MASK, DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM10, val, DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_MASK, DEBUG_CKSUM10_CKSUM_PE2_SFU_IN_ACC_OFFSET)
+
+/* DEBUG.CKSUM11 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM11(base) npu_reg_read(base, REG_DEBUG_CKSUM11)
+#define WRITE_DEBUG_CKSUM11(base, val) npu_reg_write(base, REG_DEBUG_CKSUM11, val)
+/* DEBUG.CKSUM11.CKSUM_PE3_SFU_IN_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_LEN        32
+#define DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_OFFSET     0
+#define DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_MASK_BITS  0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_MASK       0xffffffff /* [31:0] 0b11111111111111111111111111111111 */
+#define READ_DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM11, DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_MASK, DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM11, val, DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_MASK, DEBUG_CKSUM11_CKSUM_PE3_SFU_IN_ACC_OFFSET)
+
+/* DEBUG.CKSUM12 (Category: DEBUG) */
+#define READ_DEBUG_CKSUM12(base) npu_reg_read(base, REG_DEBUG_CKSUM12)
+#define WRITE_DEBUG_CKSUM12(base, val) npu_reg_write(base, REG_DEBUG_CKSUM12, val)
+/* DEBUG.CKSUM12.CKSUM_PE3_SFU_OUT_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_LEN        8
+#define DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_OFFSET     0
+#define DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_MASK       0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define READ_DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM12, DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_MASK, DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM12, val, DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_MASK, DEBUG_CKSUM12_CKSUM_PE3_SFU_OUT_ACC_OFFSET)
+
+/* DEBUG.CKSUM12.CKSUM_PE2_SFU_OUT_ACC (Category: DEBUG) */
+#define DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_LEN        8
+#define DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_OFFSET     8
+#define DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_MASK_BITS  0x000000ff /* [7:0] 0b00000000000000000000000011111111 */
+#define DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_MASK       0x0000ff00 /* [15:8] 0b00000000000000001111111100000000 */
+#define READ_DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM12, DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_MASK, DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_OFFSET)
+#define WRITE_DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM12, val, DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_MASK, DEBUG_CKSUM12_CKSUM_PE2_SFU_OUT_ACC_OFFSET)
+
+/* DEBUG.CKSUM12.RESERVED0 (Category: DEBUG) */
+#define DEBUG_CKSUM12_RESERVED0_LEN        16
+#define DEBUG_CKSUM12_RESERVED0_OFFSET     16
+#define DEBUG_CKSUM12_RESERVED0_MASK_BITS  0x0000ffff /* [15:0] 0b00000000000000001111111111111111 */
+#define DEBUG_CKSUM12_RESERVED0_MASK       0xffff0000 /* [31:16] 0b11111111111111110000000000000000 */
+#define READ_DEBUG_CKSUM12_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_CKSUM12, DEBUG_CKSUM12_RESERVED0_MASK, DEBUG_CKSUM12_RESERVED0_OFFSET)
+#define WRITE_DEBUG_CKSUM12_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_CKSUM12, val, DEBUG_CKSUM12_RESERVED0_MASK, DEBUG_CKSUM12_RESERVED0_OFFSET)
+
+/* DEBUG.FSM_PE0 (Category: DEBUG) */
+#define READ_DEBUG_FSM_PE0(base) npu_reg_read(base, REG_DEBUG_FSM_PE0)
+#define WRITE_DEBUG_FSM_PE0(base, val) npu_reg_write(base, REG_DEBUG_FSM_PE0, val)
+/* DEBUG.FSM_PE0.FSM_PE0_WR (Category: DEBUG) */
+#define DEBUG_FSM_PE0_FSM_PE0_WR_LEN        15
+#define DEBUG_FSM_PE0_FSM_PE0_WR_OFFSET     0
+#define DEBUG_FSM_PE0_FSM_PE0_WR_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE0_FSM_PE0_WR_MASK       0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define READ_DEBUG_FSM_PE0_FSM_PE0_WR(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE0, DEBUG_FSM_PE0_FSM_PE0_WR_MASK, DEBUG_FSM_PE0_FSM_PE0_WR_OFFSET)
+#define WRITE_DEBUG_FSM_PE0_FSM_PE0_WR(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE0, val, DEBUG_FSM_PE0_FSM_PE0_WR_MASK, DEBUG_FSM_PE0_FSM_PE0_WR_OFFSET)
+
+/* DEBUG.FSM_PE0.RESERVED1 (Category: DEBUG) */
+#define DEBUG_FSM_PE0_RESERVED1_LEN        1
+#define DEBUG_FSM_PE0_RESERVED1_OFFSET     15
+#define DEBUG_FSM_PE0_RESERVED1_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE0_RESERVED1_MASK       0x00008000 /* [15:15] 0b00000000000000001000000000000000 */
+#define READ_DEBUG_FSM_PE0_RESERVED1(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE0, DEBUG_FSM_PE0_RESERVED1_MASK, DEBUG_FSM_PE0_RESERVED1_OFFSET)
+#define WRITE_DEBUG_FSM_PE0_RESERVED1(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE0, val, DEBUG_FSM_PE0_RESERVED1_MASK, DEBUG_FSM_PE0_RESERVED1_OFFSET)
+
+/* DEBUG.FSM_PE0.FSM_PE0_RD (Category: DEBUG) */
+#define DEBUG_FSM_PE0_FSM_PE0_RD_LEN        15
+#define DEBUG_FSM_PE0_FSM_PE0_RD_OFFSET     16
+#define DEBUG_FSM_PE0_FSM_PE0_RD_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE0_FSM_PE0_RD_MASK       0x7fff0000 /* [30:16] 0b01111111111111110000000000000000 */
+#define READ_DEBUG_FSM_PE0_FSM_PE0_RD(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE0, DEBUG_FSM_PE0_FSM_PE0_RD_MASK, DEBUG_FSM_PE0_FSM_PE0_RD_OFFSET)
+#define WRITE_DEBUG_FSM_PE0_FSM_PE0_RD(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE0, val, DEBUG_FSM_PE0_FSM_PE0_RD_MASK, DEBUG_FSM_PE0_FSM_PE0_RD_OFFSET)
+
+/* DEBUG.FSM_PE0.RESERVED0 (Category: DEBUG) */
+#define DEBUG_FSM_PE0_RESERVED0_LEN        1
+#define DEBUG_FSM_PE0_RESERVED0_OFFSET     31
+#define DEBUG_FSM_PE0_RESERVED0_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE0_RESERVED0_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_FSM_PE0_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE0, DEBUG_FSM_PE0_RESERVED0_MASK, DEBUG_FSM_PE0_RESERVED0_OFFSET)
+#define WRITE_DEBUG_FSM_PE0_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE0, val, DEBUG_FSM_PE0_RESERVED0_MASK, DEBUG_FSM_PE0_RESERVED0_OFFSET)
+
+/* DEBUG.FSM_PE1 (Category: DEBUG) */
+#define READ_DEBUG_FSM_PE1(base) npu_reg_read(base, REG_DEBUG_FSM_PE1)
+#define WRITE_DEBUG_FSM_PE1(base, val) npu_reg_write(base, REG_DEBUG_FSM_PE1, val)
+/* DEBUG.FSM_PE1.FSM_PE1_WR (Category: DEBUG) */
+#define DEBUG_FSM_PE1_FSM_PE1_WR_LEN        15
+#define DEBUG_FSM_PE1_FSM_PE1_WR_OFFSET     0
+#define DEBUG_FSM_PE1_FSM_PE1_WR_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE1_FSM_PE1_WR_MASK       0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define READ_DEBUG_FSM_PE1_FSM_PE1_WR(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE1, DEBUG_FSM_PE1_FSM_PE1_WR_MASK, DEBUG_FSM_PE1_FSM_PE1_WR_OFFSET)
+#define WRITE_DEBUG_FSM_PE1_FSM_PE1_WR(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE1, val, DEBUG_FSM_PE1_FSM_PE1_WR_MASK, DEBUG_FSM_PE1_FSM_PE1_WR_OFFSET)
+
+/* DEBUG.FSM_PE1.RESERVED1 (Category: DEBUG) */
+#define DEBUG_FSM_PE1_RESERVED1_LEN        1
+#define DEBUG_FSM_PE1_RESERVED1_OFFSET     15
+#define DEBUG_FSM_PE1_RESERVED1_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE1_RESERVED1_MASK       0x00008000 /* [15:15] 0b00000000000000001000000000000000 */
+#define READ_DEBUG_FSM_PE1_RESERVED1(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE1, DEBUG_FSM_PE1_RESERVED1_MASK, DEBUG_FSM_PE1_RESERVED1_OFFSET)
+#define WRITE_DEBUG_FSM_PE1_RESERVED1(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE1, val, DEBUG_FSM_PE1_RESERVED1_MASK, DEBUG_FSM_PE1_RESERVED1_OFFSET)
+
+/* DEBUG.FSM_PE1.FSM_PE1_RD (Category: DEBUG) */
+#define DEBUG_FSM_PE1_FSM_PE1_RD_LEN        15
+#define DEBUG_FSM_PE1_FSM_PE1_RD_OFFSET     16
+#define DEBUG_FSM_PE1_FSM_PE1_RD_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE1_FSM_PE1_RD_MASK       0x7fff0000 /* [30:16] 0b01111111111111110000000000000000 */
+#define READ_DEBUG_FSM_PE1_FSM_PE1_RD(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE1, DEBUG_FSM_PE1_FSM_PE1_RD_MASK, DEBUG_FSM_PE1_FSM_PE1_RD_OFFSET)
+#define WRITE_DEBUG_FSM_PE1_FSM_PE1_RD(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE1, val, DEBUG_FSM_PE1_FSM_PE1_RD_MASK, DEBUG_FSM_PE1_FSM_PE1_RD_OFFSET)
+
+/* DEBUG.FSM_PE1.RESERVED0 (Category: DEBUG) */
+#define DEBUG_FSM_PE1_RESERVED0_LEN        1
+#define DEBUG_FSM_PE1_RESERVED0_OFFSET     31
+#define DEBUG_FSM_PE1_RESERVED0_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE1_RESERVED0_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_FSM_PE1_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE1, DEBUG_FSM_PE1_RESERVED0_MASK, DEBUG_FSM_PE1_RESERVED0_OFFSET)
+#define WRITE_DEBUG_FSM_PE1_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE1, val, DEBUG_FSM_PE1_RESERVED0_MASK, DEBUG_FSM_PE1_RESERVED0_OFFSET)
+
+/* DEBUG.FSM_PE2 (Category: DEBUG) */
+#define READ_DEBUG_FSM_PE2(base) npu_reg_read(base, REG_DEBUG_FSM_PE2)
+#define WRITE_DEBUG_FSM_PE2(base, val) npu_reg_write(base, REG_DEBUG_FSM_PE2, val)
+/* DEBUG.FSM_PE2.FSM_PE2_WR (Category: DEBUG) */
+#define DEBUG_FSM_PE2_FSM_PE2_WR_LEN        15
+#define DEBUG_FSM_PE2_FSM_PE2_WR_OFFSET     0
+#define DEBUG_FSM_PE2_FSM_PE2_WR_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE2_FSM_PE2_WR_MASK       0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define READ_DEBUG_FSM_PE2_FSM_PE2_WR(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE2, DEBUG_FSM_PE2_FSM_PE2_WR_MASK, DEBUG_FSM_PE2_FSM_PE2_WR_OFFSET)
+#define WRITE_DEBUG_FSM_PE2_FSM_PE2_WR(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE2, val, DEBUG_FSM_PE2_FSM_PE2_WR_MASK, DEBUG_FSM_PE2_FSM_PE2_WR_OFFSET)
+
+/* DEBUG.FSM_PE2.RESERVED1 (Category: DEBUG) */
+#define DEBUG_FSM_PE2_RESERVED1_LEN        1
+#define DEBUG_FSM_PE2_RESERVED1_OFFSET     15
+#define DEBUG_FSM_PE2_RESERVED1_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE2_RESERVED1_MASK       0x00008000 /* [15:15] 0b00000000000000001000000000000000 */
+#define READ_DEBUG_FSM_PE2_RESERVED1(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE2, DEBUG_FSM_PE2_RESERVED1_MASK, DEBUG_FSM_PE2_RESERVED1_OFFSET)
+#define WRITE_DEBUG_FSM_PE2_RESERVED1(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE2, val, DEBUG_FSM_PE2_RESERVED1_MASK, DEBUG_FSM_PE2_RESERVED1_OFFSET)
+
+/* DEBUG.FSM_PE2.FSM_PE2_RD (Category: DEBUG) */
+#define DEBUG_FSM_PE2_FSM_PE2_RD_LEN        15
+#define DEBUG_FSM_PE2_FSM_PE2_RD_OFFSET     16
+#define DEBUG_FSM_PE2_FSM_PE2_RD_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE2_FSM_PE2_RD_MASK       0x7fff0000 /* [30:16] 0b01111111111111110000000000000000 */
+#define READ_DEBUG_FSM_PE2_FSM_PE2_RD(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE2, DEBUG_FSM_PE2_FSM_PE2_RD_MASK, DEBUG_FSM_PE2_FSM_PE2_RD_OFFSET)
+#define WRITE_DEBUG_FSM_PE2_FSM_PE2_RD(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE2, val, DEBUG_FSM_PE2_FSM_PE2_RD_MASK, DEBUG_FSM_PE2_FSM_PE2_RD_OFFSET)
+
+/* DEBUG.FSM_PE2.RESERVED0 (Category: DEBUG) */
+#define DEBUG_FSM_PE2_RESERVED0_LEN        1
+#define DEBUG_FSM_PE2_RESERVED0_OFFSET     31
+#define DEBUG_FSM_PE2_RESERVED0_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE2_RESERVED0_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_FSM_PE2_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE2, DEBUG_FSM_PE2_RESERVED0_MASK, DEBUG_FSM_PE2_RESERVED0_OFFSET)
+#define WRITE_DEBUG_FSM_PE2_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE2, val, DEBUG_FSM_PE2_RESERVED0_MASK, DEBUG_FSM_PE2_RESERVED0_OFFSET)
+
+/* DEBUG.FSM_PE3 (Category: DEBUG) */
+#define READ_DEBUG_FSM_PE3(base) npu_reg_read(base, REG_DEBUG_FSM_PE3)
+#define WRITE_DEBUG_FSM_PE3(base, val) npu_reg_write(base, REG_DEBUG_FSM_PE3, val)
+/* DEBUG.FSM_PE3.FSM_PE3_WR (Category: DEBUG) */
+#define DEBUG_FSM_PE3_FSM_PE3_WR_LEN        15
+#define DEBUG_FSM_PE3_FSM_PE3_WR_OFFSET     0
+#define DEBUG_FSM_PE3_FSM_PE3_WR_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE3_FSM_PE3_WR_MASK       0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define READ_DEBUG_FSM_PE3_FSM_PE3_WR(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE3, DEBUG_FSM_PE3_FSM_PE3_WR_MASK, DEBUG_FSM_PE3_FSM_PE3_WR_OFFSET)
+#define WRITE_DEBUG_FSM_PE3_FSM_PE3_WR(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE3, val, DEBUG_FSM_PE3_FSM_PE3_WR_MASK, DEBUG_FSM_PE3_FSM_PE3_WR_OFFSET)
+
+/* DEBUG.FSM_PE3.RESERVED1 (Category: DEBUG) */
+#define DEBUG_FSM_PE3_RESERVED1_LEN        1
+#define DEBUG_FSM_PE3_RESERVED1_OFFSET     15
+#define DEBUG_FSM_PE3_RESERVED1_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE3_RESERVED1_MASK       0x00008000 /* [15:15] 0b00000000000000001000000000000000 */
+#define READ_DEBUG_FSM_PE3_RESERVED1(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE3, DEBUG_FSM_PE3_RESERVED1_MASK, DEBUG_FSM_PE3_RESERVED1_OFFSET)
+#define WRITE_DEBUG_FSM_PE3_RESERVED1(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE3, val, DEBUG_FSM_PE3_RESERVED1_MASK, DEBUG_FSM_PE3_RESERVED1_OFFSET)
+
+/* DEBUG.FSM_PE3.FSM_PE3_RD (Category: DEBUG) */
+#define DEBUG_FSM_PE3_FSM_PE3_RD_LEN        15
+#define DEBUG_FSM_PE3_FSM_PE3_RD_OFFSET     16
+#define DEBUG_FSM_PE3_FSM_PE3_RD_MASK_BITS  0x00007fff /* [14:0] 0b00000000000000000111111111111111 */
+#define DEBUG_FSM_PE3_FSM_PE3_RD_MASK       0x7fff0000 /* [30:16] 0b01111111111111110000000000000000 */
+#define READ_DEBUG_FSM_PE3_FSM_PE3_RD(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE3, DEBUG_FSM_PE3_FSM_PE3_RD_MASK, DEBUG_FSM_PE3_FSM_PE3_RD_OFFSET)
+#define WRITE_DEBUG_FSM_PE3_FSM_PE3_RD(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE3, val, DEBUG_FSM_PE3_FSM_PE3_RD_MASK, DEBUG_FSM_PE3_FSM_PE3_RD_OFFSET)
+
+/* DEBUG.FSM_PE3.RESERVED0 (Category: DEBUG) */
+#define DEBUG_FSM_PE3_RESERVED0_LEN        1
+#define DEBUG_FSM_PE3_RESERVED0_OFFSET     31
+#define DEBUG_FSM_PE3_RESERVED0_MASK_BITS  0x00000001 /* [0:0] 0b00000000000000000000000000000001 */
+#define DEBUG_FSM_PE3_RESERVED0_MASK       0x80000000 /* [31:31] 0b10000000000000000000000000000000 */
+#define READ_DEBUG_FSM_PE3_RESERVED0(base) \
+    npu_reg_read_mask(base, REG_DEBUG_FSM_PE3, DEBUG_FSM_PE3_RESERVED0_MASK, DEBUG_FSM_PE3_RESERVED0_OFFSET)
+#define WRITE_DEBUG_FSM_PE3_RESERVED0(base, val) \
+    npu_reg_write_mask(base, REG_DEBUG_FSM_PE3, val, DEBUG_FSM_PE3_RESERVED0_MASK, DEBUG_FSM_PE3_RESERVED0_OFFSET)
+
+
+#endif // __NPU_REG_DEBUG_DX_L1_H

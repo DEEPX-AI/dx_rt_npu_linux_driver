@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+# DeepX Xilinx PCIe driver
+
+ifneq ($(xvc_bar_num),)
+	XVC_FLAGS += -D__XVC_BAR_NUM__=$(xvc_bar_num)
+endif
+ifneq ($(xvc_bar_offset),)
+	XVC_FLAGS += -D__XVC_BAR_OFFSET__=$(xvc_bar_offset)
+endif
+
+ccflags-y += -I $(src)/include
+ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
+ccflags-y += -DCONFIG_DX_AI_ACCEL_RT=1
+ccflags-y += -I $(src)/../include
+endif
+ccflags-y += $(XVC_FLAGS)
+
+xdma-y := libxdma.o xdma_cdev.o cdev_ctrl.o cdev_events.o\
+		cdev_sgdma.o cdev_xvc.o cdev_bypass.o xdma_mod.o xdma_thread.o libdxnn.o
+
+ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
+xdma-y += dx_pcie_api.o
+endif
+
+obj-$(CONFIG_DX_AI_ACCEL_PCIE_XILINX) += xdma.o
+
