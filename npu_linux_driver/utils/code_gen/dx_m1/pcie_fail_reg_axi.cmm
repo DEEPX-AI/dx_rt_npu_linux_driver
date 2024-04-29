@@ -1,0 +1,1048 @@
+;;;Debug PCIE APB Register
+;AREA.CLEAR REPORT
+PRINT "----------------------------------------------------------------------------------------------------------"
+;=================================================================================================
+; Register:RAS_DES_CAP_HEADER_REG, Member: ['EXTENDED_CAP_ID', 'CAP_VERSION', 'NEXT_OFFSET']
+;=================================================================================================
+&EXTENDED_CAP_ID = 0xC900030C+0x0
+&mask = 0xffff
+&val  = ((Data.Long(A:&EXTENDED_CAP_ID)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EXTENDED_CAP_ID:0x0] V:", &val, " PCI Express Extended Capability ID. \ This field is a PCI-SIG defined ID number that indicates the nature and format of the Extended Capability. \ Extended Capability ID for the Vendor-Specific Extended Capability is 000Bh. \  \  \ Note: The access attributes of this field are as follows: \  - Wire: R (sticky)  \  - Dbi: if (DBI_RO_WR_EN == 1) then R/W(sticky) else R(sticky)  \ Note: This register field is sticky."
+&CAP_VERSION = 0xC900030C+0x0
+&mask = 0xf0000
+&val  = ((Data.Long(A:&CAP_VERSION)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[CAP_VERSION:0x0] V:", &val, " Capability Version. \ This field is a PCI-SIG defined version number that indicates the version of the Capability structure present. \ Value of this field is depends on the version of the specification. \  \  \ Note: The access attributes of this field are as follows: \  - Wire: R (sticky)  \  - Dbi: if (DBI_RO_WR_EN == 1) then R/W(sticky) else R(sticky)  \ Note: This register field is sticky."
+&NEXT_OFFSET = 0xC900030C+0x0
+&mask = 0xfff00000
+&val  = ((Data.Long(A:&NEXT_OFFSET)&(&mask))>>20.)
+IF &val!=0.
+    PRINT "[NEXT_OFFSET:0x0] V:", &val, " Next Capability Offset. \ This field contains the offset to the next PCI Express Capability structure or 000h if no other items exist in the linked list of Capabilities. \ For Extended Capabilities implemented in Configuration Space, this offset is relative to the beginning of PCI-compatible Configuration Space and thus must always be either 000h (for terminating list of Capabilities) or greater than 0FFh. \  \  \ Note: The access attributes of this field are as follows: \  - Wire: R (sticky)  \  - Dbi: if (DBI_RO_WR_EN == 1) then R/W(sticky) else R(sticky)  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:VENDOR_SPECIFIC_HEADER_REG, Member: ['VSEC_ID', 'VSEC_REV', 'VSEC_LENGTH']
+;=================================================================================================
+&VSEC_ID = 0xC900030C+0x4
+&mask = 0xffff
+&val  = ((Data.Long(A:&VSEC_ID)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[VSEC_ID:0x4] V:", &val, " VSEC ID. \ This field is a vendor-defined ID number that indicates the nature and format of the VSEC structure. \ Software must qualify the Vendor ID before interpreting this field."
+&VSEC_REV = 0xC900030C+0x4
+&mask = 0xf0000
+&val  = ((Data.Long(A:&VSEC_REV)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[VSEC_REV:0x4] V:", &val, " VSEC Rev. \ This field is a vendor-defined version number that indicates the version of the VSEC structure. \ Software must qualify the Vendor ID and VSEC ID before interpreting this field."
+&VSEC_LENGTH = 0xC900030C+0x4
+&mask = 0xfff00000
+&val  = ((Data.Long(A:&VSEC_LENGTH)&(&mask))>>20.)
+IF &val!=0.
+    PRINT "[VSEC_LENGTH:0x4] V:", &val, " VSEC Length. \ This field indicates the number of bytes in the entire VSEC structure, including the Vendor-Specific Extended Capability Header, the Vendor-Specific Header, and the vendor-specific registers."
+
+;=================================================================================================
+; Register:EVENT_COUNTER_CONTROL_REG, Member: ['EVENT_COUNTER_CLEAR', 'EVENT_COUNTER_ENABLE', 'RSVDP_5', 'EVENT_COUNTER_STATUS', 'EVENT_COUNTER_LANE_SELECT', 'RSVDP_12', 'EVENT_COUNTER_EVENT_SELECT', 'RSVDP_28']
+;=================================================================================================
+&EVENT_COUNTER_CLEAR = 0xC900030C+0x8
+&mask = 0x3
+&val  = ((Data.Long(A:&EVENT_COUNTER_CLEAR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_CLEAR:0x8] V:", &val, " Event Counter Clear. \ Clears the Event Counter selected by the EVENT_COUNTER_EVENT_SELECT and EVENT_COUNTER_LANE_SELECT fields in this register. \ You can clear the value of a specific Event Counter by writing the 'per clear' code and you can clear all event counters at once by writing the 'all clear' code. \ The read value is always '0'. \ Other values are reserved."
+&EVENT_COUNTER_ENABLE = 0xC900030C+0x8
+&mask = 0x1c
+&val  = ((Data.Long(A:&EVENT_COUNTER_ENABLE)&(&mask))>>2.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_ENABLE:0x8] V:", &val, " Event Counter Enable. \ Enables/disables the Event Counter selected by the EVENT_COUNTER_EVENT_SELECT and EVENT_COUNTER_LANE_SELECT fields in this register. \ By default, all event counters are disabled. \ You can enable/disable a specific Event Counter by writing the 'per event off' or 'per event on' codes. \ You can enable/disable all event counters by writing the 'all on' or 'all off' codes. \ The read value is always '0'. \ For other values no change."
+&RSVDP_5 = 0xC900030C+0x8
+&mask = 0x60
+&val  = ((Data.Long(A:&RSVDP_5)&(&mask))>>5.)
+IF &val!=0.
+    PRINT "[RSVDP_5:0x8] V:", &val, " Reserved for future use."
+&EVENT_COUNTER_STATUS = 0xC900030C+0x8
+&mask = 0x80
+&val  = ((Data.Long(A:&EVENT_COUNTER_STATUS)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_STATUS:0x8] V:", &val, " Event Counter Status. \ This register returns the current value of the Event Counter selected by the following fields: \  - EVENT_COUNTER_EVENT_SELECT \  - EVENT_COUNTER_LANE_SELECT \  \  \ Note: This register field is sticky."
+&EVENT_COUNTER_LANE_SELECT = 0xC900030C+0x8
+&mask = 0xf00
+&val  = ((Data.Long(A:&EVENT_COUNTER_LANE_SELECT)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_LANE_SELECT:0x8] V:", &val, " Event Counter Lane Select. \ This field in conjunction with EVENT_COUNTER_EVENT_SELECT indexes the Event Counter data returned by the EVENT_COUNTER_DATA_REG register. \  \  \ Note: This register field is sticky."
+&RSVDP_12 = 0xC900030C+0x8
+&mask = 0xf000
+&val  = ((Data.Long(A:&RSVDP_12)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[RSVDP_12:0x8] V:", &val, " Reserved for future use."
+&EVENT_COUNTER_EVENT_SELECT = 0xC900030C+0x8
+&mask = 0xfff0000
+&val  = ((Data.Long(A:&EVENT_COUNTER_EVENT_SELECT)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_EVENT_SELECT:0x8] V:", &val, " Event Counter Data Select. \ This field in conjunction with the EVENT_COUNTER_LANE_SELECT field indexes the Event Counter data returned by the EVENT_COUNTER_DATA_REG register. \  - 27-24: Group number(4-bit: 0..0x7) \  - 23-16: Event number(8-bit: 0..0x13) within the Group \  - .. \ For detailed definitions of Group number and Event number, see the RAS DES chapter in the Databook. \  \ Note: This register field is sticky."
+&RSVDP_28 = 0xC900030C+0x8
+&mask = 0xf0000000
+&val  = ((Data.Long(A:&RSVDP_28)&(&mask))>>28.)
+IF &val!=0.
+    PRINT "[RSVDP_28:0x8] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EVENT_COUNTER_DATA_REG, Member: ['EVENT_COUNTER_DATA']
+;=================================================================================================
+&EVENT_COUNTER_DATA = 0xC900030C+0xc
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EVENT_COUNTER_DATA)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EVENT_COUNTER_DATA:0xc] V:", &val, " Event Counter Data. \ This register returns the data selected by the following fields: \  - EVENT_COUNTER_EVENT_SELECT in EVENT_COUNTER_CONTROL_REG \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:TIME_BASED_ANALYSIS_CONTROL_REG, Member: ['TIMER_START', 'RSVDP_1', 'TIME_BASED_DURATION_SELECT', 'RSVDP_16', 'TIME_BASED_REPORT_SELECT']
+;=================================================================================================
+&TIMER_START = 0xC900030C+0x10
+&mask = 0x1
+&val  = ((Data.Long(A:&TIMER_START)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[TIMER_START:0x10] V:", &val, " Timer Start. \ This bit will be cleared automatically when the measurement is finished. \ Note: The app_ras_des_tba_ctrl input also sets the contents of this field and controls the measurement start/stop. \  \ Note: This register field is sticky."
+&RSVDP_1 = 0xC900030C+0x10
+&mask = 0xfe
+&val  = ((Data.Long(A:&RSVDP_1)&(&mask))>>1.)
+IF &val!=0.
+    PRINT "[RSVDP_1:0x10] V:", &val, " Reserved for future use."
+&TIME_BASED_DURATION_SELECT = 0xC900030C+0x10
+&mask = 0xff00
+&val  = ((Data.Long(A:&TIME_BASED_DURATION_SELECT)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[TIME_BASED_DURATION_SELECT:0x10] V:", &val, " Time-based Duration Select. \ Selects the duration of time-based analysis. \ When 'manual control' is selected and TIMER_START is set to '1', this analysis never stops until TIMER_STOP is set to '0'. All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+&RSVDP_16 = 0xC900030C+0x10
+&mask = 0xff0000
+&val  = ((Data.Long(A:&RSVDP_16)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[RSVDP_16:0x10] V:", &val, " Reserved for future use."
+&TIME_BASED_REPORT_SELECT = 0xC900030C+0x10
+&mask = 0xff000000
+&val  = ((Data.Long(A:&TIME_BASED_REPORT_SELECT)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[TIME_BASED_REPORT_SELECT:0x10] V:", &val, " Time-based Report Select. \ Selects what type of data is measured for the selected duration (TIME_BASED_DURATION_SELECT), and returned in TIME_BASED_ANALYSIS_DATA. \ Each type of data is measured using one of three types of units: \  - Core_clk Cycles for 2.5GT/s, 5.0GT/s, 8.0GT/s, 16.0GT/s, 32GT/s. Total time in ps is [Value of TIME_BASED_ANALYSIS_DATA returned when TIME_BASED_REPORT_SELECT=0x00] * TIME_BASED_ANALYSIS_DATA. Values 0-4 and 7-8 correspond to Core_clk Cycles for 2.5GT/s, 5.0GT/s, 8.0GT/s, 16.0GT/s, 32GT/s. \  - Aux_clk Cycles. Total time in ps is [Period of platform specific clock] * TIME_BASED_ANALYSIS_DATA. Values 5, 6, and 9 correspond to aux_clk Cycles. \  - Core_clk Cycles for 20GT/s, 25GT/s (CCIX ESM data rate). Total time in ps is [Value of TIME_BASED_ANALYSIS_DATA returned when TIME_BASED_REPORT_SELECT=0x10] * TIME_BASED_ANALYSIS_DATA. Values 10-14 and 17-18 correspond to Core_clk Cycles for 2.5GT/s, 5.0GT/s, 8.0GT/s, 16.0GT/s, 32GT/s. \  - Data Bytes. Actual amount of bytes is 16 * TIME_BASED_ANALYSIS_DATA. Values 20-23 correspond to data bytes. \ All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:TIME_BASED_ANALYSIS_DATA_REG, Member: ['TIME_BASED_ANALYSIS_DATA']
+;=================================================================================================
+&TIME_BASED_ANALYSIS_DATA = 0xC900030C+0x14
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&TIME_BASED_ANALYSIS_DATA)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[TIME_BASED_ANALYSIS_DATA:0x14] V:", &val, " Time Based Analysis Data. \ This register returns the data selected by the TIME_BASED_REPORT_SELECT field in TIME_BASED_ANALYSIS_CONTROL_REG. \ The results are cleared when next measurement starts. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:TIME_BASED_ANALYSIS_DATA_63_32_REG, Member: ['TIME_BASED_ANALYSIS_DATA_63_32']
+;=================================================================================================
+&TIME_BASED_ANALYSIS_DATA_63_32 = 0xC900030C+0x18
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&TIME_BASED_ANALYSIS_DATA_63_32)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[TIME_BASED_ANALYSIS_DATA_63_32:0x18] V:", &val, " Upper 32 bits of Time Based Analysis Data. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ_ENABLE_REG, Member: ['ERROR_INJECTION0_ENABLE', 'ERROR_INJECTION1_ENABLE', 'ERROR_INJECTION2_ENABLE', 'ERROR_INJECTION3_ENABLE', 'ERROR_INJECTION4_ENABLE', 'ERROR_INJECTION5_ENABLE', 'ERROR_INJECTION6_ENABLE', 'RSVDP_7']
+;=================================================================================================
+&ERROR_INJECTION0_ENABLE = 0xC900030C+0x30
+&mask = 0x1
+&val  = ((Data.Long(A:&ERROR_INJECTION0_ENABLE)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION0_ENABLE:0x30] V:", &val, " Error Injection0 Enable (CRC Error). Enables insertion of errors into various CRC. For more information, see the EINJ0_CRC_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION1_ENABLE = 0xC900030C+0x30
+&mask = 0x2
+&val  = ((Data.Long(A:&ERROR_INJECTION1_ENABLE)&(&mask))>>1.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION1_ENABLE:0x30] V:", &val, " Error Injection1 Enable (Sequence Number Error). \ Enables insertion of errors into sequence numbers. \ For more information, see the EINJ1_SEQNUM_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION2_ENABLE = 0xC900030C+0x30
+&mask = 0x4
+&val  = ((Data.Long(A:&ERROR_INJECTION2_ENABLE)&(&mask))>>2.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION2_ENABLE:0x30] V:", &val, " Error Injection2 Enable (DLLP Error). \ Enables insertion of DLLP errors. \ For more information, see the EINJ2_DLLP_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION3_ENABLE = 0xC900030C+0x30
+&mask = 0x8
+&val  = ((Data.Long(A:&ERROR_INJECTION3_ENABLE)&(&mask))>>3.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION3_ENABLE:0x30] V:", &val, " Error Injection3 Enable (Symbol DataK Mask Error or Sync Header Error). \ Enables DataK masking of special symbols or the breaking of the sync header. \ For more information, see the EINJ3_SYMBOL_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION4_ENABLE = 0xC900030C+0x30
+&mask = 0x10
+&val  = ((Data.Long(A:&ERROR_INJECTION4_ENABLE)&(&mask))>>4.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION4_ENABLE:0x30] V:", &val, " Error Injection4 Enable (FC Credit Update Error). \ Enables insertion of errors into UpdateFCs. \ For more information, see the EINJ4_FC_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION5_ENABLE = 0xC900030C+0x30
+&mask = 0x20
+&val  = ((Data.Long(A:&ERROR_INJECTION5_ENABLE)&(&mask))>>5.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION5_ENABLE:0x30] V:", &val, " Error Injection5 Enable (TLP Duplicate/Nullify Error). \ Enables insertion of duplicate/nullified TLPs. \ For more information, see the EINJ5_SP_TLP_REG register. \  \  \ Note: This register field is sticky."
+&ERROR_INJECTION6_ENABLE = 0xC900030C+0x30
+&mask = 0x40
+&val  = ((Data.Long(A:&ERROR_INJECTION6_ENABLE)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[ERROR_INJECTION6_ENABLE:0x30] V:", &val, " Error Injection6 Enable (Specific TLP Error). \ Enables insertion of errors into the packets that you select. \  \ You can set this bit to '1' when you have disabled RAS datapath protection (DP) by setting CX_RASDP = CX_RASDP_RAM_PROT =0. \  \ You can set this bit to '1' when you have disabled the address translation by setting ADDR_TRANSLATION_SUPPORT_EN=0. \ For more information, see the EINJ6_COMPARE_*_REG/EINJ6_CHANGE_*_REG/EINJ6_TLP_REG registers. \  \  \ Note: This register field is sticky."
+&RSVDP_7 = 0xC900030C+0x30
+&mask = 0xffffff80
+&val  = ((Data.Long(A:&RSVDP_7)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[RSVDP_7:0x30] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ0_CRC_REG, Member: ['EINJ0_COUNT', 'EINJ0_CRC_TYPE', 'RSVDP_12']
+;=================================================================================================
+&EINJ0_COUNT = 0xC900030C+0x34
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ0_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ0_COUNT:0x34] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented when the errors have been inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION0_ENABLE in EINJ_ENABLE_REG returns 0b. \  \  If the counter value is 0x00 and ERROR_INJECTION0_ENABLE=1, the errors are inserted until ERROR_INJECTION0_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ0_CRC_TYPE = 0xC900030C+0x34
+&mask = 0xf00
+&val  = ((Data.Long(A:&EINJ0_CRC_TYPE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ0_CRC_TYPE:0x34] V:", &val, " Error injection type. \ Selects the type of CRC error to be inserted. All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+&RSVDP_12 = 0xC900030C+0x34
+&mask = 0xfffff000
+&val  = ((Data.Long(A:&RSVDP_12)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[RSVDP_12:0x34] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ1_SEQNUM_REG, Member: ['EINJ1_COUNT', 'EINJ1_SEQNUM_TYPE', 'RSVDP_9', 'EINJ1_BAD_SEQNUM', 'RSVDP_29']
+;=================================================================================================
+&EINJ1_COUNT = 0xC900030C+0x38
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ1_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ1_COUNT:0x38] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented as the errors are being inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION1_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION1_ENABLE=1, the errors are inserted until ERROR_INJECTION1_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ1_SEQNUM_TYPE = 0xC900030C+0x38
+&mask = 0x100
+&val  = ((Data.Long(A:&EINJ1_SEQNUM_TYPE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ1_SEQNUM_TYPE:0x38] V:", &val, " Sequence number type. \ Selects the type of sequence number. \  \  \ Note: This register field is sticky."
+&RSVDP_9 = 0xC900030C+0x38
+&mask = 0xfe00
+&val  = ((Data.Long(A:&RSVDP_9)&(&mask))>>9.)
+IF &val!=0.
+    PRINT "[RSVDP_9:0x38] V:", &val, " Reserved for future use."
+&EINJ1_BAD_SEQNUM = 0xC900030C+0x38
+&mask = 0x1fff0000
+&val  = ((Data.Long(A:&EINJ1_BAD_SEQNUM)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[EINJ1_BAD_SEQNUM:0x38] V:", &val, " Bad sequence number. \ Indicates the value to add/subtract from the naturally-assigned sequence numbers. This value is represented by two's complement. \ For example: \  - Set Type, SEQ# and Count \  -- EINJ1_SEQNUM_TYPE =0 (Insert errors into new TLPs) \  -- EINJ1_BAD_SEQNUM =0x1FFD (represents -3) \  -- EINJ1_COUNT =1 \  - Enable Error Injection \  -- ERROR_INJECTION1_ENABLE =1 \  - Send a TLP from the controller's Application Interface \  -- Assume SEQ#5 is given to the TLP. \  - The SEQ# is Changed to #2 by the Error Injection Function in Layer2. \  -- 5 + (-3) = 2 \  - The TLP with SEQ#2 is Transmitted to PCIe Link. \ Note: This register field is sticky."
+&RSVDP_29 = 0xC900030C+0x38
+&mask = 0xe0000000
+&val  = ((Data.Long(A:&RSVDP_29)&(&mask))>>29.)
+IF &val!=0.
+    PRINT "[RSVDP_29:0x38] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ2_DLLP_REG, Member: ['EINJ2_COUNT', 'EINJ2_DLLP_TYPE', 'RSVDP_10']
+;=================================================================================================
+&EINJ2_COUNT = 0xC900030C+0x3c
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ2_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ2_COUNT:0x3c] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented as the errors are being inserted. \  \  If the counter value is 0x01 and the error is inserted, ERROR_INJECTION2_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION2_ENABLE =1, the errors are inserted until ERROR_INJECTION2_ENABLE is set to '0'. \ This register is affected only when EINJ2_DLLP_TYPE =2'10b. \  \  \ Note: This register field is sticky."
+&EINJ2_DLLP_TYPE = 0xC900030C+0x3c
+&mask = 0x300
+&val  = ((Data.Long(A:&EINJ2_DLLP_TYPE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ2_DLLP_TYPE:0x3c] V:", &val, " DLLP Type. \ Selects the type of DLLP errors to be inserted. \  \  \ Note: This register field is sticky."
+&RSVDP_10 = 0xC900030C+0x3c
+&mask = 0xfffffc00
+&val  = ((Data.Long(A:&RSVDP_10)&(&mask))>>10.)
+IF &val!=0.
+    PRINT "[RSVDP_10:0x3c] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ3_SYMBOL_REG, Member: ['EINJ3_COUNT', 'EINJ3_SYMBOL_TYPE', 'RSVDP_11']
+;=================================================================================================
+&EINJ3_COUNT = 0xC900030C+0x40
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ3_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ3_COUNT:0x40] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented as the errors are being inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION3_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION3_ENABLE =1, the errors are inserted until ERROR_INJECTION3_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ3_SYMBOL_TYPE = 0xC900030C+0x40
+&mask = 0x700
+&val  = ((Data.Long(A:&EINJ3_SYMBOL_TYPE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ3_SYMBOL_TYPE:0x40] V:", &val, " Error Type. \ 8b/10b encoding - Mask K symbol. It is not supported to insert errors into the first ordered-set after exiting from TxElecIdle when CX_FREQ_STEP_EN has been enabled. All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+&RSVDP_11 = 0xC900030C+0x40
+&mask = 0xfffff800
+&val  = ((Data.Long(A:&RSVDP_11)&(&mask))>>11.)
+IF &val!=0.
+    PRINT "[RSVDP_11:0x40] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ4_FC_REG, Member: ['EINJ4_COUNT', 'EINJ4_UPDFC_TYPE', 'RSVDP_11', 'EINJ4_VC_NUMBER', 'RSVDP_15', 'EINJ4_BAD_UPDFC_VALUE', 'RSVDP_29']
+;=================================================================================================
+&EINJ4_COUNT = 0xC900030C+0x44
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ4_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ4_COUNT:0x44] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented as the errors are being inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION4_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION4_ENABLE =1, the errors are inserted until ERROR_INJECTION4_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ4_UPDFC_TYPE = 0xC900030C+0x44
+&mask = 0x700
+&val  = ((Data.Long(A:&EINJ4_UPDFC_TYPE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ4_UPDFC_TYPE:0x44] V:", &val, " Update-FC type. \ Selects the credit type. \  \  \ Note: This register field is sticky."
+&RSVDP_11 = 0xC900030C+0x44
+&mask = 0x800
+&val  = ((Data.Long(A:&RSVDP_11)&(&mask))>>11.)
+IF &val!=0.
+    PRINT "[RSVDP_11:0x44] V:", &val, " Reserved for future use."
+&EINJ4_VC_NUMBER = 0xC900030C+0x44
+&mask = 0x7000
+&val  = ((Data.Long(A:&EINJ4_VC_NUMBER)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[EINJ4_VC_NUMBER:0x44] V:", &val, " VC Number. \ Indicates target VC Number. \  \  \ Note: This register field is sticky."
+&RSVDP_15 = 0xC900030C+0x44
+&mask = 0x8000
+&val  = ((Data.Long(A:&RSVDP_15)&(&mask))>>15.)
+IF &val!=0.
+    PRINT "[RSVDP_15:0x44] V:", &val, " Reserved for future use."
+&EINJ4_BAD_UPDFC_VALUE = 0xC900030C+0x44
+&mask = 0x1fff0000
+&val  = ((Data.Long(A:&EINJ4_BAD_UPDFC_VALUE)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[EINJ4_BAD_UPDFC_VALUE:0x44] V:", &val, " Bad update-FC credit value. \ Indicates the value to add/subtract from the UpdateFC credit. This value is represented by two's complement. \  \  \ Note: This register field is sticky."
+&RSVDP_29 = 0xC900030C+0x44
+&mask = 0xe0000000
+&val  = ((Data.Long(A:&RSVDP_29)&(&mask))>>29.)
+IF &val!=0.
+    PRINT "[RSVDP_29:0x44] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ5_SP_TLP_REG, Member: ['EINJ5_COUNT', 'EINJ5_SPECIFIED_TLP', 'RSVDP_9']
+;=================================================================================================
+&EINJ5_COUNT = 0xC900030C+0x48
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ5_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ5_COUNT:0x48] V:", &val, " Error injection count. \ Indicates the number of errors. \ This register is decremented as the errors are being inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION5_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION5_ENABLE =1, the errors are inserted until ERROR_INJECTION5_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ5_SPECIFIED_TLP = 0xC900030C+0x48
+&mask = 0x100
+&val  = ((Data.Long(A:&EINJ5_SPECIFIED_TLP)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ5_SPECIFIED_TLP:0x48] V:", &val, " Specified TLP. \ Selects the specified TLP to be inserted. \  \  \ Note: This register field is sticky."
+&RSVDP_9 = 0xC900030C+0x48
+&mask = 0xfffffe00
+&val  = ((Data.Long(A:&RSVDP_9)&(&mask))>>9.)
+IF &val!=0.
+    PRINT "[RSVDP_9:0x48] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_POINT_H0_REG, Member: ['EINJ6_COMPARE_POINT_H0']
+;=================================================================================================
+&EINJ6_COMPARE_POINT_H0 = 0xC900030C+0x4c
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_POINT_H0)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_POINT_H0:0x4c] V:", &val, " Packet Compare Point: 1st DWORD. \  \ Specifies which Tx TLP header DWORD#0 bits to compare with the corresponding bits in the Packet Compare Value registers (EINJ6_COMPARE_VALUE*). \  \ When all specified bits (in the Tx TLP header and EINJ6_COMPARE_VALUE*) match, the controller inserts errors into the TLP. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_POINT_H1_REG, Member: ['EINJ6_COMPARE_POINT_H1']
+;=================================================================================================
+&EINJ6_COMPARE_POINT_H1 = 0xC900030C+0x50
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_POINT_H1)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_POINT_H1:0x50] V:", &val, " Packet Compare Point: 2nd DWORD. \  \ Specifies which Tx TLP header DWORD#1 bits to compare with the corresponding bits in the Packet Compare Value registers (EINJ6_COMPARE_VALUE*). \  \ When all specified bits (in the Tx TLP header and EINJ6_COMPARE_VALUE*) match, the controller inserts errors into the TLP. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_POINT_H2_REG, Member: ['EINJ6_COMPARE_POINT_H2']
+;=================================================================================================
+&EINJ6_COMPARE_POINT_H2 = 0xC900030C+0x54
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_POINT_H2)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_POINT_H2:0x54] V:", &val, " Packet Compare Point: 3rd DWORD. \ Specifies which Tx TLP header DWORD#2 bits to compare with the corresponding bits in the Packet Compare Value registers (EINJ6_COMPARE_VALUE*). \ When all specified bits (in the Tx TLP header and EINJ6_COMPARE_VALUE*) match, the controller inserts errors into the TLP. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_POINT_H3_REG, Member: ['EINJ6_COMPARE_POINT_H3']
+;=================================================================================================
+&EINJ6_COMPARE_POINT_H3 = 0xC900030C+0x58
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_POINT_H3)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_POINT_H3:0x58] V:", &val, " Packet Compare Point: 4th DWORD. \  \ Specifies which Tx TLP header DWORD#3 bits to compare with the corresponding bits in the Packet Compare Value registers (EINJ6_COMPARE_VALUE*). \  \ When all specified bits (in the Tx TLP header and EINJ6_COMPARE_VALUE*) match, the controller inserts errors into the TLP. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_VALUE_H0_REG, Member: ['EINJ6_COMPARE_VALUE_H0']
+;=================================================================================================
+&EINJ6_COMPARE_VALUE_H0 = 0xC900030C+0x5c
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_VALUE_H0)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_VALUE_H0:0x5c] V:", &val, " Packet Compare Value: 1st DWORD. \  \ Specifies the value to compare against Tx the TLP header DWORD#0 bits specified in the Packet Compare Point registers (EINJ6_COMPARE_POINT*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_VALUE_H1_REG, Member: ['EINJ6_COMPARE_VALUE_H1']
+;=================================================================================================
+&EINJ6_COMPARE_VALUE_H1 = 0xC900030C+0x60
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_VALUE_H1)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_VALUE_H1:0x60] V:", &val, " Packet Compare Value: 2nd DWORD. \  \ Specifies the value to compare against Tx the TLP header DWORD#1 bits specified in the Packet Compare Point registers (EINJ6_COMPARE_POINT*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_VALUE_H2_REG, Member: ['EINJ6_COMPARE_VALUE_H2']
+;=================================================================================================
+&EINJ6_COMPARE_VALUE_H2 = 0xC900030C+0x64
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_VALUE_H2)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_VALUE_H2:0x64] V:", &val, " Packet Compare Value: 3rd DWORD. \  \ Specifies the value to compare against Tx the TLP header DWORD#2 bits specified in the Packet Compare Point registers (EINJ6_COMPARE_POINT*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_COMPARE_VALUE_H3_REG, Member: ['EINJ6_COMPARE_VALUE_H3']
+;=================================================================================================
+&EINJ6_COMPARE_VALUE_H3 = 0xC900030C+0x68
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_COMPARE_VALUE_H3)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COMPARE_VALUE_H3:0x68] V:", &val, " Packet Compare Value: 4th DWORD. \  \ Specifies the value to compare against Tx the TLP header DWORD#3 bits specified in the Packet Compare Point registers (EINJ6_COMPARE_POINT*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_POINT_H0_REG, Member: ['EINJ6_CHANGE_POINT_H0']
+;=================================================================================================
+&EINJ6_CHANGE_POINT_H0 = 0xC900030C+0x6c
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_POINT_H0)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_POINT_H0:0x6c] V:", &val, " Packet Change Point: 1st DWORD. \  \ Specifies which Tx TLP header DWORD#0 bits to replace with the corresponding bits in the Packet Change Value registers (EINJ6_CHANGE_VALUE*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_POINT_H1_REG, Member: ['EINJ6_CHANGE_POINT_H1']
+;=================================================================================================
+&EINJ6_CHANGE_POINT_H1 = 0xC900030C+0x70
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_POINT_H1)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_POINT_H1:0x70] V:", &val, " Packet Change Point: 2nd DWORD. \  \ Specifies which Tx TLP header DWORD#1 bits to replace with the corresponding bits in the Packet Change Value registers (EINJ6_CHANGE_VALUE*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_POINT_H2_REG, Member: ['EINJ6_CHANGE_POINT_H2']
+;=================================================================================================
+&EINJ6_CHANGE_POINT_H2 = 0xC900030C+0x74
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_POINT_H2)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_POINT_H2:0x74] V:", &val, " Packet Change Point: 3rd DWORD. \  \ Specifies which Tx TLP header DWORD#2 bits to replace with the corresponding bits in the Packet Change Value registers (EINJ6_CHANGE_VALUE*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_POINT_H3_REG, Member: ['EINJ6_CHANGE_POINT_H3']
+;=================================================================================================
+&EINJ6_CHANGE_POINT_H3 = 0xC900030C+0x78
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_POINT_H3)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_POINT_H3:0x78] V:", &val, " Packet Change Point: 4th DWORD. \  \ Specifies which Tx TLP header DWORD#3 bits to replace with the corresponding bits in the Packet Change Value registers (EINJ6_CHANGE_VALUE*). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_VALUE_H0_REG, Member: ['EINJ6_CHANGE_VALUE_H0']
+;=================================================================================================
+&EINJ6_CHANGE_VALUE_H0 = 0xC900030C+0x7c
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_VALUE_H0)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_VALUE_H0:0x7c] V:", &val, " Packet Change Value: 1st DWORD. \  \ Specifies replacement values for the Tx TLP header DWORD#0 bits defined in the Packet Change Point registers (EINJ6_CHANGE_POINT*). \  \ Only applies when the EINJ6_INVERTED_CONTROL field in EINJ6_TLP_REG is '0'. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_VALUE_H1_REG, Member: ['EINJ6_CHANGE_VALUE_H1']
+;=================================================================================================
+&EINJ6_CHANGE_VALUE_H1 = 0xC900030C+0x80
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_VALUE_H1)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_VALUE_H1:0x80] V:", &val, " Packet Change Value: 2nd DWORD. \  \ Specifies replacement values for the Tx TLP header DWORD#1 bits defined in the Packet Change Point registers (EINJ6_CHANGE_POINT*). \  \ Only applies when the EINJ6_INVERTED_CONTROL field in EINJ6_TLP_REG is '0'. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_VALUE_H2_REG, Member: ['EINJ6_CHANGE_VALUE_H2']
+;=================================================================================================
+&EINJ6_CHANGE_VALUE_H2 = 0xC900030C+0x84
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_VALUE_H2)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_VALUE_H2:0x84] V:", &val, " Packet Change Value: 3rd DWORD. \  \ Specifies replacement values for the Tx TLP header DWORD#2 bits defined in the Packet Change Point registers (EINJ6_CHANGE_POINT*). \  \ Only applies when the EINJ6_INVERTED_CONTROL field in EINJ6_TLP_REG is '0'. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_CHANGE_VALUE_H3_REG, Member: ['EINJ6_CHANGE_VALUE_H3']
+;=================================================================================================
+&EINJ6_CHANGE_VALUE_H3 = 0xC900030C+0x88
+&mask = 0xffffffff
+&val  = ((Data.Long(A:&EINJ6_CHANGE_VALUE_H3)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_CHANGE_VALUE_H3:0x88] V:", &val, " Packet Change Value: 4th DWORD. \  \ Specifies replacement values for the Tx TLP header DWORD#3 bits defined in the Packet Change Point registers (EINJ6_CHANGE_POINT*). \  \ Only applies when the EINJ6_INVERTED_CONTROL field in EINJ6_TLP_REG is '0'. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:EINJ6_TLP_REG, Member: ['EINJ6_COUNT', 'EINJ6_INVERTED_CONTROL', 'EINJ6_PACKET_TYPE', 'RSVDP_12']
+;=================================================================================================
+&EINJ6_COUNT = 0xC900030C+0x8c
+&mask = 0xff
+&val  = ((Data.Long(A:&EINJ6_COUNT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EINJ6_COUNT:0x8c] V:", &val, " Error Injection Count. \ Indicates the number of errors to insert. \ This counter is decremented while errors are been inserted. \  \  If the counter value is 0x01 and error is inserted, ERROR_INJECTION6_ENABLE in EINJ_ENABLE_REG returns '0'. \  \  If the counter value is 0x00 and ERROR_INJECTION6_ENABLE=1, errors are inserted until ERROR_INJECTION6_ENABLE is set to '0'. \  \  \ Note: This register field is sticky."
+&EINJ6_INVERTED_CONTROL = 0xC900030C+0x8c
+&mask = 0x100
+&val  = ((Data.Long(A:&EINJ6_INVERTED_CONTROL)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EINJ6_INVERTED_CONTROL:0x8c] V:", &val, " Inverted Error Injection Control. \ Encodded values given as above. \  \ Note: This register field is sticky."
+&EINJ6_PACKET_TYPE = 0xC900030C+0x8c
+&mask = 0xe00
+&val  = ((Data.Long(A:&EINJ6_PACKET_TYPE)&(&mask))>>9.)
+IF &val!=0.
+    PRINT "[EINJ6_PACKET_TYPE:0x8c] V:", &val, " Packet type. \ Selects the TLP packets to inject errors into. All encodings other than the specified encodings are reserved. \  \  \ Note: This register field is sticky."
+&RSVDP_12 = 0xC900030C+0x8c
+&mask = 0xfffff000
+&val  = ((Data.Long(A:&RSVDP_12)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[RSVDP_12:0x8c] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_CONTROL1_REG, Member: ['FORCE_DETECT_LANE', 'FORCE_DETECT_LANE_EN', 'RSVDP_17', 'TX_EIOS_NUM', 'LOW_POWER_INTERVAL', 'RSVDP_24']
+;=================================================================================================
+&FORCE_DETECT_LANE = 0xC900030C+0xa0
+&mask = 0xffff
+&val  = ((Data.Long(A:&FORCE_DETECT_LANE)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[FORCE_DETECT_LANE:0xa0] V:", &val, " Force Detect Lane. This field is a bit vector of lanes to force receiver detection on. \ When the FORCE_DETECT_LANE_EN field is set, the controller ignores receiver detection from PHY during LTSSM Detect state and uses this value instead. \  \  \ Note: This register field is sticky."
+&FORCE_DETECT_LANE_EN = 0xC900030C+0xa0
+&mask = 0x10000
+&val  = ((Data.Long(A:&FORCE_DETECT_LANE_EN)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[FORCE_DETECT_LANE_EN:0xa0] V:", &val, " Force Detect Lane Enable. \  \  \ Note: This register field is sticky."
+&RSVDP_17 = 0xC900030C+0xa0
+&mask = 0xe0000
+&val  = ((Data.Long(A:&RSVDP_17)&(&mask))>>17.)
+IF &val!=0.
+    PRINT "[RSVDP_17:0xa0] V:", &val, " Reserved for future use."
+&TX_EIOS_NUM = 0xC900030C+0xa0
+&mask = 0x300000
+&val  = ((Data.Long(A:&TX_EIOS_NUM)&(&mask))>>20.)
+IF &val!=0.
+    PRINT "[TX_EIOS_NUM:0xa0] V:", &val, " Number of Tx EIOS. \ This register sets the number of transmit EIOS for L0s/L1 entry and Disable/Loopback/Hot-reset exit. The controller selects the greater value between this register and the value defined by the PCI-SIG specification. \  \  \ Note: This register field is sticky."
+&LOW_POWER_INTERVAL = 0xC900030C+0xa0
+&mask = 0xc00000
+&val  = ((Data.Long(A:&LOW_POWER_INTERVAL)&(&mask))>>22.)
+IF &val!=0.
+    PRINT "[LOW_POWER_INTERVAL:0xa0] V:", &val, " Low Power Entry Interval Time. \  \ Interval Time that the controller starts monitoring RXELECIDLE signal after L0s/L1/L2 entry. You should set the value according to the latency from receiving EIOS to, RXELECIDLE assertion at the PHY. \  \  \ Note: This register field is sticky."
+&RSVDP_24 = 0xC900030C+0xa0
+&mask = 0xff000000
+&val  = ((Data.Long(A:&RSVDP_24)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[RSVDP_24:0xa0] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_CONTROL2_REG, Member: ['HOLD_LTSSM', 'RECOVERY_REQUEST', 'NOACK_FORCE_LINKDOWN', 'RSVDP_3', 'DIRECT_RECIDLE_TO_CONFIG', 'DIRECT_POLCOMP_TO_DETECT', 'DIRECT_LPBKSLV_TO_EXIT', 'RSVDP_11', 'FRAMING_ERR_RECOVERY_DISABLE', 'RSVDP_17']
+;=================================================================================================
+&HOLD_LTSSM = 0xC900030C+0xa4
+&mask = 0x1
+&val  = ((Data.Long(A:&HOLD_LTSSM)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[HOLD_LTSSM:0xa4] V:", &val, " Hold and Release LTSSM. \  \  \ Note: This register field is sticky."
+&RECOVERY_REQUEST = 0xC900030C+0xa4
+&mask = 0x2
+&val  = ((Data.Long(A:&RECOVERY_REQUEST)&(&mask))>>1.)
+IF &val!=0.
+    PRINT "[RECOVERY_REQUEST:0xa4] V:", &val, " Recovery Request."
+&NOACK_FORCE_LINKDOWN = 0xC900030C+0xa4
+&mask = 0x4
+&val  = ((Data.Long(A:&NOACK_FORCE_LINKDOWN)&(&mask))>>2.)
+IF &val!=0.
+    PRINT "[NOACK_FORCE_LINKDOWN:0xa4] V:", &val, " Force LinkDown. \  \  \ Note: This register field is sticky."
+&RSVDP_3 = 0xC900030C+0xa4
+&mask = 0xf8
+&val  = ((Data.Long(A:&RSVDP_3)&(&mask))>>3.)
+IF &val!=0.
+    PRINT "[RSVDP_3:0xa4] V:", &val, " Reserved for future use."
+&DIRECT_RECIDLE_TO_CONFIG = 0xC900030C+0xa4
+&mask = 0x100
+&val  = ((Data.Long(A:&DIRECT_RECIDLE_TO_CONFIG)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[DIRECT_RECIDLE_TO_CONFIG:0xa4] V:", &val, " Direct Recovery.Idle to Configuration. \  \  \ Note: This register field is sticky."
+&DIRECT_POLCOMP_TO_DETECT = 0xC900030C+0xa4
+&mask = 0x200
+&val  = ((Data.Long(A:&DIRECT_POLCOMP_TO_DETECT)&(&mask))>>9.)
+IF &val!=0.
+    PRINT "[DIRECT_POLCOMP_TO_DETECT:0xa4] V:", &val, " Direct Polling.Compliance to Detect. \  \  \ Note: This register field is sticky."
+&DIRECT_LPBKSLV_TO_EXIT = 0xC900030C+0xa4
+&mask = 0x400
+&val  = ((Data.Long(A:&DIRECT_LPBKSLV_TO_EXIT)&(&mask))>>10.)
+IF &val!=0.
+    PRINT "[DIRECT_LPBKSLV_TO_EXIT:0xa4] V:", &val, " Direct Loopback Slave To Exit. \  \  \ Note: This register field is sticky."
+&RSVDP_11 = 0xC900030C+0xa4
+&mask = 0xf800
+&val  = ((Data.Long(A:&RSVDP_11)&(&mask))>>11.)
+IF &val!=0.
+    PRINT "[RSVDP_11:0xa4] V:", &val, " Reserved for future use."
+&FRAMING_ERR_RECOVERY_DISABLE = 0xC900030C+0xa4
+&mask = 0x10000
+&val  = ((Data.Long(A:&FRAMING_ERR_RECOVERY_DISABLE)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[FRAMING_ERR_RECOVERY_DISABLE:0xa4] V:", &val, " Framing Error Recovery Disable. \  \ This bit disables a transition to Recovery state when a Framing Error is occurred. \  \  \ Note: This register field is sticky."
+&RSVDP_17 = 0xC900030C+0xa4
+&mask = 0xfffe0000
+&val  = ((Data.Long(A:&RSVDP_17)&(&mask))>>17.)
+IF &val!=0.
+    PRINT "[RSVDP_17:0xa4] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_STATUS_L1LANE_REG, Member: ['LANE_SELECT', 'RSVDP_4', 'PIPE_RXPOLARITY', 'PIPE_DETECT_LANE', 'PIPE_RXVALID', 'PIPE_RXELECIDLE', 'PIPE_TXELECIDLE', 'RSVDP_21', 'DESKEW_POINTER']
+;=================================================================================================
+&LANE_SELECT = 0xC900030C+0xb0
+&mask = 0xf
+&val  = ((Data.Long(A:&LANE_SELECT)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[LANE_SELECT:0xb0] V:", &val, " Lane Select. \  \ Lane Select register for Silicon Debug Status Register of Layer1-PerLane. \  \  \ Note: This register field is sticky."
+&RSVDP_4 = 0xC900030C+0xb0
+&mask = 0xfff0
+&val  = ((Data.Long(A:&RSVDP_4)&(&mask))>>4.)
+IF &val!=0.
+    PRINT "[RSVDP_4:0xb0] V:", &val, " Reserved for future use."
+&PIPE_RXPOLARITY = 0xC900030C+0xb0
+&mask = 0x10000
+&val  = ((Data.Long(A:&PIPE_RXPOLARITY)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[PIPE_RXPOLARITY:0xb0] V:", &val, " PIPE:RxPolarity. \  \ Indicates PIPE RXPOLARITY signal of selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+&PIPE_DETECT_LANE = 0xC900030C+0xb0
+&mask = 0x20000
+&val  = ((Data.Long(A:&PIPE_DETECT_LANE)&(&mask))>>17.)
+IF &val!=0.
+    PRINT "[PIPE_DETECT_LANE:0xb0] V:", &val, " PIPE:Detect Lane. \  \ Indicates whether PHY indicates receiver detection or not on selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+&PIPE_RXVALID = 0xC900030C+0xb0
+&mask = 0x40000
+&val  = ((Data.Long(A:&PIPE_RXVALID)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[PIPE_RXVALID:0xb0] V:", &val, " PIPE:RxValid. \  \ Indicates PIPE RXVALID signal of selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+&PIPE_RXELECIDLE = 0xC900030C+0xb0
+&mask = 0x80000
+&val  = ((Data.Long(A:&PIPE_RXELECIDLE)&(&mask))>>19.)
+IF &val!=0.
+    PRINT "[PIPE_RXELECIDLE:0xb0] V:", &val, " PIPE:RxElecIdle. \  \ Indicates PIPE RXELECIDLE signal of selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+&PIPE_TXELECIDLE = 0xC900030C+0xb0
+&mask = 0x100000
+&val  = ((Data.Long(A:&PIPE_TXELECIDLE)&(&mask))>>20.)
+IF &val!=0.
+    PRINT "[PIPE_TXELECIDLE:0xb0] V:", &val, " PIPE:TxElecIdle. \  \ Indicates PIPE TXELECIDLE signal of selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+&RSVDP_21 = 0xC900030C+0xb0
+&mask = 0xe00000
+&val  = ((Data.Long(A:&RSVDP_21)&(&mask))>>21.)
+IF &val!=0.
+    PRINT "[RSVDP_21:0xb0] V:", &val, " Reserved for future use."
+&DESKEW_POINTER = 0xC900030C+0xb0
+&mask = 0xff000000
+&val  = ((Data.Long(A:&DESKEW_POINTER)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[DESKEW_POINTER:0xb0] V:", &val, " Deskew Pointer. \  \ Indicates Deskew pointer of internal Deskew buffer of selected lane number(LANE_SELECT). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:SD_STATUS_L1LTSSM_REG, Member: ['FRAMING_ERR_PTR', 'FRAMING_ERR', 'PIPE_POWER_DOWN', 'RSVDP_11', 'LANE_REVERSAL', 'LTSSM_VARIABLE']
+;=================================================================================================
+&FRAMING_ERR_PTR = 0xC900030C+0xb4
+&mask = 0x7f
+&val  = ((Data.Long(A:&FRAMING_ERR_PTR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[FRAMING_ERR_PTR:0xb4] V:", &val, " First Framing Error Pointer. \  \ Identifies the first Framing Error using the following encoding. The field contents are only valid value when FRAMING_ERR =1. \  - Received Unexpected Framing Token (Values 01h to 06h) \  - Received Unexpected STP Token (Values 11h to 13h) \  - Received Unexpected Block (Values 21h to 2Eh) \ All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+&FRAMING_ERR = 0xC900030C+0xb4
+&mask = 0x80
+&val  = ((Data.Long(A:&FRAMING_ERR)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[FRAMING_ERR:0xb4] V:", &val, " Framing Error. \  \ Indicates Framing Error detection status. \  \  \ Note: This register field is sticky."
+&PIPE_POWER_DOWN = 0xC900030C+0xb4
+&mask = 0x700
+&val  = ((Data.Long(A:&PIPE_POWER_DOWN)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[PIPE_POWER_DOWN:0xb4] V:", &val, " PIPE:PowerDown. \  \ Indicates PIPE PowerDown signal. \  \  \ Note: This register field is sticky."
+&RSVDP_11 = 0xC900030C+0xb4
+&mask = 0x7800
+&val  = ((Data.Long(A:&RSVDP_11)&(&mask))>>11.)
+IF &val!=0.
+    PRINT "[RSVDP_11:0xb4] V:", &val, " Reserved for future use."
+&LANE_REVERSAL = 0xC900030C+0xb4
+&mask = 0x8000
+&val  = ((Data.Long(A:&LANE_REVERSAL)&(&mask))>>15.)
+IF &val!=0.
+    PRINT "[LANE_REVERSAL:0xb4] V:", &val, " Lane Reversal Operation. \  \ Receiver detected lane reversal. \  \ This field is only valid in the L0 LTSSM state. \  \  \ Note: This register field is sticky."
+&LTSSM_VARIABLE = 0xC900030C+0xb4
+&mask = 0xffff0000
+&val  = ((Data.Long(A:&LTSSM_VARIABLE)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[LTSSM_VARIABLE:0xb4] V:", &val, " LTSSM Variable. \  \ Indicates internal LTSSM variables defined in the PCI Express Base Specification. \ For other value idle_to_rlock_transitioned. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:SD_STATUS_PM_REG, Member: ['INTERNAL_PM_MSTATE', 'RSVDP_5', 'INTERNAL_PM_SSTATE', 'PME_RESEND_FLAG', 'L1SUB_STATE', 'LATCHED_NFTS', 'RSVDP_24']
+;=================================================================================================
+&INTERNAL_PM_MSTATE = 0xC900030C+0xb8
+&mask = 0x1f
+&val  = ((Data.Long(A:&INTERNAL_PM_MSTATE)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[INTERNAL_PM_MSTATE:0xb8] V:", &val, " Internal PM State(Master). \  \ Indicates internal state machine of Power Management Master controller. \  \  \ Note: This register field is sticky."
+&RSVDP_5 = 0xC900030C+0xb8
+&mask = 0xe0
+&val  = ((Data.Long(A:&RSVDP_5)&(&mask))>>5.)
+IF &val!=0.
+    PRINT "[RSVDP_5:0xb8] V:", &val, " Reserved for future use."
+&INTERNAL_PM_SSTATE = 0xC900030C+0xb8
+&mask = 0xf00
+&val  = ((Data.Long(A:&INTERNAL_PM_SSTATE)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[INTERNAL_PM_SSTATE:0xb8] V:", &val, " Internal PM State(Slave). \  \ Indicates internal state machine of Power Management Slave controller. \  \  \ Note: This register field is sticky."
+&PME_RESEND_FLAG = 0xC900030C+0xb8
+&mask = 0x1000
+&val  = ((Data.Long(A:&PME_RESEND_FLAG)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[PME_RESEND_FLAG:0xb8] V:", &val, " PME Re-send flag. \  \ When the DUT sends a PM_PME message TLP, the DUT sets PME_Status bit. If host software does not clear PME_Status bit for 100ms(+50%/-5%), the DUT resends the PM_PME Message. This bit indicates that a PM_PME was resent. \  \  \ Note: This register field is sticky."
+&L1SUB_STATE = 0xC900030C+0xb8
+&mask = 0xe000
+&val  = ((Data.Long(A:&L1SUB_STATE)&(&mask))>>13.)
+IF &val!=0.
+    PRINT "[L1SUB_STATE:0xb8] V:", &val, " L1Sub State. \ Indicates internal state machine of L1Sub state. \  \  \ Note: This register field is sticky."
+&LATCHED_NFTS = 0xC900030C+0xb8
+&mask = 0xff0000
+&val  = ((Data.Long(A:&LATCHED_NFTS)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[LATCHED_NFTS:0xb8] V:", &val, " Latched N_FTS. \ Indicates the value of N_FTS in the received TS Ordered Sets from the Link Partner. \  \  \ Note: This register field is sticky."
+&RSVDP_24 = 0xC900030C+0xb8
+&mask = 0xff000000
+&val  = ((Data.Long(A:&RSVDP_24)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[RSVDP_24:0xb8] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_STATUS_L2_REG, Member: ['TX_TLP_SEQ_NO', 'RX_ACK_SEQ_NO', 'DLCMSM', 'FC_INIT1', 'FC_INIT2', 'RSVDP_28']
+;=================================================================================================
+&TX_TLP_SEQ_NO = 0xC900030C+0xbc
+&mask = 0xfff
+&val  = ((Data.Long(A:&TX_TLP_SEQ_NO)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[TX_TLP_SEQ_NO:0xbc] V:", &val, " Tx Tlp Sequence Number. \ Indicates next transmit sequence number for transmit TLP. \  \  \ Note: This register field is sticky."
+&RX_ACK_SEQ_NO = 0xC900030C+0xbc
+&mask = 0xfff000
+&val  = ((Data.Long(A:&RX_ACK_SEQ_NO)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[RX_ACK_SEQ_NO:0xbc] V:", &val, " Tx Ack Sequence Number. \ Indicates ACKD_SEQ which is updated by receiving ACK/NAK DLLP. \  \  \ Note: This register field is sticky."
+&DLCMSM = 0xC900030C+0xbc
+&mask = 0x3000000
+&val  = ((Data.Long(A:&DLCMSM)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[DLCMSM:0xbc] V:", &val, " DLCMSM. \ Indicates the current DLCMSM. \  \  \ Note: This register field is sticky."
+&FC_INIT1 = 0xC900030C+0xbc
+&mask = 0x4000000
+&val  = ((Data.Long(A:&FC_INIT1)&(&mask))>>26.)
+IF &val!=0.
+    PRINT "[FC_INIT1:0xbc] V:", &val, " FC_INIT1. \ Indicates the controller is in FC_INIT1(VC0) state. \  \  \ Note: This register field is sticky."
+&FC_INIT2 = 0xC900030C+0xbc
+&mask = 0x8000000
+&val  = ((Data.Long(A:&FC_INIT2)&(&mask))>>27.)
+IF &val!=0.
+    PRINT "[FC_INIT2:0xbc] V:", &val, " FC_INIT2. \ Indicates the controller is in FC_INIT2(VC0) state. \  \  \ Note: This register field is sticky."
+&RSVDP_28 = 0xC900030C+0xbc
+&mask = 0xf0000000
+&val  = ((Data.Long(A:&RSVDP_28)&(&mask))>>28.)
+IF &val!=0.
+    PRINT "[RSVDP_28:0xbc] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_STATUS_L3FC_REG, Member: ['CREDIT_SEL_VC', 'CREDIT_SEL_CREDIT_TYPE', 'CREDIT_SEL_TLP_TYPE', 'CREDIT_SEL_HD', 'RSVDP_7', 'CREDIT_DATA0', 'CREDIT_DATA1']
+;=================================================================================================
+&CREDIT_SEL_VC = 0xC900030C+0xc0
+&mask = 0x7
+&val  = ((Data.Long(A:&CREDIT_SEL_VC)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[CREDIT_SEL_VC:0xc0] V:", &val, " Credit Select(VC). \ This field in conjunction with the CREDIT_SEL_CREDIT_TYPE, CREDIT_SEL_TLP_TYPE, and CREDIT_SEL_HD viewport-select fields determines that data that is returned by the CREDIT_DATA0 and CREDIT_DATA1 data fields. \  \  \ Note: This register field is sticky."
+&CREDIT_SEL_CREDIT_TYPE = 0xC900030C+0xc0
+&mask = 0x8
+&val  = ((Data.Long(A:&CREDIT_SEL_CREDIT_TYPE)&(&mask))>>3.)
+IF &val!=0.
+    PRINT "[CREDIT_SEL_CREDIT_TYPE:0xc0] V:", &val, " Credit Select(Credit Type). \ This field in conjunction with the CREDIT_SEL_VC, CREDIT_SEL_TLP_TYPE, and CREDIT_SEL_HD viewport-select fields determines that data that is returned by the CREDIT_DATA0 and CREDIT_DATA1 data fields. \  \  \ Note: This register field is sticky."
+&CREDIT_SEL_TLP_TYPE = 0xC900030C+0xc0
+&mask = 0x30
+&val  = ((Data.Long(A:&CREDIT_SEL_TLP_TYPE)&(&mask))>>4.)
+IF &val!=0.
+    PRINT "[CREDIT_SEL_TLP_TYPE:0xc0] V:", &val, " Credit Select(TLP Type). \ This field in conjunction with the CREDIT_SEL_VC, CREDIT_SEL_CREDIT_TYPE, and CREDIT_SEL_HD viewport-select fields determines that data that is returned by the CREDIT_DATA0 and CREDIT_DATA1 data fields. \  \  \ Note: This register field is sticky."
+&CREDIT_SEL_HD = 0xC900030C+0xc0
+&mask = 0x40
+&val  = ((Data.Long(A:&CREDIT_SEL_HD)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[CREDIT_SEL_HD:0xc0] V:", &val, " Credit Select(HeaderData). \ This field in conjunction with the CREDIT_SEL_VC, CREDIT_SEL_CREDIT_TYPE, and CREDIT_SEL_TLP_TYPE viewport-select fields determines that data that is returned by the CREDIT_DATA0 and CREDIT_DATA1 data fields. \  \  \ Note: This register field is sticky."
+&RSVDP_7 = 0xC900030C+0xc0
+&mask = 0x80
+&val  = ((Data.Long(A:&RSVDP_7)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[RSVDP_7:0xc0] V:", &val, " Reserved for future use."
+&CREDIT_DATA0 = 0xC900030C+0xc0
+&mask = 0xfff00
+&val  = ((Data.Long(A:&CREDIT_DATA0)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[CREDIT_DATA0:0xc0] V:", &val, " Credit Data0. \ Current FC credit data selected by the CREDIT_SEL_VC, CREDIT_SEL_CREDIT_TYPE, CREDIT_SEL_TLP_TYPE, and CREDIT_SEL_HD viewport-select fields. \  - Rx: Credit Received Value \  - Tx: Credit Consumed Value \  \  \ Note: This register field is sticky."
+&CREDIT_DATA1 = 0xC900030C+0xc0
+&mask = 0xfff00000
+&val  = ((Data.Long(A:&CREDIT_DATA1)&(&mask))>>20.)
+IF &val!=0.
+    PRINT "[CREDIT_DATA1:0xc0] V:", &val, " Credit Data1. \ Current FC credit data selected by the CREDIT_SEL_VC, CREDIT_SEL_CREDIT_TYPE, CREDIT_SEL_TLP_TYPE, and CREDIT_SEL_HD viewport-select fields. \  - Rx: Credit Allocated Value \  - Tx: Credit Limit Value. This value is valid when DLCMSM=0x3(DL_ACTIVE). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:SD_STATUS_L3_REG, Member: ['MFTLP_POINTER', 'MFTLP_STATUS', 'RSVDP_8']
+;=================================================================================================
+&MFTLP_POINTER = 0xC900030C+0xc4
+&mask = 0x7f
+&val  = ((Data.Long(A:&MFTLP_POINTER)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[MFTLP_POINTER:0xc4] V:", &val, " First Malformed TLP Error Pointer. \ Indicates the element of the received first malformed TLP. This pointer is validated by MFTLP_STATUS. \ All encodings other than the defined encodings are reserved. \  \  \ Note: This register field is sticky."
+&MFTLP_STATUS = 0xC900030C+0xc4
+&mask = 0x80
+&val  = ((Data.Long(A:&MFTLP_STATUS)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[MFTLP_STATUS:0xc4] V:", &val, " Malformed TLP Status. \ Indicates malformed TLP has occurred. \  \  \ Note: This register field is sticky."
+&RSVDP_8 = 0xC900030C+0xc4
+&mask = 0xffffff00
+&val  = ((Data.Long(A:&RSVDP_8)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[RSVDP_8:0xc4] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_EQ_CONTROL1_REG, Member: ['EQ_LANE_SEL', 'EQ_RATE_SEL', 'RSVDP_6', 'EXT_EQ_TIMEOUT', 'RSVDP_10', 'EVAL_INTERVAL_TIME', 'RSVDP_18', 'FOM_TARGET_ENABLE', 'FOM_TARGET']
+;=================================================================================================
+&EQ_LANE_SEL = 0xC900030C+0xd0
+&mask = 0xf
+&val  = ((Data.Long(A:&EQ_LANE_SEL)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EQ_LANE_SEL:0xd0] V:", &val, " EQ Status Lane Select. \ Setting this field in conjunction with the EQ_RATE_SEL field determines the per-lane Silicon Debug EQ Status data returned by the SD_EQ_CONTROL[2/3] and SD_EQ_STATUS[1/2/3] viewport registers. \  \  \ Note: This register field is sticky."
+&EQ_RATE_SEL = 0xC900030C+0xd0
+&mask = 0x30
+&val  = ((Data.Long(A:&EQ_RATE_SEL)&(&mask))>>4.)
+IF &val!=0.
+    PRINT "[EQ_RATE_SEL:0xd0] V:", &val, " EQ Status Rate Select. \ Setting this field in conjunction with the EQ_LANE_SEL field determines the per-lane Silicon Debug EQ Status data returned by the SD_EQ_CONTROL[2/3] and SD_EQ_STATUS[1/2/3] viewport registers. \  \  \ Note: This register field is sticky."
+&RSVDP_6 = 0xC900030C+0xd0
+&mask = 0xc0
+&val  = ((Data.Long(A:&RSVDP_6)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[RSVDP_6:0xd0] V:", &val, " Reserved for future use."
+&EXT_EQ_TIMEOUT = 0xC900030C+0xd0
+&mask = 0x300
+&val  = ((Data.Long(A:&EXT_EQ_TIMEOUT)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[EXT_EQ_TIMEOUT:0xd0] V:", &val, " Extends EQ Phase2/3 Timeout. \ This field is used when the LTSSM is in Recovery.EQ2/3. When this field is set, the value of EQ2/3 timeout is extended. \  \  \ Note: This register field is sticky."
+&RSVDP_10 = 0xC900030C+0xd0
+&mask = 0xfc00
+&val  = ((Data.Long(A:&RSVDP_10)&(&mask))>>10.)
+IF &val!=0.
+    PRINT "[RSVDP_10:0xd0] V:", &val, " Reserved for future use."
+&EVAL_INTERVAL_TIME = 0xC900030C+0xd0
+&mask = 0x30000
+&val  = ((Data.Long(A:&EVAL_INTERVAL_TIME)&(&mask))>>16.)
+IF &val!=0.
+    PRINT "[EVAL_INTERVAL_TIME:0xd0] V:", &val, " Eval Interval Time. \ Indicates interval time of RxEqEval assertion. \ This field is used for EQ Master(DSP in EQ Phase3/USP in EQ Phase2). \  \ Note: This register field is sticky."
+&RSVDP_18 = 0xC900030C+0xd0
+&mask = 0x7c0000
+&val  = ((Data.Long(A:&RSVDP_18)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[RSVDP_18:0xd0] V:", &val, " Reserved for future use."
+&FOM_TARGET_ENABLE = 0xC900030C+0xd0
+&mask = 0x800000
+&val  = ((Data.Long(A:&FOM_TARGET_ENABLE)&(&mask))>>23.)
+IF &val!=0.
+    PRINT "[FOM_TARGET_ENABLE:0xd0] V:", &val, " FOM Target Enable. \ Enables the FOM_TARGET fields. \  \  \ Note: This register field is sticky."
+&FOM_TARGET = 0xC900030C+0xd0
+&mask = 0xff000000
+&val  = ((Data.Long(A:&FOM_TARGET)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[FOM_TARGET:0xd0] V:", &val, " FOM Target. \ Indicates figure of merit target criteria value of EQ Master(DSP in EQ Phase3/USP in EQ Phase2). \  \ This field is only valid when GEN3_EQ_FB_MODE is 0001b(Figure Of Merit). \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:SD_EQ_CONTROL2_REG, Member: ['FORCE_LOCAL_TX_PRE_CURSOR', 'FORCE_LOCAL_TX_CURSOR', 'FORCE_LOCAL_TX_POST_CURSOR', 'FORCE_LOCAL_RX_HINT', 'RSVDP_21', 'FORCE_LOCAL_TX_PRESET', 'FORCE_LOCAL_TX_COEF_ENABLE', 'FORCE_LOCAL_RX_HINT_ENABLE', 'FORCE_LOCAL_TX_PRESET_ENABLE', 'RSVDP_31']
+;=================================================================================================
+&FORCE_LOCAL_TX_PRE_CURSOR = 0xC900030C+0xd4
+&mask = 0x3f
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_PRE_CURSOR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_PRE_CURSOR:0xd4] V:", &val, " Force Local Transmitter Pre-cursor. \ Indicates the coefficient value of EQ Slave(DSP in EQ Phase2/USP in EQ Phase3), instead of the value instructed from link partner. \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_TX_CURSOR = 0xC900030C+0xd4
+&mask = 0xfc0
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_CURSOR)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_CURSOR:0xd4] V:", &val, " Force Local Transmitter Cursor. \ Indicates the coefficient value of EQ Slave(DSP in EQ Phase2/USP in EQ Phase3), instead of the value instructed from link partner. \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_TX_POST_CURSOR = 0xC900030C+0xd4
+&mask = 0x3f000
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_POST_CURSOR)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_POST_CURSOR:0xd4] V:", &val, " Force Local Transmitter Post-Cursor. \ Indicates the coefficient value of EQ Slave(DSP in EQ Phase2/USP in EQ Phase3), instead of the value instructed from link partner. \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_RX_HINT = 0xC900030C+0xd4
+&mask = 0x1c0000
+&val  = ((Data.Long(A:&FORCE_LOCAL_RX_HINT)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_RX_HINT:0xd4] V:", &val, " Force Local Receiver Preset Hint. \ Indicates the RxPresetHint value of EQ Slave(DSP in EQ Phase2/USP in EQ Phase3), instead of received or set value. \ If select rate in the EQ_RATE_SEL field is other than 8.0GT/s Speed, this feature is not available. \  \  \ Note: This register field is sticky."
+&RSVDP_21 = 0xC900030C+0xd4
+&mask = 0xe00000
+&val  = ((Data.Long(A:&RSVDP_21)&(&mask))>>21.)
+IF &val!=0.
+    PRINT "[RSVDP_21:0xd4] V:", &val, " Reserved for future use."
+&FORCE_LOCAL_TX_PRESET = 0xC900030C+0xd4
+&mask = 0xf000000
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_PRESET)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_PRESET:0xd4] V:", &val, " Force Local Transmitter Preset. \ Indicates initial preset value of USP in EQ Slave(EQ Phase2) instead of receiving EQ TS2. \ If select rate in the EQ_RATE_SEL field is 32.0GT/s Speed, this feature is not available. \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_TX_COEF_ENABLE = 0xC900030C+0xd4
+&mask = 0x10000000
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_COEF_ENABLE)&(&mask))>>28.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_COEF_ENABLE:0xd4] V:", &val, " Force Local Transmitter Coefficient Enable. \ Enables the following fields: \  - FORCE_LOCAL_TX_PRE_CURSOR \  - FORCE_LOCAL_TX_CURSOR \  - FORCE_LOCAL_TX_POST_CURSOR \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_RX_HINT_ENABLE = 0xC900030C+0xd4
+&mask = 0x20000000
+&val  = ((Data.Long(A:&FORCE_LOCAL_RX_HINT_ENABLE)&(&mask))>>29.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_RX_HINT_ENABLE:0xd4] V:", &val, " Force Local Receiver Preset Hint Enable. \ Enables the FORCE_LOCAL_RX_HINT field. \ If select rate in the EQ_RATE_SEL field is other than 8.0GT/s Speed, this feature is not available. \  \  \ Note: This register field is sticky."
+&FORCE_LOCAL_TX_PRESET_ENABLE = 0xC900030C+0xd4
+&mask = 0x40000000
+&val  = ((Data.Long(A:&FORCE_LOCAL_TX_PRESET_ENABLE)&(&mask))>>30.)
+IF &val!=0.
+    PRINT "[FORCE_LOCAL_TX_PRESET_ENABLE:0xd4] V:", &val, " Force Local Transmitter Preset Enable. \ Enables the FORCE_LOCAL_TX_PRESET field. \ If select rate in the EQ_RATE_SEL field is 32.0GT/s Speed, this feature is not available. \  \  \ Note: This register field is sticky."
+&RSVDP_31 = 0xC900030C+0xd4
+&mask = 0x80000000
+&val  = ((Data.Long(A:&RSVDP_31)&(&mask))>>31.)
+IF &val!=0.
+    PRINT "[RSVDP_31:0xd4] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_EQ_CONTROL3_REG, Member: ['FORCE_REMOTE_TX_PRE_CURSOR', 'FORCE_REMOTE_TX_CURSOR', 'FORCE_REMOTE_TX_POST_CURSOR', 'RSVDP_18', 'FORCE_REMOTE_TX_COEF_ENABLE', 'RSVDP_29']
+;=================================================================================================
+&FORCE_REMOTE_TX_PRE_CURSOR = 0xC900030C+0xd8
+&mask = 0x3f
+&val  = ((Data.Long(A:&FORCE_REMOTE_TX_PRE_CURSOR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[FORCE_REMOTE_TX_PRE_CURSOR:0xd8] V:", &val, " Force Remote Transmitter Pre-Cursor. \ Indicates the coefficient value of EQ Master(DSP in EQ Phase3/USP in EQ Phase2), instead of the value instructed from local PHY in dirchange mode. \  \  \ Note: This register field is sticky."
+&FORCE_REMOTE_TX_CURSOR = 0xC900030C+0xd8
+&mask = 0xfc0
+&val  = ((Data.Long(A:&FORCE_REMOTE_TX_CURSOR)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[FORCE_REMOTE_TX_CURSOR:0xd8] V:", &val, " Force Remote Transmitter Cursor. \ Indicates the coefficient value of EQ Master(DSP in EQ Phase3/USP in EQ Phase2), instead of the value instructed from local PHY in dirchange mode. \  \  \ Note: This register field is sticky."
+&FORCE_REMOTE_TX_POST_CURSOR = 0xC900030C+0xd8
+&mask = 0x3f000
+&val  = ((Data.Long(A:&FORCE_REMOTE_TX_POST_CURSOR)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[FORCE_REMOTE_TX_POST_CURSOR:0xd8] V:", &val, " Force Remote Transmitter Post-Cursor. \ Indicates the coefficient value of EQ Master(DSP in EQ Phase3/USP in EQ Phase2), instead of the value instructed from local PHY in dirchange mode. \  \  \ Note: This register field is sticky."
+&RSVDP_18 = 0xC900030C+0xd8
+&mask = 0xffc0000
+&val  = ((Data.Long(A:&RSVDP_18)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[RSVDP_18:0xd8] V:", &val, " Reserved for future use."
+&FORCE_REMOTE_TX_COEF_ENABLE = 0xC900030C+0xd8
+&mask = 0x10000000
+&val  = ((Data.Long(A:&FORCE_REMOTE_TX_COEF_ENABLE)&(&mask))>>28.)
+IF &val!=0.
+    PRINT "[FORCE_REMOTE_TX_COEF_ENABLE:0xd8] V:", &val, " Force Remote Transmitter Coefficient Enable. \ Enables the following fields: \  - FORCE_REMOTE_TX_PRE_CURSOR \  - FORCE_REMOTE_TX_CURSOR \  - FORCE_REMOTE_TX_POST_CURSOR \ This function can only be used when GEN3_EQ_FB_MODE = 0000b(Direction Change) \  \  \ Note: This register field is sticky."
+&RSVDP_29 = 0xC900030C+0xd8
+&mask = 0xe0000000
+&val  = ((Data.Long(A:&RSVDP_29)&(&mask))>>29.)
+IF &val!=0.
+    PRINT "[RSVDP_29:0xd8] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_EQ_STATUS1_REG, Member: ['EQ_SEQUENCE', 'EQ_CONVERGENCE_INFO', 'RSVDP_3', 'EQ_RULEA_VIOLATION', 'EQ_RULEB_VIOLATION', 'EQ_RULEC_VIOLATION', 'EQ_REJECT_EVENT', 'RSVDP_8']
+;=================================================================================================
+&EQ_SEQUENCE = 0xC900030C+0xe0
+&mask = 0x1
+&val  = ((Data.Long(A:&EQ_SEQUENCE)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EQ_SEQUENCE:0xe0] V:", &val, " EQ Sequence. \ Indicates that the controller is starting the equalization sequence. \  \  \ Note: This register field is sticky."
+&EQ_CONVERGENCE_INFO = 0xC900030C+0xe0
+&mask = 0x6
+&val  = ((Data.Long(A:&EQ_CONVERGENCE_INFO)&(&mask))>>1.)
+IF &val!=0.
+    PRINT "[EQ_CONVERGENCE_INFO:0xe0] V:", &val, " EQ Convergence Info. \ Indicates equalization convergence information. \ This bit is automatically cleared when the controller starts EQ Master phase again. \  \ Note: This register field is sticky."
+&RSVDP_3 = 0xC900030C+0xe0
+&mask = 0x8
+&val  = ((Data.Long(A:&RSVDP_3)&(&mask))>>3.)
+IF &val!=0.
+    PRINT "[RSVDP_3:0xe0] V:", &val, " Reserved for future use."
+&EQ_RULEA_VIOLATION = 0xC900030C+0xe0
+&mask = 0x10
+&val  = ((Data.Long(A:&EQ_RULEA_VIOLATION)&(&mask))>>4.)
+IF &val!=0.
+    PRINT "[EQ_RULEA_VIOLATION:0xe0] V:", &val, " EQ Rule A Violation. \ Indicates that coefficients rule A violation is detected in the values provided by PHY using direction change method during EQ Master phase(DSP in EQ Phase3/USP in EQ Phase2). The coefficients rules A correspond to the rules a) from section 'Rules for Transmitter Coefficents' in the PCI Express Base Specification. \  \ This bit is automatically cleared when the controller starts EQ Master phase again. \  \  \ Note: This register field is sticky."
+&EQ_RULEB_VIOLATION = 0xC900030C+0xe0
+&mask = 0x20
+&val  = ((Data.Long(A:&EQ_RULEB_VIOLATION)&(&mask))>>5.)
+IF &val!=0.
+    PRINT "[EQ_RULEB_VIOLATION:0xe0] V:", &val, " EQ Rule B Violation. \ Indicates that coefficients rule B violation is detected in the values provided by PHY using direction change method during EQ Master phase(DSP in EQ Phase3/USP in EQ Phase2). The coefficients rules B correspond to the rules b) from section 'Rules for Transmitter Coefficents' in the PCI Express Base Specification. \  \ This bit is automatically cleared when the controller starts EQ Master phase again. \  \  \ Note: This register field is sticky."
+&EQ_RULEC_VIOLATION = 0xC900030C+0xe0
+&mask = 0x40
+&val  = ((Data.Long(A:&EQ_RULEC_VIOLATION)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[EQ_RULEC_VIOLATION:0xe0] V:", &val, " EQ Rule C Violation. \ Indicates that coefficients rule C violation is detected in the values provided by PHY using direction change method during EQ Master phase(DSP in EQ Phase3/USP in EQ Phase2). The coefficients rule C  correspond to the rules c) from section 'Rules for Transmitter Coefficents' in the PCI Express Base Specification. \  \ This bit is automatically cleared when the controller starts EQ Master phase again. \  \  \ Note: This register field is sticky."
+&EQ_REJECT_EVENT = 0xC900030C+0xe0
+&mask = 0x80
+&val  = ((Data.Long(A:&EQ_REJECT_EVENT)&(&mask))>>7.)
+IF &val!=0.
+    PRINT "[EQ_REJECT_EVENT:0xe0] V:", &val, " EQ Reject Event. \ Indicates that the controller receives two consecutive TS1 OS w/Reject=1b during EQ Master phase(DSP in EQ Phase3/USP in EQ Phase2). \ This bit is automatically cleared when the controller starts EQ Master phase again. \  \  \ Note: This register field is sticky."
+&RSVDP_8 = 0xC900030C+0xe0
+&mask = 0xffffff00
+&val  = ((Data.Long(A:&RSVDP_8)&(&mask))>>8.)
+IF &val!=0.
+    PRINT "[RSVDP_8:0xe0] V:", &val, " Reserved for future use."
+
+;=================================================================================================
+; Register:SD_EQ_STATUS2_REG, Member: ['EQ_LOCAL_PRE_CURSOR', 'EQ_LOCAL_CURSOR', 'EQ_LOCAL_POST_CURSOR', 'EQ_LOCAL_RX_HINT', 'RSVDP_21', 'EQ_LOCAL_FOM_VALUE']
+;=================================================================================================
+&EQ_LOCAL_PRE_CURSOR = 0xC900030C+0xe4
+&mask = 0x3f
+&val  = ((Data.Long(A:&EQ_LOCAL_PRE_CURSOR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EQ_LOCAL_PRE_CURSOR:0xe4] V:", &val, " EQ Local Pre-Cursor. \ Indicates Local pre cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_LOCAL_CURSOR = 0xC900030C+0xe4
+&mask = 0xfc0
+&val  = ((Data.Long(A:&EQ_LOCAL_CURSOR)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[EQ_LOCAL_CURSOR:0xe4] V:", &val, " EQ Local Cursor. \ Indicates Local cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_LOCAL_POST_CURSOR = 0xC900030C+0xe4
+&mask = 0x3f000
+&val  = ((Data.Long(A:&EQ_LOCAL_POST_CURSOR)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[EQ_LOCAL_POST_CURSOR:0xe4] V:", &val, " EQ Local Post-Cursor. \ Indicates Local post cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_LOCAL_RX_HINT = 0xC900030C+0xe4
+&mask = 0x1c0000
+&val  = ((Data.Long(A:&EQ_LOCAL_RX_HINT)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[EQ_LOCAL_RX_HINT:0xe4] V:", &val, " EQ Local Receiver Preset Hint. \ Indicates Local Receiver Preset Hint value. \ If select rate in the EQ_RATE_SEL field is other than 8.0GT/s Speed, this feature is not available. \  \  \ Note: This register field is sticky."
+&RSVDP_21 = 0xC900030C+0xe4
+&mask = 0xe00000
+&val  = ((Data.Long(A:&RSVDP_21)&(&mask))>>21.)
+IF &val!=0.
+    PRINT "[RSVDP_21:0xe4] V:", &val, " Reserved for future use."
+&EQ_LOCAL_FOM_VALUE = 0xC900030C+0xe4
+&mask = 0xff000000
+&val  = ((Data.Long(A:&EQ_LOCAL_FOM_VALUE)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[EQ_LOCAL_FOM_VALUE:0xe4] V:", &val, " EQ Local Figure of Merit. \ Indicates Local maximum Figure of Merit value. \  \  \ Note: This register field is sticky."
+
+;=================================================================================================
+; Register:SD_EQ_STATUS3_REG, Member: ['EQ_REMOTE_PRE_CURSOR', 'EQ_REMOTE_CURSOR', 'EQ_REMOTE_POST_CURSOR', 'EQ_REMOTE_LF', 'EQ_REMOTE_FS', 'RSVDP_30']
+;=================================================================================================
+&EQ_REMOTE_PRE_CURSOR = 0xC900030C+0xe8
+&mask = 0x3f
+&val  = ((Data.Long(A:&EQ_REMOTE_PRE_CURSOR)&(&mask))>>0.)
+IF &val!=0.
+    PRINT "[EQ_REMOTE_PRE_CURSOR:0xe8] V:", &val, " EQ Remote Pre-Cursor. \ Indicates Remote pre cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_REMOTE_CURSOR = 0xC900030C+0xe8
+&mask = 0xfc0
+&val  = ((Data.Long(A:&EQ_REMOTE_CURSOR)&(&mask))>>6.)
+IF &val!=0.
+    PRINT "[EQ_REMOTE_CURSOR:0xe8] V:", &val, " EQ Remote Cursor. \ Indicates Remote cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_REMOTE_POST_CURSOR = 0xC900030C+0xe8
+&mask = 0x3f000
+&val  = ((Data.Long(A:&EQ_REMOTE_POST_CURSOR)&(&mask))>>12.)
+IF &val!=0.
+    PRINT "[EQ_REMOTE_POST_CURSOR:0xe8] V:", &val, " EQ Remote Post-Cursor. \ Indicates Remote post cursor coefficient value. \  \  \ Note: This register field is sticky."
+&EQ_REMOTE_LF = 0xC900030C+0xe8
+&mask = 0xfc0000
+&val  = ((Data.Long(A:&EQ_REMOTE_LF)&(&mask))>>18.)
+IF &val!=0.
+    PRINT "[EQ_REMOTE_LF:0xe8] V:", &val, " EQ Remote LF. \ Indicates Remote LF value. \  \  \ Note: This register field is sticky."
+&EQ_REMOTE_FS = 0xC900030C+0xe8
+&mask = 0x3f000000
+&val  = ((Data.Long(A:&EQ_REMOTE_FS)&(&mask))>>24.)
+IF &val!=0.
+    PRINT "[EQ_REMOTE_FS:0xe8] V:", &val, " EQ Remote FS. \ Indicates Remote FS value. \  \  \ Note: This register field is sticky."
+&RSVDP_30 = 0xC900030C+0xe8
+&mask = 0xc0000000
+&val  = ((Data.Long(A:&RSVDP_30)&(&mask))>>30.)
+IF &val!=0.
+    PRINT "[RSVDP_30:0xe8] V:", &val, " Reserved for future use."
+
