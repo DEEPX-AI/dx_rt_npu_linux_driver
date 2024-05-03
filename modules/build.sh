@@ -46,19 +46,20 @@ function build_usage() {
 	echo -e "\t$(basename "${0}") <options>"
 	echo ""
 	echo " options:"
-	echo -e "\t-d [device]\t select target device: ${SUPPORT_DEVICE[*]}"
-	echo -e "\t-m [module]\t select PCIe module: ${!SUPPORT_PCIE_MODULE[@]}"
-	echo -e "\t-k [kernel dir]\t 'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located"
-	echo -e "\t\t\t default: /lib/modules/$(uname -r)/build)"
-	echo -e "\t-a [arch]\t set 'ARCH=[arch]' Target CPU architecture for cross-compilation, default: $(uname -m)"
-	echo -e "\t-t [cross tool]\t 'CROSS_COMPILE=[cross tool]' cross compiler binary, e.g aarch64-linux-gnu-"
-	echo -e "\t-i [install dir] 'INSTALL_MOD_PATH=[install dir]', module install directory"
-	echo -e "\t\t\t install to: [install dir]/lib/modules/[KERNELRELEASE]/extra/"
-	echo -e "\t-c [command]\t clean | install | uninstall"
-	echo -e "\t\t\t - uninstall: Remove the module files installed on the host PC."
-	echo -e "\t-j [jobs]\t set build jobs"
-	echo -e "\t-f [debug]\t set debug feature [debugfs | log | all]"
-	echo -e "\t-v\t\t verbose (V=1)"
+	echo -e "\t-d, --device   [device]      select target device: ${SUPPORT_DEVICE[*]}"
+	echo -e "\t-m, --module   [module]      select PCIe module: ${!SUPPORT_PCIE_MODULE[@]}"
+	echo -e "\t-k, --kernel   [kernel dir]  'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located"
+	echo -e "\t                             default: /lib/modules/$(uname -r)/build)"
+	echo -e "\t-a, --arch     [arch]        set 'ARCH=[arch]' Target CPU architecture for cross-compilation, default: $(uname -m)"
+	echo -e "\t-t, --compiler [cross tool]  'CROSS_COMPILE=[cross tool]' cross compiler binary, e.g aarch64-linux-gnu-"
+	echo -e "\t-i, --install  [install dir] 'INSTALL_MOD_PATH=[install dir]', module install directory"
+	echo -e "\t                             install to: [install dir]/lib/modules/[KERNELRELEASE]/extra/"
+	echo -e "\t-c, --command  [command]     clean | install | uninstall"
+	echo -e "\t                             - uninstall: Remove the module files installed on the host PC."
+	echo -e "\t-j, --jops     [jobs]        set build jobs"
+	echo -e "\t-f, --debug    [debug]       set debug feature [debugfs | log | all]"
+	echo -e "\t-v, --verbose                build verbose (V=1)"
+	echo -e "\t-h, --help                   show this help"
 	echo ""
 }
 
@@ -76,19 +77,19 @@ _modconf=""
 _args=()
 
 function parse_args() {
-	while getopts "d:m:k:a:f:t:i:c:j:vh" opt; do
-		case ${opt} in
-		d) _device=${OPTARG} ;;
-		m) _module="${OPTARG}" ;;
-		k) _kerndir="${OPTARG}" ;;
-		a) _arch="${OPTARG}" ;;
-		t) _compiler="${OPTARG}" ;;
-		i) _destdir="${OPTARG}" ;;
-		c) _command=${OPTARG} ;;
-		j) _jops="-j${OPTARG}" ;;
-		v) _verbose="V=1" ;;
-		f) _debug="${OPTARG}" ;;
-		h)
+    while [ "${1:-}" != "" ]; do
+	case "$1" in
+		-d | --device)   _device=${2}; shift 2 ;;
+		-m | --module)   _module="${2}"; shift 2 ;;
+		-k | --kernel)   _kerndir="${2}"; shift 2 ;;
+		-a | --arch)     _arch="${2}"; shift 2 ;;
+		-t | --compiler) _compiler="${2}"; shift 2 ;;
+		-i | --install)  _destdir="${2}"; shift 2 ;;
+		-c | --command)  _command="${2}"; shift 2 ;;
+		-j | --jops)     _jops="-j${2}"; shift 2 ;;
+		-v | --verbose)  _verbose="V=1"; shift ;;
+		-f | --debug)    _debug="${2}"; shift 2 ;;
+		-h | --help)
 			build_usage
 			exit 0
 			;;
@@ -136,7 +137,6 @@ function setup_args() {
 	[[ -n ${_device} ]] && _args+=("DEVICE=${_device}")
 	[[ -n ${_device} && -n ${_module} ]] && _args+=("PCIE=${_module}")
 	[[ -n ${_kerndir} ]] && _args+=("KERNEL_DIR=$(realpath "${_kerndir}")")
-	[[ -n ${_arch} ]] && _args+=("ARCH=${_arch}")
 	[[ -n ${_compiler} ]] && _args+=("CROSS_COMPILE=${_compiler}")
 	[[ -n ${_destdir} ]] && _args+=("INSTALL_MOD_PATH=$(realpath "${_destdir}")")
 	[[ -n ${_command} ]] && _args+=("${_command}")
@@ -144,6 +144,17 @@ function setup_args() {
 	[[ -z ${_command} && -n ${_jops} ]] && _args+=("${_jops}")
 	[[ -n ${_debug} ]] && _args+=("BUILD_DEFAULT_DBG=${_debug}")
 	[[ -n ${_device} && -n ${_module} ]] && _modconf=${PCIE_MODPROBE_CONF[${_module}]}
+
+	if [[ -n ${_arch} ]]; then
+		# Fix 64bits architecture
+		if [[ ${_arch} == "x86_64" ]]; then
+			_args+=("ARCH=x86")
+		elif [[ ${_arch} == "riscv64" ]]; then
+			_args+=("ARCH=riscv")
+		else
+			_args+=("ARCH=${_arch}")
+		fi
+	fi
 }
 
 function print_args() {
