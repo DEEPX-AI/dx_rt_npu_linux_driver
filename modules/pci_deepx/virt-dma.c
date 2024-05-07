@@ -82,9 +82,15 @@ EXPORT_SYMBOL_GPL(vchan_find_desc);
  * This tasklet handles the completion of a DMA descriptor by
  * calling its callback and freeing it.
  */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
+static void vchan_complete(struct tasklet_struct *t)
+{
+	struct virt_dma_chan *vc = from_tasklet(vc, t, task);
+#else
 static void vchan_complete(unsigned long arg)
 {
 	struct virt_dma_chan *vc = (struct virt_dma_chan *)arg;
+#endif
 	struct virt_dma_desc *vd;
 	struct dmaengine_desc_callback cb;
 	LIST_HEAD(head);

@@ -286,6 +286,17 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_get_dev_num(...) 1
 #define dx_pcie_enqueue_error_response(...) 0
 #define dx_pcie_dequeue_error_response(...) 0
+#define dx_pcie_get_driver_info(...) 0
+
+struct deepx_pcie_info {
+    unsigned int    driver_version;
+    unsigned char   bus;
+    unsigned char   dev;
+    unsigned char   func;
+    int             speed; /* GEN1, GEN2...*/
+    int             width; /* 1, 2, 4 */
+};
+
 typedef struct {
     uint32_t  req_id;
     uint32_t  inf_time;
