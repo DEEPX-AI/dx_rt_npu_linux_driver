@@ -119,15 +119,15 @@ void dx_pcie_enqueue_response(u32 dev_id, int dma_ch)
 	uint32_t *header = &resp_pool_header[dev_id][dma_ch];
 
 	spin_lock_irqsave(&dx_msg->responses_lock[dma_ch], flags);
-	*(uint32_t*)((void*)dx_msg->response[dma_ch]+0x100) = 1;
+	writel(1, ((void*)dx_msg->response[dma_ch]+0x100));
 	(*header) %= RES_POOL_SIZE;
 	entry = &resp_pool[dev_id][dma_ch][(*header)++];
 	{
-		*((dx_pcie_response_t*)&entry->response) = *((dx_pcie_response_t*)dx_msg->response[dma_ch]);
+		memcpy_fromio(&entry->response, dx_msg->response[dma_ch], sizeof(dx_pcie_response_t));
 		list_add_tail(&entry->list, &dx_msg->responses[dma_ch].list);
 		dbg_msg("%s: dev_id %d, ch %d, %d, %d", __func__, dw->idx, dma_ch, entry->response.req_id, *header);
 	}
-	*(uint32_t*)((void*)dx_msg->response[dma_ch]+0x100) = 0;
+	writel(0, ((void*)dx_msg->response[dma_ch]+0x100));
 	spin_unlock_irqrestore(&dx_msg->responses_lock[dma_ch], flags);
 }
 
@@ -143,7 +143,7 @@ int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* respons
 	{
 		dx_pcie_response_list_t *entry = list_first_entry(&dx_msg->responses[dma_ch].list, dx_pcie_response_list_t, list);
 		dx_pcie_response_t *src = &entry->response;
-		dbg_msg("%s: dev_id %d, ch %d, %d", __func__, dw->idx, dma_ch, src->req_id);
+		dbg_msg("%s: dev_id %d, ch %d, %d, sts:%d", __func__, dw->idx, dma_ch, src->req_id, src->status);
 		memcpy(response, src, sizeof(dx_pcie_response_t));
 		list_del(&entry->list);
 		ret = 0;
@@ -168,9 +168,9 @@ void dx_pcie_enqueue_error_response(u32 dev_id, uint32_t err_code)
 	if (err_code != 0) { /* Check point */
 		dx_msg->err_response.err_code = err_code;
 	} else {
-		memcpy(&dx_msg->err_response, (dx_pcie_dev_err_t *)dx_msg->errors, sizeof(dx_pcie_dev_err_t));
+		memcpy_fromio(&dx_msg->err_response, (dx_pcie_dev_err_t *)dx_msg->errors, sizeof(dx_pcie_dev_err_t));
 		dbg_msg("%s:  dev_id %d, code:%d\n", __func__, dev_id, dx_msg->err_response.err_code);
-		memset((dx_pcie_dev_err_t *)dx_msg->errors, 0x00, sizeof(dx_pcie_dev_err_t));
+		memset_io((dx_pcie_dev_err_t *)dx_msg->errors, 0x00, sizeof(dx_pcie_dev_err_t));
 	}
 	spin_unlock_irqrestore(&dx_msg->err_lock, flags);
 }
@@ -248,7 +248,7 @@ int dx_pcie_message_init(int dev_id)
 
 	/* IRQ Status Clear */
 	if (dw->nr_irqs == 1) {
-		memset(dx_msg->irq_status, 0x00, 0x100);
+		memset_io(dx_msg->irq_status, 0x00, 0x100);
 	}
 
 	return ret;

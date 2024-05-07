@@ -8,10 +8,70 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
+#define INTERNAL_BUFF_MAX   (1024)
+/* size : The number of bytes */
+static int dxrt_copy_to_user_io(int num, void __user *dest, void __iomem *src, size_t size)
+{
+    size_t remaining_size = size;
+    int ret = 0;
+    char *buffer = kmalloc(INTERNAL_BUFF_MAX, GFP_KERNEL);
+
+    if (!buffer) {
+        pr_err("%d: %s failed to allocate memory.\n", num, __func__);
+        return -ENOMEM;
+    }
+
+    while (remaining_size > 0) {
+        size_t copy_size = (remaining_size < INTERNAL_BUFF_MAX) ? remaining_size : INTERNAL_BUFF_MAX;
+        // pr_info("%d: %s, cp_size:%ld, dest:%p, src:%p\n", num, __func__, copy_size, dest, src);
+        memcpy_fromio(buffer, src, copy_size);
+        if (copy_to_user(dest, buffer, copy_size)) {
+            pr_err("%d: %s failed to copy data to user space.\n", num, __func__);
+            ret = -EFAULT;
+            break;
+        }
+        dest += copy_size;
+        src += copy_size;
+        remaining_size -= copy_size;
+    }
+    kfree(buffer);
+
+    return ret;
+}
+
+static int dxrt_copy_from_user_io(int num, void __iomem *dest, const void __user *src, size_t size)
+{
+    size_t remaining_size = size;
+    int ret = 0;
+    char *buffer = kmalloc(INTERNAL_BUFF_MAX, GFP_KERNEL);
+
+    if (!buffer) {
+        pr_err("%d: %s failed to allocate memory.\n", num, __func__);
+        return -ENOMEM;
+    }
+
+    while (remaining_size > 0) {
+        size_t copy_size = (remaining_size < INTERNAL_BUFF_MAX) ? remaining_size : INTERNAL_BUFF_MAX;
+        // pr_info("%d: %s, cp_size:%ld, dest:%p, src:%p\n", num, __func__, copy_size, dest, src);
+        if (copy_from_user(buffer, src, copy_size)) {
+            pr_err("%d: %s failed to copy data from user space.\n", num, __func__);
+            ret = -EFAULT;
+            break;
+        }
+        memcpy_toio(dest, buffer, copy_size);
+        src += copy_size;
+        dest += copy_size;
+        remaining_size -= copy_size;
+    }
+    kfree(buffer);
+
+    return ret;
+}
+
 static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg)
 {
     int ret, num = dev->id;
-    pr_debug("%s: %d, %d: %llx\n", __func__, dev->id, dev->type, (uint64_t)msg->data);
+    pr_debug("%s: %d, %d: %llx %d\n", __func__, dev->id, dev->type, (uint64_t)msg->data, msg->size);
     if(dev->type==1)
     {
         ret = 0;
@@ -26,7 +86,7 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg)
             dev->msg->cmd = msg->cmd;
             if(msg->size>0 && msg->size<sizeof(dxrt_device_message_t))
             {
-                if (copy_from_user(&dev->msg->data, (void __user*)msg->data, msg->size)) {
+                if (dxrt_copy_from_user_io(num, &dev->msg->data, (void __user*)msg->data, msg->size)) {
                     pr_debug("%d: %s: failed.\n", num, __func__);
                     return -EFAULT;
                 }
@@ -35,7 +95,7 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg)
             dev->msg->ack = 0;
             while(true)
             {
-                msleep(10);
+                mdelay(10);
                 if(fail_cnt>1000)
                 {
                     ret = -1;
@@ -48,12 +108,9 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg)
                 }
                 fail_cnt++;
             }
-            if(dev->msg->size>0 && dev->msg->size<sizeof(dxrt_device_message_t))
+            if(dev->msg->size>0 && dev->msg->size<sizeof(dxrt_device_message_t) && ret==0)
             {
-                if (copy_to_user((void __user*)msg->data, &dev->msg->data, dev->msg->size)) {
-                    pr_debug("%d: %s failed.\n", num, __func__);
-                    ret = -EFAULT;
-                }
+                ret = dxrt_copy_to_user_io(num, (void __user*)(msg->data), &dev->msg->data, dev->msg->size);
             }
             mutex_unlock(&dev->msg_lock);
         }
@@ -114,7 +171,7 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
         {
             ret = dxrt_msg_general(dev, msg);
             if(ret<0) return -1;
-            memcpy_toio(&info, dev->msg->data, sizeof(info));
+            memcpy_fromio(&info, dev->msg->data, sizeof(info));
             pr_debug("%d: %s: [%llx, %llx], %d\n", num, __func__,
                 info.mem_addr, info.mem_size,
                 info.num_dma_ch);
@@ -560,7 +617,7 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg)
         dev_msg->ack = 0;
         while(true)
         {
-            msleep(1);
+            mdelay(1);
             if(fail_cnt>1000)
             {
                 ret = -1;
@@ -575,10 +632,7 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg)
         }
         if(dev_msg->size>0 && dev_msg->size<sizeof(dxrt_device_message_t))
         {
-            if (copy_to_user((void __user*)msg->data, &dev_msg->data, dev_msg->size)) {
-                pr_debug("%d: %s failed.\n", num, __func__);
-                ret = -EFAULT;
-            }
+            ret = dxrt_copy_to_user_io(num, (void __user*)msg->data, &dev_msg->data, dev_msg->size);
         }
         mutex_unlock(&dev->msg_lock);
     }
@@ -594,7 +648,7 @@ static int dxrt_get_log(struct dxdev* dev, dxrt_message_t* msg)
     }
     else
     {
-        if (copy_to_user((void __user*)msg->data, dev->log, 16*1024)) {
+        if (dxrt_copy_to_user_io(num, (void __user*)msg->data, dev->log, 16*1024)) {
             pr_debug("%d: %s failed.\n", num, __func__);
             ret = -EFAULT;
         }
@@ -640,7 +694,7 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
             dev_msg->ack    = 0;
             while(true)
             {
-                msleep(1000);
+                mdelay(1000);
                 if(fail_cnt>20)
                 {
                     ret = -1;
@@ -684,14 +738,11 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg)
             dev->msg->cmd = msg->cmd;
             if(msg->size>0 && msg->size<sizeof(dxrt_device_message_t))
             {
-                if (copy_from_user(&dev->msg->data, (void __user*)msg->data, msg->size)) {
-                    pr_debug("%d: %s: failed.\n", num, __func__);
-                    return -EFAULT;
-                }
+                ret = dxrt_copy_from_user_io(num, &dev->msg->data, msg->data, msg->size);
             }
             dev->msg->size = 0;
             dev->msg->ack = 0;
-            msleep(100);
+            mdelay(100);
             mutex_unlock(&dev->msg_lock);
         }
         else
