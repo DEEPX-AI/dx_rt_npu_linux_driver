@@ -10,7 +10,20 @@ $ git clone --recurse-submodules git@github.com:KOMOSYS/dx_rt_npu_linux_driver.g
 ```console
 $ git submodule update --remote
 ```
+## Prerequisites (Only Accelator Device with PCIe)
+```
+You need to check whether the accelerator device is recognized properly using the lspci command as shown below.
+If there is no output from the command, there is a problem with PCIe Link-up.
+Please contact to DeepX
+$ lspci -vn | grep 1ff4
+0b:00.0 1200: 1ff4:0000
 
+Additionally, if you want to display the DeepX name in lspci, you can update the PCI DB using the following command.(Only Ubuntu)
+$ sudo update-pciids
+$ lspci
+...
+0b:00.0 Processing accelerators: DEEPX Co., Ltd. DX_M1
+```
 
 ## Structure
 Support Linux kernel Kbuild system.
