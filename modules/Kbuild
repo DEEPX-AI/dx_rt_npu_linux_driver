@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0
+# Makefile for DeepX AI accelerators driver
+
+subdir-ccflags-y += -I $(src)/include
+
+obj-$(CONFIG_DX_AI_ACCEL_RT)            += rt/
+obj-$(CONFIG_DX_AI_ACCEL_PCIE_DEEPX)    += pci_deepx/
+obj-$(CONFIG_DX_AI_ACCEL_PCIE_XILINX)   += pci_xilinx/

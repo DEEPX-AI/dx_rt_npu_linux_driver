@@ -1,0 +1,11 @@
+.git
+.gitignore
+.gitmodules
+.github/workflows/release-please.yml
+.github/workflows/dev-to-main.yml
+.github/CODEOWNERS
+utils
+modules/pci_xilinx
+modules/pci_deepx/.git
+modules/pci_deepx/.gitignore
+modules/module_insert.sh
