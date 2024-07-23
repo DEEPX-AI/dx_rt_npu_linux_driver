@@ -509,7 +509,11 @@ EXPORT_SYMBOL_GPL(xpdev_release_interfaces);
 
 int dx_cdev_init(void)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+	g_edma_class = class_create(DX_DMA_NODE_NAME);
+#else
 	g_edma_class = class_create(THIS_MODULE, DX_DMA_NODE_NAME);
+#endif
 	if (IS_ERR(g_edma_class)) {
 		pr_err(DX_DMA_NODE_NAME ": failed to create class");
 		return -EINVAL;

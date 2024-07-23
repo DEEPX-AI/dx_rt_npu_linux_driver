@@ -175,6 +175,23 @@ static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
         return 0;
     }
 }
+
+/**
+ * dxrt_dev_ioctl - Handle ioctl commands for the deepx device
+ * @f: Pointer to the file structure
+ * @cmd: The ioctl command
+ * @arg: The argument for the ioctl command
+ *
+ * This function handles various ioctl commands for the deepx device.
+ * It performs different actions based on the command received.
+ *
+ * Supported commands:
+ *   - DXRT_IOCTL_MESSAGE: Get device information
+ *
+ * Return: 0 on success,
+ *        -EINVAL if the command is invalid,
+ *        or appropriate error code for specific commands.
+ */
 static long dxrt_dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
     int num = iminor(f->f_inode);
@@ -263,21 +280,26 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     dxdev->npu = dxrt_npu_init(dxdev);
     INIT_LIST_HEAD(&dxdev->requests.list);
     INIT_LIST_HEAD(&dxdev->responses.list);
+    INIT_LIST_HEAD(&dxdev->sched);
     init_waitqueue_head(&dxdev->request_wq);
     init_waitqueue_head(&dxdev->error_wq);
     spin_lock_init(&dxdev->request_queue_lock);
+    spin_lock_init(&dxdev->request_queue1_lock);
+    spin_lock_init(&dxdev->request_queue2_lock);
+    spin_lock_init(&dxdev->request_high_queue_lock);
+    spin_lock_init(&dxdev->sched_lock);
     spin_lock_init(&dxdev->requests_lock);
     spin_lock_init(&dxdev->responses_lock);
     spin_lock_init(&dxdev->error_lock);
     mutex_init(&dxdev->msg_lock);
-    if(dxdev->type==1)
-    {
+    if (dxdev->type == DX_STD) {
         dxdev->request_handler = kthread_run(
             dxrt_request_handler, (void*)dxdev, "dxrt-th%d", dxdev->id
         );
     }
-    pr_info(" created device %d:%d:%d, %p, %p\n", 
-        id, MAJOR(drv->dev_num + id), MINOR(drv->dev_num + id), dxdev->dev, dxdev->npu);
+    pr_info(" [%d] created device %d:%d:%d, %p, %p\n",
+        dxdev->variant, id,
+        MAJOR(drv->dev_num + id), MINOR(drv->dev_num + id), dxdev->dev, dxdev->npu);
     return dxdev;
 }
 static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
@@ -302,7 +324,11 @@ int dxrt_driver_cdev_init(struct dxrt_driver *drv)
     {
         return ret;
     }
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+    if (IS_ERR(drv->dev_class = class_create(MODULE_NAME)))
+#else
     if (IS_ERR(drv->dev_class = class_create(THIS_MODULE, MODULE_NAME)))
+#endif
     {
         unregister_chrdev_region(drv->dev_num, drv->num_devices);
         return PTR_ERR(drv->dev_class);

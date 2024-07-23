@@ -5,7 +5,11 @@
 export CONFIG_DX_AI_ACCEL_RT=m
 
 ifeq ($(findstring m1,$(DEVICE)), m1)
+ifeq ($(findstring m1a,$(DEVICE)), m1a)
+export CONFIG_DX_AI_ACCEL_M1A=y
+else
 export CONFIG_DX_AI_ACCEL_M1=y
+endif
 export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=m
     ifeq ($(PCIE),deepx)
     export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=m

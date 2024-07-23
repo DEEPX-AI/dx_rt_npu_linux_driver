@@ -269,18 +269,22 @@ int dx_dev_list_add(struct dw_edma *dw)
 
 	return 0;
 }
-static uint32_t dx_dev_get_list_size(void)
+static int dx_dev_get_list_size(void)
 {
 	struct dw_edma *last;
-	last = list_last_entry(&dx_dev_list, struct dw_edma, list_head);
-	return last->idx;
+	if (!list_empty(&dx_dev_list)) {
+		last = list_last_entry(&dx_dev_list, struct dw_edma, list_head);
+		return last->idx;
+	} else {
+		return -1;
+	}
 }
 #undef list_last_entry
 
 struct dw_edma *dx_dev_list_get(int dev_id)
 {
 	struct list_head *ptr;
-	uint32_t size;
+	int size;
 	struct dw_edma *dw = NULL;
 	unsigned long flags;
 
@@ -306,12 +310,12 @@ struct dw_edma *dx_dev_list_get(int dev_id)
 	return dw;
 }
 
-void dx_dev_list_remove(struct dw_edma *xdev)
+void dx_dev_list_remove(struct dw_edma *dw)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&dx_dev_lock, flags);
-	list_del(&xdev->list_head);
+	list_del(&dw->list_head);
 	spin_unlock_irqrestore(&dx_dev_lock, flags);
 
 	// spin_lock(&xdev_rcu_lock);
@@ -325,6 +329,20 @@ uint32_t dx_pcie_get_dev_num(void)
 	return dx_dev_get_list_size() + 1;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_dev_num);
+
+u64 dx_pcie_get_download_region(int dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	return dw->download_region;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_get_download_region);
+
+u32 dx_pcie_get_download_size(int dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	return dw->download_size;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_get_download_size);
 
 /**
  * dx_pci_find_vsec_capability - Find a vendor-specific extended capability

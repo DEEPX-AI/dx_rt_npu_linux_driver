@@ -370,7 +370,7 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		#endif /* CONFIG_64BIT */
 		#ifdef DUMP_DESC_TABLE
 		if ((i < 5) || (j < 5)) {
-			pr_err("[DESC_#%d CH:%d] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%x, dar:0x%x%x\n",
+			pr_err("[DESC_#%d CH:%d] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%x, dar:0x%x%x, Off:0x%x\n",
 				i, chunk->chan->id,
 				(control & DW_EDMA_V0_CB)  ? 1:0,
 				(control & DW_EDMA_V0_TCB) ? 1:0,
@@ -381,7 +381,8 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 				(control & DW_EDMA_V0_LLE) ? 1:0,
 				child->sz,
 				upper_32_bits(child->sar), lower_32_bits(child->sar),
-				upper_32_bits(child->dar), lower_32_bits(child->dar)
+				upper_32_bits(child->dar), lower_32_bits(child->dar),
+				i*20
 			);
 		}
 		#endif /* DUMP_DESC_TABLE */
@@ -406,7 +407,7 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
 
 #ifdef DUMP_DESC_TABLE
-	pr_err("[DESC_LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%x\n",
+	pr_err("[DESC_LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%x, Off:0x%x\n",
 		(control & DW_EDMA_V0_CB)  ? 1:0,
 		(control & DW_EDMA_V0_TCB) ? 1:0,
 		(control & DW_EDMA_V0_LLP) ? 1:0,
@@ -414,7 +415,8 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		(control & DW_EDMA_V0_RIE) ? 1:0,
 		(control & DW_EDMA_V0_CCS) ? 1:0,
 		(control & DW_EDMA_V0_LLE) ? 1:0,
-		upper_32_bits(chunk->ll_region.paddr), lower_32_bits(chunk->ll_region.paddr)
+		upper_32_bits(chunk->ll_region.paddr), lower_32_bits(chunk->ll_region.paddr),
+		i*20
 	);
 #endif /* DUMP_DESC_TABLE */
 }

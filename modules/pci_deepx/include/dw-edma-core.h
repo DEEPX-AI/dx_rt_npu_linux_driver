@@ -28,6 +28,8 @@
 #define USER_NUM_MAX					4
 #define USER_IRQ_NUMS					16
 
+// #define SRAM_DESC_TABLE
+
 enum dw_edma_dir {
 	EDMA_DIR_WRITE = 0,
 	EDMA_DIR_READ
@@ -220,10 +222,13 @@ struct dw_edma {
 	const struct dx_edma_core_ops	*ops;
 
 	raw_spinlock_t				lock;		/* Only for legacy */
+
+	/* Device Specific Datas */
+	u64							download_region;
+	u32							download_size;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry			*debugfs;
 #endif /* CONFIG_DEBUG_FS */
-
 };
 
 struct dw_edma_sg {

@@ -10,11 +10,17 @@ endif
 
 ifeq ($(BUILD_DEFAULT_DBG), log)
 ccflags-y += -DDX_DEBUG_ENABLE
+else ifeq ($(BUILD_DEFAULT_DBG), perf)
+ccflags-y += -DDX_DEBUG_FS
+ccflags-y += -DDMA_PERF_MEASURE
 else ifeq ($(BUILD_DEFAULT_DBG), debugfs)
 ccflags-y += -DDX_DEBUG_FS
+else ifeq ($(BUILD_DEFAULT_DBG), dump_desc)
+ccflags-y += -DDUMP_DESC_TABLE
 else ifeq ($(BUILD_DEFAULT_DBG), all)
 ccflags-y += -DDX_DEBUG_ENABLE
 ccflags-y += -DDX_DEBUG_FS
+ccflags-y += -DDUMP_DESC_TABLE
 endif
 
 dx_dma-y := dw-edma-pcie.o dw-edma-core.o dw-edma-v0-core.o \

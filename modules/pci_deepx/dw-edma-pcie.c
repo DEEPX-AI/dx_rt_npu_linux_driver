@@ -99,6 +99,8 @@ struct dw_edma_pcie_data {
 	/* User registers */
 	u16							user_reg_cnt;
 	struct dx_ep_block			users[USER_BAR_NUM];
+	u64							download_region;
+	u32							download_size;
 };
 
 /*  Total Size : BAR0_MEM_SIZE
@@ -115,7 +117,13 @@ struct dw_edma_pcie_data {
 
 #define BAR0_MEM_SIZE_M1A		(8*1024*1024) /* 8MB */
 #define DESC_WR_BASE_OFFS_M1A	(0x00)
-#define DESC_RD_BASE_OFFS_M1A	(0x400000)
+#ifdef SRAM_DESC_TABLE
+	#undef DESC_WR_RD_SIZE
+	#define DESC_WR_RD_SIZE			(0x1000)
+	#define DESC_RD_BASE_OFFS_M1A	(DESC_WR_RD_SIZE*3)
+#else
+	#define DESC_RD_BASE_OFFS_M1A	(0x400000)
+#endif /*SRAM_DESC_TABLE*/
 
 /* DXNN V2 - m1 */
 static const struct dw_edma_pcie_data dx_pcie_data_v2 = {
@@ -149,16 +157,34 @@ static const struct dw_edma_pcie_data dx_pcie_data_v2 = {
 		DW_NPU_BLOCK(BAR_3, 0x00000000, 0x00100000, 0xD8100000) /* MESSAGE RAM */
 		DW_NPU_BLOCK(BAR_4, 0x00000000, 0x00100000, 0xCD800000) /* NON-USED */
 	},
+	.download_region	= 0xD8110000,
+	.download_size		= 0xEF000,
 };
 /* DXNN V2 - m1a */
 static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	.version			= 3,
-	.desc_addr			= 0x180000000,
+#ifdef SRAM_DESC_TABLE
+	.desc_addr			= 0xD3000000,
+#else
+	.desc_addr			= 0x640000000,
+#endif
 	/* eDMA registers location */
 	.rg.bar				= BAR_2,
 	.rg.off				= 0x00000000,	/*  0   Kbytes */
 	.rg.sz				= 0x00000A00,	/*  2.5 Kbytes */
 	/* eDMA memory linked list location */
+#ifdef SRAM_DESC_TABLE
+	.ll_wr = {
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A, 					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+	},
+	.ll_rd = {
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+	},
+#else
 	.ll_wr = {
 		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
 		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
@@ -169,6 +195,7 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
 		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
 	},
+#endif
 	/* Other */
 	.mf					= DX_DMA_MF_HDMA_COMPAT,
 	.dma_irqs			= 1,
@@ -182,9 +209,11 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	.user_reg_cnt		= 3,
 	.users = {
 		DW_NPU_BLOCK(BAR_3, 0x00000000, 0x10000, 0xD3010000) /* MESSAGE RAM */
-		DW_NPU_BLOCK(BAR_4, 0x00000000, 0x1000,  0xCAC00000) /* NON-USED */
+		DW_NPU_BLOCK(BAR_4, 0x00000000, 0x1000,  0xCC000000) /* Interface */
 		DW_NPU_BLOCK(BAR_5, 0x00000000, 0x10000, 0xD3010000) /* NON-USED */
 	},
+	.download_region	= 0x63FF00000,
+	.download_size		= 0x100000,
 };
 
 static int dw_edma_pcie_irq_vector(struct device *dev, unsigned int nr)
@@ -204,7 +233,7 @@ static void dw_edma_pcie_get_vsec_dma_data(struct pci_dev *pdev,
 	u16 vsec;
 	u64 off;
 
-	vsec = dx_pci_find_vsec_capability(pdev, PCI_VENDOR_ID_SYNOPSYS,
+	vsec = dx_pci_find_vsec_capability(pdev, DEEPX_PCIE_ID,
 					DW_PCIE_VSEC_DMA_ID);
 	if (!vsec)
 		return;
@@ -294,7 +323,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 	/* AER (Advanced Error Reporting) hooks */
-	pci_enable_pcie_error_reporting(pdev);
+	//pci_enable_pcie_error_reporting(pdev);
 
 	/* DMA configuration */
 	err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(64));
@@ -373,7 +402,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	/* Data structure initialization */
 	chip->dw = dw;
 	chip->dev = dev;
-	chip->id = pdev->devfn;
+	// chip->id = pdev->devfn;
 	// chip->irq = pdev->irq;
 
 	dw->mf = vsec_data.mf;
@@ -455,6 +484,9 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		ll_region->paddr += ll_block->off;
 		ll_region->sz = ll_block->sz;
 	}
+	/* Device Specific datas */
+	dw->download_region = vsec_data.download_region;
+	dw->download_size	= vsec_data.download_size;
 
 	/* Debug info */
 	pci_dbg(pdev, "Probe pdev:%p\n", pdev);
@@ -549,7 +581,7 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 		pci_warn(pdev, "can't remove device properly: %d\n", err);
 
 	/* AER (Advanced Error Reporting) hooks */
-	pci_disable_pcie_error_reporting(pdev);
+	//pci_disable_pcie_error_reporting(pdev);
 
 	/* Remove Cdev */
 	xpdev_release_interfaces(chip->dw->xpdev);
