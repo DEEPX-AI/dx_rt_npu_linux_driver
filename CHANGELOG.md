@@ -1,3 +1,13 @@
+## v1.0.7 / 2024-07-23
+### 1. Changed
+- Update hybrid interrupt mode.
+- Update scheduler option(bound / priority / bandwidth)
+### 2. Fixed
+- Fix spinlock error
+- Fixed host system hang issue when accessing PCIe
+### 3. Added
+- Add interrupt handshake logic for inference
+
 ## v1.0.0 / 2024-04-29
 ### 1. Changed
 - DXNN Version2 architecture device driver

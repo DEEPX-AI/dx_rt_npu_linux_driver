@@ -46,6 +46,8 @@ extern void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_
 #if defined(DMA_PERF_MEASURE)
 extern void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
 extern void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
+extern void get_start_time(ktime_t *s);
+extern uint64_t get_elapsed_time_ns(ktime_t s);
 #else
 extern void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
 extern void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);

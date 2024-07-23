@@ -44,14 +44,13 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
     struct dxdev *dxdev = (struct dxdev *)dxdev_;
     struct dxnpu *npu = NULL;
     pr_debug( "%s\n", __func__);
-    if(dxdev->type==1)
-    {        
+    if (dxdev->type == DX_STD) {
         int variant = dxdev->variant;
         int idx = variant - 100;
         int i;
         npu = kmalloc(sizeof(struct dxnpu), GFP_KERNEL);
         pr_debug( "%s: %d, %d\n", __func__, variant, idx);
-        if(!npu)
+        if (!npu)
         {
             pr_err( "%s: failed to allocate memory\n", __func__);
             return NULL;
@@ -75,21 +74,19 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
             struct resource *res;
             const __be32 *prop;
             res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-            if(res==NULL)
-            {
+            if (res==NULL) {
                 pr_err( "%s: failed to find IO resource for npu.\n", __func__);
                 return NULL;
             }
             npu->reg_base_addr = res->start;
             npu->irq_num = platform_get_irq(pdev, 0);
-            if(npu->irq_num < 0)
-            {
+            if (npu->irq_num < 0) {
                 pr_err( "%s: failed to find IRQ number for npu.\n", __func__);
                 return NULL;
             }
             {
                 prop = of_get_property(np, "device-id", NULL);
-                if(prop==NULL)
+                if (prop==NULL)
                 {
                     pr_err( "%s: failed to find device-id for npu.\n", __func__);
                     return NULL;
@@ -98,7 +95,7 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
             }
             {
                 prop = of_get_property(np, "dma-buf-size", NULL);
-                if(prop==NULL)
+                if (prop==NULL)
                 {
                     pr_err( "%s: failed to find dma-buf-size for npu.\n", __func__);
                     return NULL;
@@ -107,8 +104,7 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
             }
         }
     }
-    if(npu)
-    {
+    if (npu) {
         npu->init(npu);
     }
     return npu;
@@ -118,8 +114,7 @@ void dxrt_npu_deinit(void *dxdev_)
     // struct dxdev *dxdev = (struct dxdev *)dxdev_;
     struct dxnpu *npu = NULL;    
     pr_debug( "%s\n", __func__);
-    if(npu)
-    {
+    if (npu) {
         npu->deinit(npu);
         kfree(npu);
     }

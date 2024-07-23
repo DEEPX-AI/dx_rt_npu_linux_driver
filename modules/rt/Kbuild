@@ -8,6 +8,11 @@ ccflags-y += -DIS_ACCELERATOR=1
 ccflags-y += -DIS_STANDALONE=0
 ccflags-y += -DDEVICE_TYPE=0
 ccflags-y += -DDEVICE_VARIANT=DX_M1
+else ifeq ($(CONFIG_DX_AI_ACCEL_M1A),y)
+ccflags-y += -DIS_ACCELERATOR=1
+ccflags-y += -DIS_STANDALONE=0
+ccflags-y += -DDEVICE_TYPE=0
+ccflags-y += -DDEVICE_VARIANT=DX_M1A
 else ifeq ($(CONFIG_DX_AI_ACCEL_L1),y)
 ccflags-y += -DIS_ACCELERATOR=0
 ccflags-y += -DIS_STANDALONE=1
@@ -35,7 +40,7 @@ ccflags-y += -DDEBUG
 endif
 
 dxrt_driver-y := dxrt_drv.o dxrt_drv_cdev.o dxrt_drv_npu.o \
-		dxrt_drv_message.o dxrt_drv_queue.o dxrt_drv_thread.o
+		dxrt_drv_message.o dxrt_drv_queue.o dxrt_drv_thread.o dxrt_sched.o
 
 dxrt_driver-$(CONFIG_DX_AI_ACCEL_L1) += dxrt_drv_npu_l1.o
 dxrt_driver-$(CONFIG_DX_AI_ACCEL_L3) += dxrt_drv_npu_l3.o

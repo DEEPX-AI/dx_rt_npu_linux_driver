@@ -35,7 +35,7 @@
 #define EDMA_TEST_MAX_THREADS_CHANNEL		8
 #define EDMA_CHANNEL_NAME			"dma%uchan%u"
 
-static u32 timeout = 2000;
+static u32 timeout = 3000;
 module_param(timeout, uint, 0644);
 MODULE_PARM_DESC(timeout, "Transfer timeout in msec");
 
@@ -51,7 +51,7 @@ static void dw_edma_callback(void *arg)
 	info->dma_done.done = true;
 	wake_up_interruptible(info->dma_done.wait);
 }
-
+#if 1
 static bool dw_edma_check_desc_table_set(struct dw_edma_info *info, ssize_t host_addr, ssize_t ep_addr, ssize_t size)
 {
 	bool ret = true;
@@ -63,7 +63,7 @@ static bool dw_edma_check_desc_table_set(struct dw_edma_info *info, ssize_t host
 	}
 	return ret;
 }
-
+#endif
 static int dw_edma_sg_process(struct dw_edma_info *info,
 				    struct dma_chan *chan)
 {
@@ -87,8 +87,15 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	int nice = task_nice(current);
 	int policy = current->policy;
 #endif
+#ifdef DMA_PERF_MEASURE
+	ktime_t dma_trans_t;
+#endif
 
 	dbg_tfr("[%s] Start!!\n", __func__);
+
+#ifdef DMA_PERF_MEASURE
+	get_start_time(&dma_trans_t);
+#endif
 
 	if (chan == NULL) {
 		pr_err("[%s] DMA channel Null point error!", __func__);
@@ -138,7 +145,11 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sconf.src_addr = cb->ep_addr;
 		/* CPU memory */
 		sconf.dst_addr = sg_dma_address(sg);
+#ifdef SRAM_DESC_TABLE
+		dw_chan->set_desc = true;
+#else
 		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.dst_addr, sconf.src_addr, cb->len);
+#endif
 	} else {
 		/* DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE */
 		dbg_tfr("%s: DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE\n",
@@ -152,7 +163,11 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		/* Endpoint memory */
 		sconf.dst_addr = cb->ep_addr;
 		// sconf.dst_addr = dt_region->paddr;
+#ifdef SRAM_DESC_TABLE
+		dw_chan->set_desc = true;
+#else
 		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.src_addr, sconf.dst_addr, cb->len);
+#endif
 	}
 	sconf.direction = DMA_TRANS_NONE; /* remote DMA (Device <-> Host Memory) */
 
@@ -210,6 +225,12 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sched_set_normal(current, nice);
 #endif
 	dx_pcie_end_profile(PCIE_CB_TO_WAKE_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
+
+#ifdef DMA_PERF_MEASURE
+	dev_err(dev, "[PERF] DMA Transer Elapsed Time(%s) @ %lld ns\n",
+		(direction == DMA_DEV_TO_MEM) ? "WRITE" : "READ",
+		get_elapsed_time_ns(dma_trans_t));
+#endif
 
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);

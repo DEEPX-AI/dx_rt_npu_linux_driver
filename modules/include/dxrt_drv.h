@@ -42,14 +42,18 @@
 
 #define MODULE_NAME "dxrt"
 
-#define INFERENCE_REQUEST_FIFO_SIZE 10
-#define INFERENCE_RESPONSE_FIFO_SIZE 10
+#define INFERENCE_REQUEST_FIFO_SIZE      (10)
+#define INFERENCE_RESPONSE_FIFO_SIZE     (10)
+#define DX_QUEUE_THRESHOLD_FOR_INTERRUPT (1)
+
+#define DX_ACC              (0) /* accelator device */
+#define DX_STD              (1) /* stand alone device */
+#define DX_DEVICE_MAX_NUM   (32)
 
 /**********************/
 /* RT/driver sync     */
 
-typedef enum
-{
+typedef enum _dxrt_error_t {
     ERR_NONE      = 0,
     ERR_NPU0_HANG = 1,
     ERR_NPU1_HANG,
@@ -58,6 +62,41 @@ typedef enum
     ERR_PCIE_DMA_CH1_FAIL,
     ERR_PCIE_DMA_CH2_FAIL,
 } dxrt_error_t;
+
+typedef enum _npu_priority_op {
+    N_PRIORITY_NORMAL = 0,
+    N_PRIORITY_HIGH,
+} npu_priority_op;
+
+typedef enum _npu_bandwidth_op {
+    N_BANDWIDTH_NORMAL = 0,
+    N_BANDWIDTH_NPU0,
+    N_BANDWIDTH_NPU1,
+    N_BANDWIDTH_NPU2,
+    N_BANDWIDTH_PCIE,
+    N_BANDWIDTH_MAX,
+} npu_bandwidth_op;
+
+typedef enum _npu_bound_op {
+    N_BOUND_NORMAL = 0,     /*inference with 3-npu */
+    N_BOUND_INF_ONLY_NPU0,
+    N_BOUND_INF_ONLY_NPU1,
+    N_BOUND_INF_ONLY_NPU2,
+    N_BOUND_INF_2_NPU_01,   /* Infrence with 2-npu */
+    N_BOUND_INF_2_NPU_12,   /* Infrence with 2-npu */
+    N_BOUND_INF_2_NPU_02,   /* Infrence with 2-npu */
+    N_BOUND_INF_MAX,
+} npu_bound_op;
+
+typedef struct _dx_shced_data {
+    npu_bound_op        bound;
+    req_queue_t         queue;
+} dx_shced_data;
+
+typedef struct _dx_sched_list {
+    struct list_head    list;
+    dx_shced_data       data;
+} dx_sched_list;
 
 typedef struct device_info
 {
@@ -88,6 +127,7 @@ typedef struct _dxrt_request_t {
     dxrt_meminfo_t input;
     dxrt_meminfo_t output;
     uint32_t  model_type;
+    uint32_t  model_format;
     uint32_t  model_cmds;
     uint32_t  cmd_offset;
     uint32_t  weight_offset;
@@ -100,16 +140,23 @@ typedef struct _dxrt_request_acc_t {
     dxrt_meminfo_t input;
     dxrt_meminfo_t output;
     int16_t   npu_id;
-    int16_t   model_type;
+    int8_t    model_type;
+    int8_t    model_format;
     uint32_t  model_cmds;
     uint32_t  cmd_offset;
     uint32_t  weight_offset;
-    uint32_t  model_cmds2; // for m1 8k
-    uint32_t  cmd_offset2; // for m1 8k
-    uint32_t  weight_offset2; // for m1 8k
+    uint32_t  model_cmds2;    /* for m1 8k */
+    uint32_t  cmd_offset2;    /* for m1 8k */
+    uint32_t  weight_offset2; /* for m1 8k */
     int32_t   dma_ch;
-    uint32_t  arg0; // additional parameter dependent to hw (for m1 8k)
+    uint32_t  arg0;   /* additional parameter dependent to hw (for m1 8k) */
     uint32_t  status;
+    uint32_t  proc_id;
+    uint32_t  prior;        /* scheduler option - priority(npu_priority_op) */
+    uint32_t  prior_level;  /* scheduler option - priority level */
+    uint32_t  bandwidth;    /* scheduler option - bandwith(npu_bandwidth_op) */
+    uint32_t  bound;        /* scheduler option - bound   (npu_bound_op) */
+    uint32_t  queue;
 } dxrt_request_acc_t;
 
 typedef struct _dxrt_response_t {
@@ -119,6 +166,8 @@ typedef struct _dxrt_response_t {
     uint16_t  model_type;
     int32_t   status;
     uint32_t  ppu_filter_num;
+    uint32_t  proc_id;
+    uint32_t  queue;
 } dxrt_response_t;
 
 typedef struct
@@ -130,7 +179,7 @@ typedef struct
 } dxrt_message_t;
 typedef struct
 {
-    uint32_t cmd;	    /* Command */
+    uint32_t cmd;       /* Command */
     uint32_t sub_cmd;   /* Sub command */
     uint32_t ack;       /* Response from device */
     uint32_t size;      /* Data Size */
@@ -157,8 +206,15 @@ typedef enum {
     DXRT_CMD_TERMINATE              ,
     DXRT_CMD_ERROR                  ,
     DXRT_CMD_DRV_INFO               , /* Sub-command */
+    DXRT_CMD_SCHEDULE               , /* Sub-command */
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
+
+/* CMD : DXRT_CMD_SCHEDULE */
+typedef enum {
+    DX_SCHED_ADD    = 1,
+    DX_SCHED_DELETE = 2
+} dxrt_sche_sub_cmd_t;
 
 /* CMD : DXRT_CMD_DRV_INFO*/
 typedef enum {
@@ -185,17 +241,17 @@ typedef enum {
 typedef struct _dxrt_queue_t {
     union {
         uint8_t buffer[2048];
-        // dxrt_request_t req[INFERENCE_REQUEST_FIFO_SIZE]; // not used in acc device
         dxrt_request_acc_t req_acc[INFERENCE_REQUEST_FIFO_SIZE];
-        dxrt_response_t res[INFERENCE_RESPONSE_FIFO_SIZE];
     };
     uint32_t lock;
     uint32_t front;
+    uint32_t poped;
     uint32_t rear;
     uint32_t count;
     uint32_t max_count;
     uint32_t elem_size;
     int32_t  enable;
+    uint32_t irq;   /* interrupt handshake */
 } dxrt_queue_t;
 
 typedef struct dxrt_request_list
@@ -225,8 +281,17 @@ struct dxdev {
     struct mutex msg_lock;
     uint32_t *log;
 
-    dxrt_queue_t *request_queue;
+    struct list_head sched;
+    spinlock_t       sched_lock;
+
+    dxrt_queue_t *request_queue;        /* normal priority / queue0 */
+    dxrt_queue_t *request_queue1;       /* normal priority / queue1 */
+    dxrt_queue_t *request_queue2;       /* normal priority / queue2 */
+    dxrt_queue_t *request_high_queue;   /* high priority */
     spinlock_t request_queue_lock;
+    spinlock_t request_queue1_lock;
+    spinlock_t request_queue2_lock;
+    spinlock_t request_high_queue_lock;
 
     struct task_struct *request_handler;
     wait_queue_head_t request_wq;
@@ -246,7 +311,7 @@ struct dxrt_driver {
     dev_t dev_num;
     struct class *dev_class;
     int num_devices;
-    struct dxdev *devices[8];
+    struct dxdev *devices[DX_DEVICE_MAX_NUM];
     struct platform_device *pdev;
 };
 
@@ -258,14 +323,19 @@ int dxrt_request_handler(void *data);
 void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size);
 void dxrt_enable_queue(dxrt_queue_t *q);
 void dxrt_disable_queue(dxrt_queue_t *q);
+void dxrt_enqueue_irq_notify(dxrt_queue_t* q);
+int dxrt_enqueue_irq_done(dxrt_queue_t* q);
 int dxrt_is_queue_empty(dxrt_queue_t* q);
 int dxrt_is_queue_full(dxrt_queue_t* q);
-void dxrt_lock_queue(dxrt_queue_t *q);
+int dxrt_lock_queue(dxrt_queue_t *q);
 void dxrt_unlock_queue(dxrt_queue_t *q);
 int dxrt_enqueue(dxrt_queue_t* q, void *elem);
-int dxrt_dequeue(dxrt_queue_t* q, void *elem);
 int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
 int message_handler_general(struct dxdev *dx, dxrt_message_t *msg);
+/* Scheduler */
+int set_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
+int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q);
+int delete_matching_queue_list(struct dxdev* dev, npu_bound_op bound);
 
 extern dxrt_message_handler message_handler[];
 
@@ -284,8 +354,12 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_interrupt_wakeup(...) 0
 #define dx_pcie_dequeue_response(...) 0
 #define dx_pcie_get_dev_num(...) 1
+#define dx_pcie_get_download_region(...) 0
+#define dx_pcie_get_download_size(...) 0
 #define dx_pcie_enqueue_error_response(...) 0
 #define dx_pcie_dequeue_error_response(...) 0
+#define dx_pcie_notify_msg_to_device(...) 0
+#define dx_pcie_notify_req_to_device(...) 0
 #define dx_pcie_get_driver_info(...) 0
 
 struct deepx_pcie_info {
