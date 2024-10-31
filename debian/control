@@ -1,0 +1,13 @@
+Source: dxrt-driver
+Section: kernel
+Priority: optional
+Maintainer: Koo Bongyu <kbg@deepx.ai>
+Build-Depends: debhelper (>= 12), cmake
+Standards-Version: 4.5.1
+Homepage: https://deepx.ai
+
+Package: dxrt-driver
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: A DEEPX NPU Driver
+ DXRT library

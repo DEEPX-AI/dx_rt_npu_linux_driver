@@ -359,7 +359,7 @@ static void dw_edma_start_transfer(struct dw_edma_chan *chan)
 		return;
 	}
 
-	dw_edma_v0_core_start(child, !desc->xfer_sz, chan->set_desc);
+	dw_edma_v0_core_start(child, !desc->xfer_sz, chan->set_desc, chan->is_llm);
 	desc->xfer_sz += child->ll_region.sz;
 	dw_edma_free_burst(child);
 	list_del(&child->list);

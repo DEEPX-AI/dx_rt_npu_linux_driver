@@ -8,6 +8,28 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
+/*
+* Initialization function to drive the device
+*/
+void dxrt_device_init(struct dxdev* dev)
+{
+    int num = dev->id;
+    pr_debug("%s:%d type:%d\n", __func__, num, dev->type);
+
+    if (dev->type == DX_STD) {
+        /* do nothing */
+    } else {
+        dev->msg                = (dxrt_device_message_t*)dx_pcie_get_message_area(num);
+        dev->log                = (uint32_t*)dx_pcie_get_log_area(num);
+        dev->dl                 = (dx_download_msg*)dx_pcie_get_dl_area(num);
+        dev->request_queue      = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE0);
+        dev->request_queue1     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE1);
+        dev->request_queue2     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE2);
+        dev->request_high_queue = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_HIGH_QUEUE);
+        dx_pcie_clear_response_queue(num);
+    }
+}
+
 #define INTERNAL_BUFF_MAX   (1024)
 /* size : The number of bytes */
 static int dxrt_copy_to_user_io(int num, void __user *dest, void __iomem *src, size_t size)
@@ -66,6 +88,27 @@ static int dxrt_copy_from_user_io(int num, void __iomem *dest, const void __user
     kfree(buffer);
 
     return ret;
+}
+
+static int dxrt_copy_resp_to_user_acc(struct dxdev* dev, dxrt_message_t *msg, dx_pcie_response_t *response)
+{
+    int num = dev->id;
+    dxrt_response_t user_response;
+
+    user_response.req_id = response->req_id;
+    user_response.inf_time = response->inf_time;
+    user_response.argmax = response->argmax;
+    user_response.model_type = response->model_type;
+    user_response.status = response->status;
+    user_response.ppu_filter_num = response->ppu_filter_num;
+    user_response.proc_id = response->proc_id;
+    user_response.queue = response->queue;
+
+    if (copy_to_user((void __user*)msg->data, &user_response, sizeof(dxrt_response_t))) {
+        pr_err( MODULE_NAME "%d: %s: memcpy failed.\n", num, __func__);
+        return -EFAULT;
+    }
+    return 0;
 }
 
 #define ACK_POLLING_THRESHOLD  (1000)
@@ -151,6 +194,7 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg)
  *        -EFAULT    if an error occurs during the copy(user <-> kernel).
  *        -ETIMEDOUT if an error occurs during waiting from response of deepx device
  *        -ENOMEM    if an error occurs during memory allocation on kernel space
+ *        -ECOMM     if an error occurs because of pcie data transaction fail
  */
 static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
 {
@@ -193,42 +237,52 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
     }
     else
     {
-        dev->msg                = (dxrt_device_message_t*)dx_pcie_get_message_area(num);
-        dev->log                = (uint32_t*)dx_pcie_get_log_area(num);
-        dev->request_queue      = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE0);
-        dev->request_queue1     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE1);
-        dev->request_queue2     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE2);
-        dev->request_high_queue = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_HIGH_QUEUE);
-        if (dev->msg)
-        {
-            ret = dxrt_msg_general(dev, msg);
-            if (ret<0) return -1;
-            memcpy_fromio(&info, dev->msg->data, sizeof(info));
-            pr_debug("%d: %s: [%llx, %llx], %d\n", num, __func__,
-                info.mem_addr, info.mem_size,
-                info.num_dma_ch);
-            dev->mem_addr = info.mem_addr;
-            dev->mem_size = info.mem_size;
-            dev->num_dma_ch = info.num_dma_ch;
-            dx_pcie_clear_response_queue(num);
-        }
-        else
-        {
-            ret = 0;
-            info.mem_addr = 0x01000000;
-            info.mem_size = 0xFF000000;
-            info.num_dma_ch = 1;
-            info.interface = 1; // for fpga
-            info.fw_ver = 202; // for fpga
-            dev->mem_addr = info.mem_addr;
-            dev->mem_size = info.mem_size;
-            dev->num_dma_ch = info.num_dma_ch;
-            if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
-                pr_debug("%d: %s failed.\n", num, __func__);
-                return -EFAULT;
+        if (msg->sub_cmd == DX_IDENTIFY_FWUPLOAD) {
+            if (dx_get_flash_ready(dev->dl, 5*1000*100)) { /* Timeout: 5s */
+                pr_info("> Enter Flash mode(boot_step:%d)\n", dx_get_boot_step(dev->dl));
+                ret = 0;
+                info.mem_addr = 0xD3000000; //dummy
+                info.mem_size = 0x200000; //dummy
+                info.num_dma_ch = 3;
+                info.interface = 1;
+                info.fw_ver = 202;
+                dev->mem_addr = info.mem_addr;
+                dev->mem_size = info.mem_size;
+                dev->num_dma_ch = info.num_dma_ch;
+                if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
+                    pr_debug("%d: %s failed.\n", num, __func__);
+                    return -EFAULT;
+                }
+            } else {
+                return -ECOMM;
+            }
+        } else { 
+            if (dev->msg) {
+                ret = dxrt_msg_general(dev, msg);
+                if (ret<0) return -1;
+                memcpy_fromio(&info, dev->msg->data, sizeof(info));
+                pr_debug("%d: %s: [%llx, %llx], %d\n", num, __func__,
+                    info.mem_addr, info.mem_size,
+                    info.num_dma_ch);
+                dev->mem_addr = info.mem_addr;
+                dev->mem_size = info.mem_size;
+                dev->num_dma_ch = info.num_dma_ch;
+            } else {
+                ret = 0;
+                info.mem_addr = 0x01000000;
+                info.mem_size = 0xFF000000;
+                info.num_dma_ch = 1;
+                info.interface = 1; // for fpga
+                info.fw_ver = 202; // for fpga
+                dev->mem_addr = info.mem_addr;
+                dev->mem_size = info.mem_size;
+                dev->num_dma_ch = info.num_dma_ch;
+                if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
+                    pr_debug("%d: %s failed.\n", num, __func__);
+                    return -EFAULT;
+                }
             }
         }
-
         return ret;
     }
     // return ret;
@@ -287,16 +341,26 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg)
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
+            if (data.bound >= N_BOUND_INF_MAX) return -EINVAL;
+            pr_debug("%d: %s - %s\n", num, __func__,
+                (msg->sub_cmd == DX_SCHED_ADD) ? "ADD" : "DELETE");
+
             if (msg->sub_cmd == DX_SCHED_ADD) {
-                ret = set_queue_from_sched_op(dev, data.bound);
+                ret = add_queue_from_sched_op(dev, data.bound);
                 if (ret == 0) {
                     ret = get_queue_from_sched_op(dev, data.bound, &data.queue);
+                } else if (ret == -EEXIST) {
+                    return 0;
                 }
             } else if (msg->sub_cmd == DX_SCHED_DELETE) {
                 ret = get_queue_from_sched_op(dev, data.bound, &data.queue);
                 if (ret == 0) {
-                    disable_queue(dev, data.queue);
-                    ret = delete_matching_queue_list(dev, data.bound);
+                    ret = delete_matching_queue(dev, data.bound);
+                    if (ret == 0) {
+                        disable_queue(dev, data.queue);
+                    } else if (ret == -EBUSY) {
+                        return 0;
+                    }
                 }
             } else {
                 pr_err("%s:Not matched sub_cmd(%d)\n", __func__, msg->sub_cmd);
@@ -334,22 +398,28 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg)
 static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
 {
     int ret = 0, num = dev->id;
-    dxrt_meminfo_t meminfo;
+    uint32_t ch;
+    dxrt_req_meminfo_t meminfo;
     pr_debug("%d: %s\n", num, __func__);
     if (msg->data!=NULL)
     {
-        if (copy_from_user(&meminfo, (void __user*)msg->data, sizeof(meminfo))) {
+        if (copy_from_user(&meminfo, (void __user*)msg->data, sizeof(dxrt_req_meminfo_t))) {
             pr_debug("%d: %s: failed.\n", num, __func__);
             return -EFAULT;
         }
-        pr_debug( MODULE_NAME "%d: %s: [%llx, %llx + %x(%x)]\n",
-            num,
+        ch = meminfo.ch;
+        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x)]\n",
+            num, ch,
             __func__,
             meminfo.data,
             meminfo.base,
             meminfo.offset,
             meminfo.size
         );
+        if (ch>2) {
+            pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
+            return -EINVAL;
+        }
         if ( meminfo.base + meminfo.offset < dev->mem_addr ||
             meminfo.base + meminfo.offset + meminfo.size > dev->mem_addr + dev->mem_size )
         {
@@ -368,61 +438,78 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
         }
         else
         {
-            ssize_t size = dx_sgdma_write((char *)meminfo.data,
-                meminfo.base + meminfo.offset,
-                meminfo.size,
-                num,
-                0, /*TODO*/
-                false);
-            if (size != meminfo.size)
-            {
-                pr_err("Pcie write error!(%ld)\n", size);
-                ret = -ECOMM;
+            if (meminfo.data) {
+                ssize_t size = dx_sgdma_write((char *)meminfo.data,
+                    meminfo.base + meminfo.offset,
+                    meminfo.size,
+                    num,
+                    ch,
+                    false,
+                    USER_SPACE_BUF, 0);
+                if (size != meminfo.size)
+                {
+                    pr_err("Pcie write error!(%ld)\n", size);
+                    ret = -ECOMM;
+                }
+            } else {
+                pr_debug("%s:Write Data is null.\n", __func__);
             }
         }
     }
     return ret;
 }
 
-static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req, dxrt_queue_t *queue, spinlock_t *lock, int prio)
+static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req, dxrt_queue_t *queue, spinlock_t *lock, int q_num)
 {
     unsigned long flags; 
     int ret = 0, num = dev->id;
-    if (req->input.data) {
-        if (dxrt_is_queue_full(queue)) {
-            // pr_info("queue full\n");
-            return -EBUSY;
-        } else {
-            ssize_t size = dx_sgdma_write((char *)req->input.data,
-                req->input.base + req->input.offset,
-                req->input.size,
-                num,
-                req->dma_ch,
-                false);
-            if (size != req->input.size) {
-                pr_err("Pcie input write error!(%ld)\n", size);
-                dx_pcie_enqueue_error_response(num, ERR_PCIE_DMA_CH0_FAIL + req->dma_ch);
-                ret = -ECOMM;
+
+    spin_lock_irqsave(lock, flags);
+    if (dxrt_is_queue_full(queue)) {
+        ret = -EAGAIN;
+        pr_debug( "%s: %d rejected.\n", __func__, req->req_id);
+    } else {
+        if ((ret = dxrt_lock_queue(queue))) {
+            (void)dx_pcie_notify_req_to_device(num, q_num, 1);
+            if ((ret = dxrt_lock_check(queue))) {
+                ret = dxrt_enqueue(queue, req);
+                dxrt_unlock_queue(queue);
+                (void)dx_pcie_notify_req_to_device(num, q_num, 0);
+                if (dxrt_enqueue_irq_done(queue) != 0) {
+                    pr_err("enqueue interrupt handshake timeout(%d)\n", req->req_id);
+                    ret = -EINVAL;
+                }
+            } else {
+                pr_err("lock check failed(device is abnomal state)\n");
+                ret = -EINVAL;
             }
+        }
+    }
+    spin_unlock_irqrestore(lock, flags);
+    return ret;
+}
+
+static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req, dxrt_queue_t *queue, spinlock_t *lock, int q_num)
+{
+    int ret = 0, num = dev->id;
+    if (req->input.data) {
+        ssize_t size = dx_sgdma_write((char *)req->input.data,
+            req->input.base + req->input.offset,
+            req->input.size,
+            num,
+            req->dma_ch,
+            false,
+            USER_SPACE_BUF, 0);
+        if (size != req->input.size) {
+            pr_err("Pcie input write error!(%ld)\n", size);
+            dx_pcie_enqueue_error_response(num, ERR_PCIE_DMA_CH0_FAIL + req->dma_ch);
+            ret = -ECOMM;
         }
     } else {
         pr_debug("%s:Input Data is null.\n", __func__);
     }
     if (ret == 0) {
-        spin_lock_irqsave(lock, flags);
-        ret = dxrt_enqueue(queue, req);
-        if ((ret == 0) && (queue->count == DX_QUEUE_THRESHOLD_FOR_INTERRUPT)) {
-            ret = dx_pcie_notify_req_to_device(num, prio);
-            if (ret == 0) {
-                if (dxrt_enqueue_irq_done(queue) != 0) {
-                    pr_err("enqueue interrupt handshake timeout\n");
-                    ret = -EINVAL;
-                }
-            }
-        }
-        spin_unlock_irqrestore(lock, flags);
-    } else {
-        pr_info("enqueue isn't excuted\n");
+        dxrt_npu_run_requset_acc(dev, req, queue, lock, q_num);
     }
     return ret;
 }
@@ -458,7 +545,7 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg)
             }
             if (dev->variant == DX_M1A)
                 ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
-            pr_debug("%d: %s: ch %d, req %d, type %d, [%d cmds @ %x, weight @ %x], [%d cmds @ %x, weight @ %x], input @ %llx+%x(%x), output @ %llx+%x(%x), %x, pr:%d, bd:%d, bd:%d, q:%d\n", 
+            pr_debug("%d: %s: ch %d, req %d, type %d, [%d cmds @ %x, weight @ %x], [%d cmds @ %x, weight @ %x], input @ %llx+%x(%x), output @ %llx+%x(%x), %x, pr:%d, bw:%d, bd:%d, q:%d\n", 
                 num, __func__, req.dma_ch,
                 req.req_id, req.model_type, 
                 req.model_cmds, req.cmd_offset, req.weight_offset,
@@ -528,6 +615,160 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg)
 }
 
 /**
+ * dxrt_npu_run_request 
+ *  - Write model meta-datas insert queue
+ * @dev: The deepx device on kernel structure
+ * @msg: User-space pointer including the data buffer
+ *
+ * This function copies user datas to memory of deepx device by the ioctl command.
+ * Model meta datas insert to queue via pcie if user datas copy to device successfully.
+ *
+ * Return: 0 on success,
+ *        -EFAULT   if an error occurs during the copy(user <-> kernel)
+ *        -EBUSY    if an error occurs inserting queue as the queue is full (retry) 
+ *        -EINVAL   if an error occurs inserting queue as the queue is disable
+ *                  if an error occurs as interrupt handshake is fail with device
+ *                  if an error occurs as sub-command is not supported
+ *        -ENOENT   There are no matching queues in the list.
+ */
+static int dxrt_npu_run_request(struct dxdev* dev, dxrt_message_t *msg)
+{
+    int ret = -1, num = dev->id;
+    pr_debug("%d: %s\n", num, __func__);
+    if (dev->type == DX_ACC) {
+        dxrt_request_acc_t req;
+        if (msg->data!=NULL) {
+            if (copy_from_user(&req, (void __user*)msg->data, sizeof(req))) {
+                pr_debug("%d: %s: failed.\n", num, __func__);
+                return -EFAULT;
+            }
+            if (dev->variant == DX_M1A)
+                ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
+            pr_debug("%d: %s: ch %d, req %d, type %d, [%d cmds @ %x, weight @ %x], [%d cmds @ %x, weight @ %x], input @ %llx+%x(%x), output @ %llx+%x(%x), %x, pr:%d, bw:%d, bd:%d, q:%d\n", 
+                num, __func__, req.dma_ch,
+                req.req_id, req.model_type, 
+                req.model_cmds, req.cmd_offset, req.weight_offset,
+                req.model_cmds2, req.cmd_offset2, req.weight_offset2,
+                req.input.base, req.input.offset, req.input.size,
+                req.output.base, req.output.offset, req.output.size,
+                req.arg0, req.prior, req.bandwidth, req.bound,
+                req.queue
+            );
+            if (ret == 0) {
+                switch (req.queue) {
+                    case DX_NORMAL_QUEUE0:
+                        ret = dxrt_npu_run_requset_acc(dev,
+                            &req,
+                            dev->request_queue,
+                            &dev->request_queue_lock,
+                            DX_NORMAL_QUEUE0);
+                        break;
+                    case DX_NORMAL_QUEUE1:
+                        ret = dxrt_npu_run_requset_acc(dev,
+                            &req,
+                            dev->request_queue1,
+                            &dev->request_queue1_lock,
+                            DX_NORMAL_QUEUE1);
+                        break;
+                    case DX_NORMAL_QUEUE2:
+                        ret = dxrt_npu_run_requset_acc(dev,
+                            &req,
+                            dev->request_queue2,
+                            &dev->request_queue2_lock,
+                            DX_NORMAL_QUEUE2);
+                        break;
+                    case DX_HIGH_QUEUE:
+                        ret = dxrt_npu_run_requset_acc(dev,
+                            &req,
+                            dev->request_high_queue,
+                            &dev->request_high_queue_lock,
+                            DX_HIGH_QUEUE);
+                        break;
+                    default:
+                        pr_err("%s:sub_command error:%d", __func__, msg->sub_cmd);
+                        ret = -	EINVAL;
+                        break;
+                }
+            } else {
+                pr_err("%s: no matching queues in the list(%d)\n", __func__, ret);
+            }
+        }
+        return ret;
+    } else {
+        int ret = -1;
+        /* TODO */
+        return ret;
+    }
+}
+
+
+/**
+ * dxrt_npu_run_response 
+ *  - Pop device response data from queue
+ * @dev: The deepx device on kernel structure
+ * @msg: User-space pointer including the data buffer
+ *
+ * This function copies data on deepx device memory to user buffer by the ioctl command.
+ * If there is data in the internal response queue,
+ * 
+ * Return: 0 on success,
+ *        -EFAULT   if an error occurs during the copy(user <-> kernel)
+ *        -ENODATA  if an error occurs inserting queue as the queue is full (retry)
+ *        -EINVAL   if an error occurs because the pcie dma channel is not supported
+ */
+static int dxrt_npu_run_response(struct dxdev* dev, dxrt_message_t *msg)
+{
+    int num = dev->id;
+    pr_debug("%d: %s\n", num, __func__);
+    if (dev->type == DX_ACC) {
+        dx_pcie_response_t response = {0};
+        int ret = -1;
+        unsigned int mask = 0;
+        uint32_t ch;
+        if (msg->data!=NULL)
+        {
+            if (copy_from_user(&ch, (void __user*)msg->data, sizeof(ch))) {
+                pr_err( MODULE_NAME "%d: %s: failed.\n", num, __func__);
+                return -EFAULT;
+            }
+            if (ch>2) {
+                pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
+                return -EINVAL;
+            }
+            if (dx_pcie_is_response_queue_empty(num, ch)) {
+                pr_debug(MODULE_NAME "%d: %s, ch%d: start to wait.\n", num, __func__, ch);
+                mask = dx_pcie_interrupt(num, ch);
+                pr_debug(MODULE_NAME "%d: %s, ch%d: wake up.\n", num, __func__, ch);
+            } else {
+                mask = 1;
+            }
+            if (mask==1) {
+                if ((ret = dx_pcie_dequeue_response(num, ch, &response)) != 0) {
+                    ret = -ENODATA;
+                }
+                // pr_info( MODULE_NAME "%d: %s: ch%d, id %d, type %d, output @ %llx, %llx+%x(%x), ret %d\n", 
+                //     num, __func__, ch, response.req_id, response.model_type,
+                //     response.data, response.base, response.offset, response.size,
+                //     ret
+                // );
+                if (ret == 0) {
+                    // pr_info( MODULE_NAME "%d: %d\n", num, response.req_id);
+                    ret = dxrt_copy_resp_to_user_acc(dev, msg, &response);
+                } else {
+                    // pr_info( MODULE_NAME "%d: %s, skip. %d, %d, %d\n", num, __func__, ch, ret, response.req_id);
+                }
+                // pr_debug("%d: %s, %d: response %d\n", num, __func__, ch, response.req_id);
+            }
+        }
+        return ret;
+    } else {
+        int ret = -1;
+        /* TODO */
+        return ret;
+    }
+}
+
+/**
  * dxrt_read_output 
  *  - Read output data from the dxrt device and pop device response data from queue
  * @dev: The deepx device on kernel structure
@@ -590,7 +831,8 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg)
                             response.base + response.offset,
                             response.size,
                             num,
-                            ch);
+                            ch,
+                            USER_SPACE_BUF);
                         if (size != response.size)
                         {
                             pr_err("Pcie output read error!(%ld)\n", size);
@@ -599,10 +841,7 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg)
                             ret = -ECOMM;
                         }
                     }
-                    if (copy_to_user((void __user*)msg->data, &response, sizeof(dxrt_response_t))) {
-                        pr_err( MODULE_NAME "%d: %s: memcpy failed.\n", num, __func__);
-                        return -EFAULT;
-                    }
+                    ret = dxrt_copy_resp_to_user_acc(dev, msg, &response);
                 } else {
                     // pr_info( MODULE_NAME "%d: %s, skip. %d, %d, %d\n", num, __func__, ch, ret, response.req_id);
                 }
@@ -721,21 +960,27 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg)
 static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
 {
     int num = dev->id;
-    dxrt_meminfo_t meminfo;
+    uint32_t ch;
+    dxrt_req_meminfo_t meminfo;
     pr_debug("%d: %s\n", num, __func__);
     if (msg->data!=NULL) {
         if (copy_from_user(&meminfo, (void __user*)msg->data, sizeof(meminfo))) {
             pr_debug("%d: %s: failed.\n", num, __func__);
             return -EFAULT;
-        }        
-        pr_debug( MODULE_NAME "%d: %s: [%llx, %llx + %x(%x)]\n",
-            num,
+        }
+        ch = meminfo.ch;
+        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x)]\n",
+            num, ch,
             __func__,
             meminfo.data,
             meminfo.base,
             meminfo.offset,
             meminfo.size
         );
+        if (ch>2) {
+            pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
+            return -EINVAL;
+        }
         if ( meminfo.base + meminfo.offset < dev->mem_addr ||
             meminfo.base + meminfo.offset + meminfo.size > dev->mem_addr + dev->mem_size )
         {
@@ -748,14 +993,19 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
                 return -EFAULT;
             }
         } else {
-            ssize_t size = dx_sgdma_read((char *)meminfo.data,
-                meminfo.base + meminfo.offset,
-                meminfo.size,
-                num,
-                0); /*TODO*/
-            if (size != meminfo.size) {
-                pr_err("PCIe read error!(%ld)\n", size);
-                return -ECOMM;
+            if (meminfo.data) {
+                ssize_t size = dx_sgdma_read((char *)meminfo.data,
+                    meminfo.base + meminfo.offset,
+                    meminfo.size,
+                    num,
+                    ch,
+                    USER_SPACE_BUF); /*TODO*/
+                if (size != meminfo.size) {
+                    pr_err("PCIe read error!(%ld)\n", size);
+                    return -ECOMM;
+                }
+            } else {
+                pr_err("%s:Read Data is null.\n", __func__);
             }
         }
     }
@@ -875,7 +1125,7 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
             0,
             (msg->size>size) ? size : msg->size
         };
-        pr_info(MODULE_NAME "%d: %s: %llx, %llx, %x, %x\n", 
+        pr_debug(MODULE_NAME "%d: %s: %llx, %llx, %x, %x\n", 
             num, __func__, meminfo.data, meminfo.base, meminfo.offset, meminfo.size
         );
 
@@ -886,7 +1136,8 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
                     meminfo.size,
                     num,
                     0, /*TODO*/
-                    false);
+                    false,
+                    USER_SPACE_BUF, 0);
                 if (size != meminfo.size) {
                     pr_err("Pcie write error!(%ld)\n", size);
                     ret = -1;
@@ -904,6 +1155,99 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
         } else {
             ret = 0;
         }
+    }
+    return ret;
+}
+
+static int dxrt_write_firmware(int num, dxrt_message_t* msg, dma_addr_t dma_addr, uint64_t src, uint64_t dst)
+{
+    int ret = 0;
+    dxrt_meminfo_t meminfo = {
+        src,
+        dst,
+        0,
+        msg->size
+    };
+    if (msg->data!=NULL) {
+        ssize_t size = dx_sgdma_write(
+            (char *)meminfo.data,
+            meminfo.base + meminfo.offset,
+            meminfo.size,
+            num,
+            0, /*TODO*/
+            false,
+            KERNEL_SPACE_BUF, dma_addr);
+        if (size != meminfo.size) {
+            pr_err("Pcie write error!(%ld)\n", size);
+            ret = -ECOMM;
+        }
+    }
+    return ret;
+}
+
+/**
+ * dxrt_upload_firmware - Upload firmware file to device
+ * 
+ * Return: 0 on success,
+ *        -EFAULT    if an error occurs during the copy(user <-> kernel)
+ *        -EINVAL    if an error occurs because of invalid address from user
+ *                   if an error occurs because device is wrong state(Invalid Boot Step / not ready / flash done fail)
+ *        -ENOMEM    if an error occurs during memory allocation on kernel space
+ *        -ECOMM     if an error occurs because of pcie data transaction fail
+ */
+static int dxrt_upload_firmware(struct dxdev* dev, dxrt_message_t* msg)
+{
+    int ret, num = dev->id;
+    if (dev->type == DX_STD) {
+        ret = 0;
+    } else {
+        dma_addr_t dma_addr;
+        void *vaddr;
+        int8_t boot_step;
+        uint32_t size = 1*1024*1024;
+
+        vaddr = dma_alloc_coherent(dev->dev, size, &dma_addr, GFP_KERNEL);
+        if (!vaddr) {
+            pr_err("%s:%d Failed to allocate coherent memory\n", __func__, num);
+            return -ENOMEM;
+        }
+        if ((ret = copy_from_user(vaddr, (void __user *)msg->data, msg->size)) != 0) {
+            pr_err("%s:%d Failed to copy data from user space, %d bytes couldn't be copied\n",
+                 __func__, num, ret);
+            ret = -EFAULT;
+        }
+
+        if (!ret) {
+            if (dx_get_flash_ready(dev->dl, 10*1000*1000)) { /* timeout:10s */
+                switch (boot_step = dx_get_boot_step(dev->dl)) {
+                    case DX_ROM:
+                        dxrt_write_firmware(num,
+                            msg,
+                            dma_addr,
+                            (uint64_t)vaddr,
+                            dx_pcie_get_booting_region(num, DX_ROM-1));
+                        break;
+                    case DX_2ND_BOOT:
+                        dxrt_write_firmware(num,
+                            msg,
+                            dma_addr,
+                            (uint64_t)vaddr,
+                            dx_pcie_get_booting_region(num, DX_2ND_BOOT-1));
+                        break;
+                    default:
+                        pr_err("invalid boot step(%d)", boot_step);
+                        ret = -EINVAL;
+                }
+                if (!dx_get_flash_done(dev->dl)) {
+                    pr_err("%s:%d flash done failed\n", __func__, num);
+                    ret = -EINVAL;
+                }
+            } else {
+                pr_err("%s:%d device is not ready\n", __func__, num);
+                ret = -EINVAL;
+            }
+        }
+        dma_free_coherent(dev->dev, size, vaddr, dma_addr);
     }
     return ret;
 }
@@ -946,7 +1290,7 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg)
 }
 
 /**
- * dxrt_handle_error - Report error to user
+ * dxrt_handle_error - Report error to user (only accelator device)
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
  *
@@ -959,22 +1303,28 @@ static int dxrt_handle_error(struct dxdev* dev, dxrt_message_t* msg)
 {
     int num = dev->id;
     unsigned long flags;
-    dxrt_error_t error;
-    
+    dx_pcie_dev_err_t dev_err;
+    struct deepx_pcie_info info;
+
     pr_debug(MODULE_NAME "%d: %s: start to wait.\n", num, __func__);
     {
-        dx_pcie_dev_err_t dev_err = {0,};
         dx_pcie_dequeue_error_response(num, &dev_err);
         dev->error = dev_err.err_code;
+        dx_pcie_get_driver_info(&info, num);
     }
     // ret = wait_event_interruptible( dev->error_wq, dev->error!=0 );
     pr_debug(MODULE_NAME "%d: %s: wake up. error %d\n", num, __func__, dev->error);
     spin_lock_irqsave(&dev->error_lock, flags);
-    error = dev->error;
-    dev->error = 0;
+    dev_err.rt_driver_version   = DXRT_MOD_VERSION_NUMBER;
+    dev_err.pcie_driver_version = info.driver_version;
+    dev_err.bus   = info.bus;
+    dev_err.dev   = info.dev;
+    dev_err.func  = info.func;
+    dev_err.speed = info.speed;
+    dev_err.width = info.width;
     spin_unlock_irqrestore(&dev->error_lock, flags);
     if (msg->data!=NULL) {
-        if (copy_to_user((void __user*)msg->data, &error, sizeof(error))) {
+        if (copy_to_user((void __user*)msg->data, &dev_err, sizeof(dx_pcie_dev_err_t))) {
             pr_debug("%d: %s failed.\n", num, __func__);
             return -EFAULT;
         }
@@ -1063,4 +1413,7 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_ERROR]                = dxrt_handle_error,
     [DXRT_CMD_DRV_INFO]             = dxrt_handle_drv_info,
     [DXRT_CMD_SCHEDULE]             = dxrt_schedule,
+    [DXRT_CMD_UPLOAD_FIRMWARE]      = dxrt_upload_firmware,
+    [DXRT_CMD_NPU_RUN_REQ]          = dxrt_npu_run_request,
+    [DXRT_CMD_NPU_RUN_RESP]         = dxrt_npu_run_response,
 };

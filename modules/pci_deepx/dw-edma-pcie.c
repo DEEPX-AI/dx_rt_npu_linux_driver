@@ -67,6 +67,13 @@ enum pci_barno {
 	BAR_5,
 };
 
+enum pcie_if_mode_t {
+    DX_PCIE_IF_MODE_0 = 0,
+    DX_PCIE_IF_MODE_1 = 1,
+    DX_PCIE_IF_MODE_2 = 2,
+    DX_PCIE_IF_MODE_3 = 3,
+};
+
 struct dx_edma_block {
 	enum pci_barno		bar;
 	off_t				off;
@@ -101,6 +108,7 @@ struct dw_edma_pcie_data {
 	struct dx_ep_block			users[USER_BAR_NUM];
 	u64							download_region;
 	u32							download_size;
+	u64							booting_region[2];
 };
 
 /*  Total Size : BAR0_MEM_SIZE
@@ -160,6 +168,7 @@ static const struct dw_edma_pcie_data dx_pcie_data_v2 = {
 	.download_region	= 0xD8110000,
 	.download_size		= 0xEF000,
 };
+
 /* DXNN V2 - m1a */
 static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	.version			= 3,
@@ -210,11 +219,37 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	.users = {
 		DW_NPU_BLOCK(BAR_3, 0x00000000, 0x10000, 0xD3010000) /* MESSAGE RAM */
 		DW_NPU_BLOCK(BAR_4, 0x00000000, 0x1000,  0xCC000000) /* Interface */
-		DW_NPU_BLOCK(BAR_5, 0x00000000, 0x10000, 0xD3010000) /* NON-USED */
+		DW_NPU_BLOCK(BAR_5, 0x00000000, 0x10000, 0xC2200000) /* Interface */
 	},
 	.download_region	= 0x63FF00000,
 	.download_size		= 0x100000,
+	.booting_region		= {0xD3000000, 0x600080000},
 };
+
+static void dx_pcie_set_pdata_by_rev(struct dw_edma_pcie_data *pdata, u8 rev, u8 prog)
+{
+	uint64_t high_addr;
+	if (rev == 1) {
+		switch (prog) {
+			case DX_PCIE_IF_MODE_0:
+				high_addr = 6;
+				break;
+			case DX_PCIE_IF_MODE_1:
+				high_addr = 4;
+				break;
+			case DX_PCIE_IF_MODE_2:
+				high_addr = 3;
+				break;
+			default:
+				high_addr = 1;
+				break;
+		}
+		high_addr <<= 32;
+		pdata->desc_addr       = (0x04000000 | high_addr);
+		pdata->download_region = (0x03F00000 | high_addr);
+		pdata->download_size   = 0x100000;
+	}
+}
 
 static int dw_edma_pcie_irq_vector(struct device *dev, unsigned int nr)
 {
@@ -287,6 +322,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	int err, nr_irqs;
 	int i, mask, bar_size;
 	int total_irqs;
+	u8 revision_id, prog_if;
 
 	dbg_init("pdev : %p name[%s].\n", pdev, pci_name(pdev));
 
@@ -323,7 +359,13 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 	/* AER (Advanced Error Reporting) hooks */
-	//pci_enable_pcie_error_reporting(pdev);
+	// pci_enable_pcie_error_reporting(pdev);
+
+	if ((dx_pci_read_revision_id(pdev, &revision_id) != 0) ||
+		(dx_pci_read_program_if(pdev, &prog_if) != 0)) {
+		return -ENODEV;
+	}
+	dx_pcie_set_pdata_by_rev(&vsec_data, revision_id, prog_if);
 
 	/* DMA configuration */
 	err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(64));
@@ -487,6 +529,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	/* Device Specific datas */
 	dw->download_region = vsec_data.download_region;
 	dw->download_size	= vsec_data.download_size;
+	memcpy(dw->booting_region, vsec_data.booting_region, sizeof(vsec_data.booting_region));
 
 	/* Debug info */
 	pci_dbg(pdev, "Probe pdev:%p\n", pdev);
@@ -562,6 +605,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		return err;
 
 	dw_edma_thread_init(chip->dw->idx);
+	chip->dw->init_completed = true;
 
 	pci_err(pdev, "[%s] Probe Done!!\n", __func__);
 
@@ -581,7 +625,7 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 		pci_warn(pdev, "can't remove device properly: %d\n", err);
 
 	/* AER (Advanced Error Reporting) hooks */
-	//pci_disable_pcie_error_reporting(pdev);
+	// pci_disable_pcie_error_reporting(pdev);
 
 	/* Remove Cdev */
 	xpdev_release_interfaces(chip->dw->xpdev);
@@ -622,7 +666,7 @@ static SIMPLE_DEV_PM_OPS(dx_pcie_pm_ops, dx_pcie_suspend, dx_pcie_resume);
 static pci_ers_result_t dx_dma_pcie_error_detected(struct pci_dev *pdev,
 						 pci_channel_state_t error)
 {
-	pci_err(pdev, "dx_dma_pcie_error_detected\n");
+	pci_err(pdev, ">> %s:%d\n", __func__, error);
 	/* TODO */
 	return PCI_ERS_RESULT_NEED_RESET;
 }
@@ -630,15 +674,22 @@ static pci_ers_result_t dx_dma_pcie_error_detected(struct pci_dev *pdev,
 static pci_ers_result_t dx_dma_pcie_error_slot_reset(struct pci_dev *pdev)
 {
 	pci_ers_result_t result = PCI_ERS_RESULT_RECOVERED;
-	pci_err(pdev, "dx_dma_pcie_error_slot_reset\n");
+	pci_err(pdev, ">> %s\n", __func__);
 	/* TODO */
 	return result;
 }
 
 static void dx_dma_pcie_error_resume(struct pci_dev *pdev)
 {
-	pci_err(pdev, "dx_dma_pcie_error_resume\n");
+	pci_err(pdev, ">> %s\n", __func__);
 	/* TODO */
+}
+
+static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev)
+{
+	pci_ers_result_t result = PCI_ERS_RESULT_RECOVERED;
+	pci_err(pdev, ">> %s\n", __func__);
+	return result;
 }
 
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
@@ -651,8 +702,9 @@ MODULE_DEVICE_TABLE(pci, dx_dma_pcie_id_table);
 
 static const struct pci_error_handlers dx_dma_err_handler = {
 	.error_detected = dx_dma_pcie_error_detected,
-	.slot_reset = dx_dma_pcie_error_slot_reset,
-	.resume = dx_dma_pcie_error_resume,
+	.mmio_enabled	= dx_dma_pcie_error_mmio_enabled,
+	.slot_reset 	= dx_dma_pcie_error_slot_reset,
+	.resume 		= dx_dma_pcie_error_resume,
 };
 
 static struct pci_driver dx_dma_pcie_driver = {

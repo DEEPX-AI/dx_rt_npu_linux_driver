@@ -18,7 +18,7 @@
 #include "dx_message.h"
 #include "dx_cdev_ctrl.h"
 
-#define MSGRAM_MSG_OFFSET_V2       (0x0)	/* Base address of message */
+#define MSGRAM_MSG_OFFSET_V2       (0x0000) /* Base address of message */
 #define MSGRAM_REQUEST_OFFSET_V2   (0x1000)
 #define MSGRAM_RESPONSE0_OFFSET_V2 (0x2000)
 #define MSGRAM_RESPONSE1_OFFSET_V2 (0x3000)
@@ -40,7 +40,7 @@
 #define MSGRAM_ERROR_OFFSET_V3     (0x8000)
 #define MSGRAM_IRQ_OFFSET_V3       (0x8200)
 #define MSGRAM_END_REGION_V3       (0x8F00)
-
+#define MSGRAM_DL_OFFSET_V3        (0x8FC0)
 typedef struct _message_ram_table {
 	uint32_t base_offs;
 	uint32_t req0_offs;
@@ -54,8 +54,14 @@ typedef struct _message_ram_table {
 	uint32_t debug_offs;
 	uint32_t err_offs;
 	uint32_t irq_offs;
+	uint32_t dl_offs;
 } message_ram_table;
 message_ram_table ep_ram_info;
+
+typedef enum dxresp_lock_t {
+    DX_RESP_UNLOCK  = 0,
+    DX_RESP_LOCK    = 1,
+} dxresp_lock;
 
 #define RES_POOL_SIZE           (10) /* TODO */
 static uint32_t resp_pool_header[MAX_DEV_NUM][USER_NUM_MAX];
@@ -76,6 +82,14 @@ void __iomem *dx_pcie_get_log_area(u32 dev_id)
 	return reg + ep_ram_info.log_offs;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_log_area);
+
+void __iomem *dx_pcie_get_dl_area(u32 dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	void __iomem *reg = dw->npu_region[0].vaddr;
+	return reg + ep_ram_info.dl_offs;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_get_dl_area);
 
 /* priority : high:10 / normal:0,1,2 (queue0,queue1...) */
 void __iomem *dx_pcie_get_request_queue(u32 dev_id, u32 priority)
@@ -144,10 +158,11 @@ void dx_pcie_enqueue_response(u32 dev_id, int dma_ch)
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_pcie_msg *dx_msg = dw->dx_msg;
 	dx_pcie_response_list_t *entry;
-	uint32_t *header = &resp_pool_header[dev_id][dma_ch];
+	uint32_t *header;
 
 	spin_lock_irqsave(&dx_msg->responses_lock[dma_ch], flags);
-	writel(1, ((void*)dx_msg->response[dma_ch]+0x100));
+	header = &resp_pool_header[dev_id][dma_ch];
+	writel(DX_RESP_LOCK, ((void*)dx_msg->response[dma_ch]+0x100));
 	(*header) %= RES_POOL_SIZE;
 	entry = &resp_pool[dev_id][dma_ch][(*header)++];
 	{
@@ -155,7 +170,7 @@ void dx_pcie_enqueue_response(u32 dev_id, int dma_ch)
 		list_add_tail(&entry->list, &dx_msg->responses[dma_ch].list);
 		dbg_msg("%s: dev_id %d, ch %d, %d, %d", __func__, dw->idx, dma_ch, entry->response.req_id, *header);
 	}
-	writel(0, ((void*)dx_msg->response[dma_ch]+0x100));
+	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[dma_ch]+0x100));
 	spin_unlock_irqrestore(&dx_msg->responses_lock[dma_ch], flags);
 }
 
@@ -215,13 +230,30 @@ void dx_pcie_dequeue_error_response(u32 dev_id, dx_pcie_dev_err_t* response)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_dequeue_error_response);
 
-#define EP_IRQ_MSG_OFFSET (0x20)
+#define EP_IRQ_MSG_OFFSET		(0x20)
+#define EP_IRQ_MSG_EN_OFFSET	(0x60)
+static uint32_t dx_pcie_is_notify_enable(struct dx_pcie_msg *dx_msg)
+{
+	uint32_t ret = 0, retry = 0;
+	while (retry++ < 1000) {
+		ret = readl((void*)(dx_msg->notify + EP_IRQ_MSG_EN_OFFSET));
+		if (ret)
+			break;
+		udelay(10);
+	}
+	return ret;
+}
 void dx_pcie_notify_msg_to_device(u32 dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	if(dw->dx_ver == 3) {
-		writel(1, ((void*)(dx_msg->notify + EP_IRQ_MSG_OFFSET)));
+
+	if(dx_pcie_is_notify_enable(dx_msg)) {
+		if(dw->dx_ver == 3) {
+			writel(1, ((void*)(dx_msg->notify + EP_IRQ_MSG_OFFSET)));
+		}
+	} else {
+		pr_err("Device error for interrupt\n");
 	}
 }
 EXPORT_SYMBOL_GPL(dx_pcie_notify_msg_to_device);
@@ -232,31 +264,47 @@ Return value:
   -1      : device is not supported this api
   -EINVAL : priority fault
 */
-#define EP_IRQ_NORMAL_REQ_QUE0_OFFSET (0x24)
-#define EP_IRQ_NORMAL_REQ_QUE1_OFFSET (0x28)
-#define EP_IRQ_NORMAL_REQ_QUE2_OFFSET (0x2C)
-#define EP_IRQ_HIGH_REQ_OFFSET        (0x30)
-int dx_pcie_notify_req_to_device(u32 dev_id, u32 priority)
+#define EP_IRQ_NORMAL_QUE0_LOCK_OFFSET		(0x1C)
+#define EP_IRQ_NORMAL_QUE0_UNLOCK_OFFSET	(0x24)
+#define EP_IRQ_NORMAL_QUE1_LOCK_OFFSET		(0x28)
+#define EP_IRQ_NORMAL_QUE1_UNLOCK_OFFSET	(0x2C)
+#define EP_IRQ_NORMAL_QUE2_LOCK_OFFSET		(0x30)
+#define EP_IRQ_NORMAL_QUE2_UNLOCK_OFFSET	(0x34)
+#define EP_IRQ_HIGH_LOCK_OFFSET				(0x38)
+#define EP_IRQ_HIGH_UNLOCK_OFFSET			(0x3C)
+int dx_pcie_notify_req_to_device(u32 dev_id, u32 queue, u8 lock)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_pcie_msg *dx_msg = dw->dx_msg;
 	int ret = 0;
 	if(dw->dx_ver == 3) {
-		switch (priority) {
+		switch (queue) {
 			case DX_NORMAL_QUEUE0:
-				writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_REQ_QUE0_OFFSET)));
+				if (lock)
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE0_LOCK_OFFSET)));
+				else
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE0_UNLOCK_OFFSET)));
 				break;
 			case DX_NORMAL_QUEUE1:
-				writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_REQ_QUE1_OFFSET)));
+				if (lock)
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE1_LOCK_OFFSET)));
+				else
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE1_UNLOCK_OFFSET)));
 				break;
 			case DX_NORMAL_QUEUE2:
-				writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_REQ_QUE2_OFFSET)));
+				if (lock)
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE2_LOCK_OFFSET)));
+				else
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE2_UNLOCK_OFFSET)));
 				break;
 			case DX_HIGH_QUEUE:
-				writel(1, ((void*)(dx_msg->notify + EP_IRQ_HIGH_REQ_OFFSET)));
+				if (lock)
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_HIGH_LOCK_OFFSET)));
+				else
+					writel(1, ((void*)(dx_msg->notify + EP_IRQ_HIGH_UNLOCK_OFFSET)));
 				break;
 			default:
-				pr_err("%s:Priority is not defined(%d)\n", __func__, priority);
+				pr_err("%s:queue is not defined(%d)\n", __func__, queue);
 			    ret = -EINVAL;
 		}
 	} else {
@@ -283,6 +331,7 @@ static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 		ep_ram_info.base_offs	= MSGRAM_MSG_OFFSET_V3;
 		ep_ram_info.req0_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST0_OFFSET_V3;
 		ep_ram_info.req1_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST1_OFFSET_V3;
+		ep_ram_info.req2_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST2_OFFSET_V3;
 		ep_ram_info.resp0_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE0_OFFSET_V3;
 		ep_ram_info.resp1_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE1_OFFSET_V3;
 		ep_ram_info.resp2_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE2_OFFSET_V3;
@@ -290,6 +339,7 @@ static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 		ep_ram_info.debug_offs	= ep_ram_info.base_offs + MSGRAM_DEBUG_OFFSET_V3;
 		ep_ram_info.err_offs	= ep_ram_info.base_offs + MSGRAM_ERROR_OFFSET_V3;
 		ep_ram_info.irq_offs	= ep_ram_info.base_offs + MSGRAM_IRQ_OFFSET_V3;
+		ep_ram_info.dl_offs		= ep_ram_info.base_offs + MSGRAM_DL_OFFSET_V3;
 	} else {
 		ret = -1;
 	}
@@ -302,7 +352,7 @@ int dx_pcie_message_init(int dev_id)
 	struct device *dev = &dw->pdev->dev;
 	struct dx_pcie_msg *dx_msg;
 	int ret = 0;
-	/* TODO - dx_msg is needed to per NPU and we should consieder in case of one handler  */
+	/* TODO - dx_msg is needed to per NPU and we should consider in case of one handler  */
 	dx_msg = devm_kcalloc(dev, 1, sizeof(struct dx_pcie_msg), GFP_KERNEL);
 	if (!dx_msg)
 		return -ENOMEM;

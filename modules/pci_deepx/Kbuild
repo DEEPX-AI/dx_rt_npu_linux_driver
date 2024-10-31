@@ -3,6 +3,8 @@
 
 ccflags-y += -I $(src)/include
 
+ccflags-y += $(CCFLAGS)
+
 ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
 ccflags-y += -DCONFIG_DX_AI_ACCEL_RT=1
 ccflags-y += -I $(src)/../include

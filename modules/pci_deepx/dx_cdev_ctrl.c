@@ -320,8 +320,10 @@ int bridge_mmap(struct file *file, struct vm_area_struct *vma)
 		bar_num));
 	dbg_sg("phys = 0x%lx\n", phys);
 
-	if (vsize > psize)
+	if (vsize > psize) {
+		pr_err("size overflow(%ld/%ld)\n", vsize, psize);
 		return -EINVAL;
+	}
 	/*
 	 * pages must not be cached as this would result in cache line sized
 	 * accesses to the end point
@@ -340,8 +342,10 @@ int bridge_mmap(struct file *file, struct vm_area_struct *vma)
 	dbg_sg("vma=0x%p, vma->vm_start=0x%lx, phys=0x%lx, size=%lu = %d\n",
 		vma, vma->vm_start, phys >> PAGE_SHIFT, vsize, rv);
 
-	if (rv)
+	if (rv) {
+		pr_err("remap fail(%d)\n", rv);
 		return -EAGAIN;
+	}
 	return 0;
 }
 

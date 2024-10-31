@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+modprobe -r dxrt_driver || true
+modprobe -r dx_dma || true

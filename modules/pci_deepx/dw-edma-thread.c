@@ -133,6 +133,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	 *  - flags
 	 *  - source and destination addresses
 	 */
+	dw_chan->is_llm = cb->is_llm;
 	if (direction == DMA_DEV_TO_MEM) {
 		/* DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE */
 		dbg_tfr("%s: DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE\n",
@@ -354,7 +355,7 @@ int dw_edma_run(struct dx_dma_io_cb * cb, struct dma_chan *dma_ch, int dev_n, in
 		dbg_tfr("DMA is Ready to tranfser datas (dev#%d, npu#%d, ch:%d)\n", dev_n, cb->npu_id, ch);
 		info->cb = cb;
 		dx_pcie_start_profile(PCIE_THREAD_RUN_T, 0, info->dev_n, info->cb->npu_id, info->cb->write);
-		dw_edma_sg_process(info, dma_ch);
+		ret = dw_edma_sg_process(info, dma_ch);
 		dx_pcie_end_profile(PCIE_THREAD_RUN_T, 0, info->dev_n, info->cb->npu_id, info->cb->write);
 
 	}

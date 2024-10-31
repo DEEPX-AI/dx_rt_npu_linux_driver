@@ -1,0 +1,51 @@
+dxrt-driver (1.0.14) unstable; urgency=medium
+
+  * chore: update debian/changelog
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 15 Oct 2024 09:00:00 +0900
+
+dxrt-driver (1.0.13) unstable; urgency=medium
+
+  * chore: Update debian/postinst, rules files for compatibility
+  * chore: Update build package version to 1.0.7
+  * chore: Add modprobe for debian package configuration
+  * chore: Update package version to 1.0.7
+  * refactor: Implementation of multiple command modes (ioctl)
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 15 Oct 2024 09:00:00 +0900
+
+dxrt-driver (1.0.12) unstable; urgency=medium
+
+  * refactor: Implementation of multiple command modes (ioctl)
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 15 Oct 2024 09:00:00 +0900
+
+dxrt-driver (1.0.11) unstable; urgency=medium
+
+  * refactor: Update lock mechanism for queue
+  * fix: Fix compile error
+  * chore: Add npu request/response commands
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 8 Oct 2024 09:00:00 +0900
+
+dxrt-driver (1.0.10) unstable; urgency=medium
+
+  * fix: Fix queue synchronous problem with device
+  * chore: Remove duplication logic for queue full checking
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 27 Sep 2024 09:00:00 +0900
+
+dxrt-driver (1.0.9) unstable; urgency=medium
+
+  * refactor: Add npu bounding rule
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 13 Sep 2024 09:00:00 +0900
+
+dxrt-driver (1.0.8) unstable; urgency=medium
+
+  * fix: Update firmware upload mode
+  * chore: Update build parameter (device) of asic
+  * chore: Change driver install method and update check-condition
+  * chore: Sync with submodule
+
+ -- Koo Bongyu <kbg@deepx.ai>  Wed, 21 Aug 2024 20:00:00 +0900

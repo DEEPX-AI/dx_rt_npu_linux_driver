@@ -39,7 +39,49 @@ typedef struct
 
 typedef struct {
     uint32_t err_code;
-    /* System Infomation power / temperature, etc,,,, */
+
+    /* Version */
+    uint32_t fw_ver;
+    uint32_t rt_driver_version;
+    uint32_t pcie_driver_version;
+    uint32_t reserved_ver[4];
+
+    /* Npu information */
+    uint32_t npu_id;
+    uint64_t base_axi;
+    uint32_t base_rmap;
+    uint32_t base_weight;
+    uint32_t base_in;
+    uint32_t base_out;
+    uint32_t cmd_num;
+    uint32_t last_cmd;
+    uint32_t busy;
+    uint32_t abnormal_cnt;
+    uint32_t irq_status;
+    uint32_t dma_err;
+    uint32_t reserved_npu[10];
+
+    /* System infomation power / temperature, etc,,,, */
+    uint32_t temperature[20];
+    uint32_t npu_voltage[4];
+    uint32_t npu_freq[4];
+    uint32_t reserved_sys[10];
+
+    /* PCIe information */
+    uint8_t  bus;
+    uint8_t  dev;
+    uint8_t  func;
+    uint8_t  reserved;
+    int      speed; /* GEN1, GEN2...*/
+    int      width; /* 1, 2, 4 */
+    uint32_t ltssm;
+    uint32_t dma_rd_ch_sts[4];
+    uint32_t dma_wr_ch_sts[4];
+    uint32_t reserved_pcie[10];
+
+    /* DDR information */
+    uint32_t ddr_temperature[4];
+    uint32_t reserved_ddr[10];
 } dx_pcie_dev_err_t;
 
 struct dx_pcie_msg {

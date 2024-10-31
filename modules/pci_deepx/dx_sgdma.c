@@ -30,11 +30,6 @@
 #include "dx_pcie_api.h"
 #endif
 
-enum mem_type {
-	USER_SPACE_BUF   = 0,
-	KERNEL_SPACE_BUF = 1,
-};
-
 static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
 {
 	int i;
@@ -177,13 +172,85 @@ ssize_t dx_sgdma_write_user(struct dw_edma *dw, char __user *buf, u64 pos, size_
 	cb.dma_ch_id = dw->wr_dma_id;
 	cb.npu_id  = npu_id;
 	cb.npu_run = npu_run;
+	cb.is_llm  = true;
 
 	rv = char_sgdma_map_user_buf_to_sgl(&cb, cb.write, dw->idx, npu_id);
-	if (rv < 0)
+	if (rv < 0) {
 		return rv;
+	}
 	/*Transfer*/
 	rv = dw_edma_run(&cb, dw->rd_dma_chan[npu_id], dw->idx, 0);
 	char_sgdma_unmap_user_buf(&cb, cb.write);
+
+	/*check result*/
+	if (rv == 0) {
+		if(cb.result)
+			ret = -ERESTARTSYS;
+		else
+			ret = count;
+	} else {
+		ret = rv;
+	}
+
+	dx_pcie_end_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+	return ret;
+}
+
+int char_sgdma_map_kernel_buf_to_sgl(struct sg_table *sgt, void *cpu_addr, dma_addr_t dma_addr, size_t size)
+{
+    struct scatterlist *sg;
+    int ret;
+
+    // Allocate scatter-gather table with 1 entry, since the buffer is physically contiguous
+    ret = sg_alloc_table(sgt, 1, GFP_KERNEL);
+    if (ret) {
+        pr_err("sg_alloc_table failed with error %d\n", ret);
+        return ret;
+    }
+
+    sg = sgt->sgl;
+    // Set the single entry in scatter-gather list
+    sg_set_page(sg, virt_to_page(cpu_addr), size, offset_in_page(cpu_addr));
+    sg_dma_address(sg) = dma_addr;
+    sg_dma_len(sg) = size;
+
+    return 0;
+}
+
+ssize_t dx_sgdma_write_kernel(struct dw_edma *dw, char *buf, u64 pos, dma_addr_t dma_addr, size_t count, int npu_id, bool npu_run)
+{
+	struct dx_dma_io_cb cb;
+	size_t ret;
+	int rv;
+
+	dx_pcie_start_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+
+	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
+		dw->idx, buf, (u64)count, pos, npu_id);
+
+	if (!dw) {
+		pr_err("[%s] priv pointer open error!(NULL)\n", __func__);
+		return 0;
+	}
+
+	/*Check transfer align - TODO*/
+
+	memset(&cb, 0, sizeof(struct dx_dma_io_cb));
+	// cb.buf     = buf;
+	cb.len     = count;
+	cb.ep_addr = pos;
+	cb.write   = true;
+	cb.dma_ch_id = dw->wr_dma_id;
+	cb.npu_id  = npu_id;
+	cb.npu_run = npu_run;
+	cb.is_llm  = false;	/* TODO */
+
+	/* Allocate scatter-gather table */
+	char_sgdma_map_kernel_buf_to_sgl(&cb.sgt, buf, dma_addr, cb.len);
+
+	/*Transfer*/
+	rv = dw_edma_run(&cb, dw->rd_dma_chan[npu_id], dw->idx, 0);
+	/* need to dealloc function */
 
 	/*check result*/
 	if (rv == 0) {
@@ -221,6 +288,7 @@ ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t
 	cb.dma_ch_id = dw->rd_dma_id;
 	cb.npu_id = npu_id;
 	cb.npu_run = false;
+	cb.is_llm  = true;
 
 	rv = char_sgdma_map_user_buf_to_sgl(&cb, cb.write, dw->idx, npu_id);
 	if (rv < 0)
@@ -302,20 +370,21 @@ void dx_sgdma_sched_channel_init(struct dw_edma *dw)
  * @count: Transfer size
  * @dev_id: Device id
  * @dma_ch: DMA Channel id
- * @mem_type: Where is the location of the source buffer[User/Kernel]
  * @npu_run: Whether or not to run npu after transmission
+ * @type: Where is the location of the source buffer[User/Kernel]
+ * @dma_addr: dma address (only for kernel memory type)
  *return - Fail:negative, Pass:transfered size
 **/
-ssize_t dx_sgdma_write(char *dest, u64 src, size_t count, int dev_id, int dma_ch, bool npu_run)
+ssize_t dx_sgdma_write(char *dest, u64 src, size_t count, int dev_id, int dma_ch, bool npu_run, enum mem_type type, dma_addr_t dma_addr)
 {
-	enum mem_type type = USER_SPACE_BUF;
+	// enum mem_type type = USER_SPACE_BUF;
 	ssize_t ret = 0;
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	// int chan_id = dx_sgdma_sched_channel_push(dw, true);
 	if (type == USER_SPACE_BUF) {
 		ret = dx_sgdma_write_user(dw, (char __user *)dest, src, count, dma_ch, npu_run);
 	} else if (type == KERNEL_SPACE_BUF) {
-		/*TODO*/
+		ret = dx_sgdma_write_kernel(dw, dest, src, dma_addr, count, dma_ch, npu_run);
 	} else {
 		pr_err("undefined type[%d]\n", type);
 	}
@@ -332,12 +401,11 @@ EXPORT_SYMBOL_GPL(dx_sgdma_write);
  * @count: Transfer size
  * @dev_id: Device id
  * @dma_ch: DMA Channel id
- * @mem_type: Where is the location of the source buffer[User/Kernel]
+ * @type: Where is the location of the source buffer[User/Kernel]
  *return - Fail:negative, Pass:transfered size
 **/
-ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch)
+ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch, enum mem_type type)
 {
-	enum mem_type type = USER_SPACE_BUF;
 	ssize_t ret = 0;
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	// int chan_id = dx_sgdma_sched_channel_push(dw, true);
@@ -362,7 +430,7 @@ void dx_sgdma_init(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	int i;
-	if (dw) {
+	if ((dw) && (dw->ref_count == 0)) {
 		for (i=0; i<dw->rd_ch_cnt; i++) {
 			dw_edma_dma_allocation(dw->rd_dma_id, i, &dw->wr_dma_chan[i]);
 		}
@@ -370,6 +438,7 @@ void dx_sgdma_init(int dev_id)
 			dw_edma_dma_allocation(dw->wr_dma_id, i, &dw->rd_dma_chan[i]);
 		}
 	}
+	dw->ref_count++;
 }
 EXPORT_SYMBOL_GPL(dx_sgdma_init);
 
@@ -381,7 +450,7 @@ void dx_sgdma_deinit(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	int i;
-	if (dw) {
+	if ((dw) && (dw->ref_count == 1)) {
 		for (i=0; i<dw->wr_ch_cnt; i++) {
 			dw_edma_dma_deallocation(&dw->wr_dma_chan[i]);
 		}
@@ -389,6 +458,7 @@ void dx_sgdma_deinit(int dev_id)
 			dw_edma_dma_deallocation(&dw->rd_dma_chan[i]);
 		}
 	}
+	dw->ref_count--;
 }
 EXPORT_SYMBOL_GPL(dx_sgdma_deinit);
 

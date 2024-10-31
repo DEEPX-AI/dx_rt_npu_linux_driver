@@ -64,7 +64,7 @@ enum dw_iatu_inb_usage {
     IATU_INB_USER0     = 1,
     IATU_INB_USER1     = 2,
     IATU_INB_USER2     = 3,
-	IATU_INB_MAX       = 5
+	IATU_INB_MAX       = 4
 };
 
 struct dw_edma_chan;
@@ -136,6 +136,7 @@ struct dw_edma_chan {
 	u8						configured;
 	u8						set_desc; /* check to send description table */
 	u8 						en_lie;   /* Generate a local interrupt to start npu */
+	bool					is_llm;   /* Enable Linked List Mode */
 
 	struct dma_slave_config	config;
 };
@@ -211,6 +212,8 @@ struct dw_edma {
 	int							wr_dma_id;	/* host - write : DMA_RD */
 	struct dma_chan 			*rd_dma_chan[EDMA_MAX_RD_CH];	/* DMA_READ */
 	struct dma_chan 			*wr_dma_chan[EDMA_MAX_WR_CH];	/* DMA_WRITE */
+	bool 						init_completed;
+	int 						ref_count;	/* external module reference count */
 
 	/* DXNN V2 only */
 	u16							rd_dma_chan_list[EDMA_MAX_RD_CH]; /* 1 : used, 0: not-used */
@@ -226,6 +229,7 @@ struct dw_edma {
 	/* Device Specific Datas */
 	u64							download_region;
 	u32							download_size;
+	u64							booting_region[2];
 #ifdef CONFIG_DEBUG_FS
 	struct dentry			*debugfs;
 #endif /* CONFIG_DEBUG_FS */

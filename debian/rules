@@ -1,0 +1,44 @@
+#!/usr/bin/make -f
+#export DH_VERBOSE=1
+
+TEMPDIR := $(CURDIR)/debian/tmp
+ROOTDIR := $(CURDIR)
+
+PACKAGER := dxrt-driver
+MAINZIPFILE := ${PACKAGER}_src.zip
+
+%:
+	dh $@
+
+build:
+	echo "ROOTDIR: $(ROOTDIR)"
+	echo "TEMPDIR: $(TEMPDIR)"
+	git archive -o $(MAINZIPFILE) HEAD;
+
+	mkdir -p $(TEMPDIR)
+	unzip -o $(MAINZIPFILE) -d $(TEMPDIR)
+
+	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
+		echo $$submodule_path; \
+        zip_file="$$(echo $$submodule_path | sed 's/\//-/g')_archive.zip"; \
+		echo $$zip_file; \
+        (cd $$submodule_path && git archive --format=zip --output=$(ROOTDIR)/$$zip_file HEAD); \
+		mkdir -p $(TEMPDIR)/$$submodule_path; \
+		unzip -o $$zip_file -d $(TEMPDIR)/$$submodule_path; \
+	done
+
+	rm -rf $(ROOTDIR)/source.zip
+	(cd $(TEMPDIR) && zip -r $(ROOTDIR)/source.zip ./)
+	
+
+install:
+#	dh install
+	mkdir -p debian/$(PACKAGER)/usr/share/$(PACKAGER)
+	cp source.zip debian/$(PACKAGER)/usr/share/$(PACKAGER)/
+
+clean:
+	dh clean
+	rm -rf $(MAINZIPFILE)
+	rm -rf *_archive.zip
+	rm -rf $(TEMPDIR)
+	rm -rf $(ROOTDIR)/source.zip
