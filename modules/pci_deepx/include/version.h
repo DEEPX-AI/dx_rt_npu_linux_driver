@@ -9,16 +9,12 @@
 #ifndef __DX_DMA_VERSION_H__
 #define __DX_DMA_VERSION_H__
 
-#define DRV_MOD_MAJOR		2
-#define DRV_MOD_MINOR		0
-#define DRV_MOD_PATCHLEVEL	0
-
 #define DRV_MODULE_VERSION      \
-	__stringify(DRV_MOD_MAJOR) "." \
-	__stringify(DRV_MOD_MINOR) "." \
-	__stringify(DRV_MOD_PATCHLEVEL)
+	__stringify(PCIE_VERSION_MAJOR) "." \
+	__stringify(PCIE_VERSION_MINOR) "." \
+	__stringify(PCIE_VERSION_PATCH)
 
 #define DRV_MOD_VERSION_NUMBER  \
-	((DRV_MOD_MAJOR)*1000 + (DRV_MOD_MINOR)*100 + DRV_MOD_PATCHLEVEL)
+	((PCIE_VERSION_MAJOR)*1000 + (PCIE_VERSION_MINOR)*100 + PCIE_VERSION_PATCH)
 
 #endif /* ifndef __DX_DMA_VERSION_H__ */

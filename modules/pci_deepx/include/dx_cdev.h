@@ -54,7 +54,8 @@ struct dx_dma_io_cb {
 	u8 write:1;
 	bool npu_run;
 	// void (*io_done)(unsigned long cb_hndl, int err);
-	char result; /*0:PASS, -1:FAIL*/
+	char result; /* 0:PASS, -1:FAIL */
+	bool is_llm; /* linked list mode */
 };
 
 struct dx_dma_cdev {

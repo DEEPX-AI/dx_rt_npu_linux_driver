@@ -382,7 +382,7 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 				child->sz,
 				upper_32_bits(child->sar), lower_32_bits(child->sar),
 				upper_32_bits(child->dar), lower_32_bits(child->dar),
-				i*20
+				i*24
 			);
 		}
 		#endif /* DUMP_DESC_TABLE */
@@ -403,7 +403,6 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		SET_LL_32(&llp->llp.lsb, lower_32_bits(chunk->ll_region.paddr));
 		SET_LL_32(&llp->llp.msb, upper_32_bits(chunk->ll_region.paddr));
 	#endif /* CONFIG_64BIT */
-
 	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
 
 #ifdef DUMP_DESC_TABLE
@@ -416,12 +415,12 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		(control & DW_EDMA_V0_CCS) ? 1:0,
 		(control & DW_EDMA_V0_LLE) ? 1:0,
 		upper_32_bits(chunk->ll_region.paddr), lower_32_bits(chunk->ll_region.paddr),
-		i*20
+		i*24
 	);
 #endif /* DUMP_DESC_TABLE */
 }
 
-void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_desc)
+void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_desc, bool is_llm)
 {
 	struct dw_edma_chan *chan = chunk->chan;
 	struct dw_edma *dw = chan->chip->dw;
@@ -432,7 +431,8 @@ void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_des
 		dbg_tfr("Description table settings are needed(%s), dir:%s\n",
 			dma_chan_name(&chan->vc.chan), 
 			(chan->dir == EDMA_DIR_WRITE) ? "DMA_W":"DMA_R");
-		dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
+		if (is_llm)
+			dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
 	}
 	/* Notify lie status to firmware - will be modifed */
 	{
@@ -493,24 +493,45 @@ void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_des
 		tmp &= ~FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id));
 		tmp &= ~FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id));
 		SET_RW_32(dw, chan->dir, int_mask, tmp);
-		/* Linked list error */
-		tmp = GET_RW_32(dw, chan->dir, linked_list_err_en);
-		tmp |= FIELD_PREP(EDMA_V0_LINKED_LIST_ERR_MASK, BIT(chan->id));
-		SET_RW_32(dw, chan->dir, linked_list_err_en, tmp);
-		/* Channel control */
-		SET_CH_32(dw, chan->dir, chan->id, ch_control1,
-			  (DW_EDMA_V0_CCS | DW_EDMA_V0_LLE));
-		/* Linked list */
-		SET_CH_32(dw, chan->dir, chan->id, llp.lsb,
-			  lower_32_bits(chunk->ll_region.paddr));
-		SET_CH_32(dw, chan->dir, chan->id, llp.msb,
-			  upper_32_bits(chunk->ll_region.paddr));
-		dbg_tfr("[DMA_REG_SET] dir:%d, id:%d, llp:0x%x_%x, ll_region:0x%x_%x",
-			chan->dir, chan->id,
-			GET_CH_32(dw, chan->dir, chan->id, llp.msb),
-			GET_CH_32(dw, chan->dir, chan->id, llp.lsb),
-			upper_32_bits(chunk->ll_region.paddr),
-			lower_32_bits(chunk->ll_region.paddr));
+		if (is_llm) {
+			/* Linked list error */
+			tmp = GET_RW_32(dw, chan->dir, linked_list_err_en);
+			tmp |= FIELD_PREP(EDMA_V0_LINKED_LIST_ERR_MASK, BIT(chan->id));
+			SET_RW_32(dw, chan->dir, linked_list_err_en, tmp);
+			/* Channel control */
+			SET_CH_32(dw, chan->dir, chan->id, ch_control1,
+				(DW_EDMA_V0_CCS | DW_EDMA_V0_LLE));
+			/* Linked list */
+			SET_CH_32(dw, chan->dir, chan->id, llp.lsb,
+				lower_32_bits(chunk->ll_region.paddr));
+			SET_CH_32(dw, chan->dir, chan->id, llp.msb,
+				upper_32_bits(chunk->ll_region.paddr));
+			dbg_tfr("[DMA_REG_SET] dir:%d, id:%d, llp:0x%x_%x, ll_region:0x%x_%x",
+				chan->dir, chan->id,
+				GET_CH_32(dw, chan->dir, chan->id, llp.msb),
+				GET_CH_32(dw, chan->dir, chan->id, llp.lsb),
+				upper_32_bits(chunk->ll_region.paddr),
+				lower_32_bits(chunk->ll_region.paddr));
+		} else {
+			struct list_head *f = chunk->burst->list.next;
+			struct dw_edma_burst *child = list_entry(f, struct dw_edma_burst, list);
+			/* Channel control & size */
+			SET_CH_32(dw, chan->dir, chan->id, ch_control1,
+				(DW_EDMA_V0_RIE | DW_EDMA_V0_LIE));
+			SET_CH_32(dw, chan->dir, chan->id, transfer_size, child->sz);
+			/* SAR */
+			SET_CH_32(dw, chan->dir, chan->id, sar.lsb, lower_32_bits(child->sar));
+			SET_CH_32(dw, chan->dir, chan->id, sar.msb, upper_32_bits(child->sar));
+			/* DAR */
+			SET_CH_32(dw, chan->dir, chan->id, dar.lsb, lower_32_bits(child->dar));
+			SET_CH_32(dw, chan->dir, chan->id, dar.msb, upper_32_bits(child->dar));
+
+			dbg_tfr("[NON-LLM:%d] size:0x%x, sar:0x%x%08x, dar:0x%x%08x\n",
+				chunk->chan->id,
+				child->sz,
+				upper_32_bits(child->sar), lower_32_bits(child->sar),
+				upper_32_bits(child->dar), lower_32_bits(child->dar));
+		}
 	}
 	/* Doorbell */
 	SET_RW_32(dw, chan->dir, doorbell,
@@ -675,52 +696,6 @@ void dw_iatu_config_inbound(struct dw_edma *dw, u8 mode, u64 base_addr, u64 tgt_
 			break;
 		default:
 			break;
-	}
-}
-
-void dw_iatu_desc_region_check(struct dw_edma *dw, u64 addr, u64 size)
-{
-	struct dx_iatu_inbound *iatu_inb = dw->iatu_inb;
-	u64 desc_addr = iatu_inb[IATU_INB_DMA_DESC].tgt_addr;
-	u64 desc_size = iatu_inb[IATU_INB_DMA_DESC].size;
-	u64 desc_mv_offs = desc_size/2;
-	u32 mv_cnt = 0;
-	int i;
-
-	/* check descriptor table position into local memory */
-	do {
-		if ((addr + size < desc_addr) || (addr > desc_addr + desc_size)) {
-			break;
-		} else {
-			/* move descriptor table */
-			desc_addr += desc_mv_offs;
-			mv_cnt++;
-		}
-	} while(true);
-
-	if (desc_addr != iatu_inb[IATU_INB_DMA_DESC].tgt_addr) {
-		pr_err("DMA Descriptor [A:%llx, S:%llx] -> [A:%llx, S:%llx]\n",
-			iatu_inb[IATU_INB_DMA_DESC].tgt_addr, iatu_inb[IATU_INB_DMA_DESC].size,
-			desc_addr, desc_size);
-		/* Control iATU */
-		iatu_inb[IATU_INB_DMA_DESC].tgt_addr = desc_addr;
-		dw_iatu_config_inbound(dw,
-			dw->iatu_inb[IATU_INB_DMA_DESC].mode,
-			dw->iatu_inb[IATU_INB_DMA_DESC].base_addr,
-			dw->iatu_inb[IATU_INB_DMA_DESC].tgt_addr,
-			dw->iatu_inb[IATU_INB_DMA_DESC].size,
-			dw->iatu_inb[IATU_INB_DMA_DESC].idx,
-			dw->iatu_inb[IATU_INB_DMA_DESC].bar_no);
-		/* Control descriptor point of DMA ch */
-		/* TODO - Consider for multi DMA channel */
-		for (i = 0; i < ARRAY_SIZE(dw->ll_region_wr); i++) {
-			dw->ll_region_wr[i].paddr += (mv_cnt * desc_mv_offs);
-			pr_info("[WR] Descriptor Region : 0x%llx\n", dw->ll_region_wr[i].paddr);
-		}
-		for (i = 0; i < ARRAY_SIZE(dw->ll_region_rd); i++) {
-			dw->ll_region_rd[i].paddr += (mv_cnt * desc_mv_offs);
-			pr_info("[RD] Descriptor Region : 0x%llx\n", dw->ll_region_rd[i].paddr);
-		}
 	}
 }
 

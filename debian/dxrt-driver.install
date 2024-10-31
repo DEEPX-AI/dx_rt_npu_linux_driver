@@ -1,0 +1,4 @@
+pci_deepx/dx_dma.ko lib/modules/$(uname -r)/kernel/drivers/misc/dx_dma.ko
+rt/dxrt_driver.ko lib/modules/$(uname -r)/kernel/drivers/misc/dxrt_driver.ko
+modprobe.d/dxrt_driver.conf etc/modprobe.d/dxrt_driver.conf
+modprobe.d/dx_dma.conf etc/modprobe.d/dx_dma.conf

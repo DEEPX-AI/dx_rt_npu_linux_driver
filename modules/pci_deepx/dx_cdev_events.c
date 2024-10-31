@@ -126,10 +126,11 @@ unsigned int dx_pcie_interrupt(int dev_id, int irq_id)
 	} else {
 		user_irq = &dw->irq[dw->dma_irqs + irq_id].user_irq;
 	}
-	dbg_irq("%s start irq : %d[%p, %p]\n", __func__, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
+	dbg_irq("%s:%d start irq : %d[%p, %p]\n", __func__, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
 
 	wait_event_interruptible(user_irq->events_wq, user_irq->events_irq != 0);
 	spin_lock_irqsave(&user_irq->events_lock, flags);
+	dbg_irq("%s:%d wake irq : %d[%p, %p]\n", __func__, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
 	if (user_irq->events_irq) {
 		mask = user_irq->events_irq;
 		user_irq->events_irq = 0;

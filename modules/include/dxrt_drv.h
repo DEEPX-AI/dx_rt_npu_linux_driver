@@ -91,6 +91,7 @@ typedef enum _npu_bound_op {
 typedef struct _dx_shced_data {
     npu_bound_op        bound;
     req_queue_t         queue;
+    uint32_t            ref_cnt;
 } dx_shced_data;
 
 typedef struct _dx_sched_list {
@@ -121,6 +122,15 @@ typedef struct _dxrt_meminfo_t
     uint32_t offset;
     uint32_t size;
 } dxrt_meminfo_t;
+
+typedef struct _dxrt_req_meminfo_t
+{
+    uint64_t data;
+    uint64_t base;
+    uint32_t offset;
+    uint32_t size;
+    uint32_t ch;
+} dxrt_req_meminfo_t;
 
 typedef struct _dxrt_request_t {
     uint32_t  req_id;
@@ -186,29 +196,38 @@ typedef struct
     uint32_t data[1000];
 } dxrt_device_message_t;
 typedef enum {
-    DXRT_CMD_IDENTIFY_DEVICE        = 0,
-    DXRT_CMD_GET_STATUS             ,
-    DXRT_CMD_RESET                  ,
-    DXRT_CMD_UPDATE_CONFIG          ,
-    DXRT_CMD_UPDATE_FIRMWARE        , /* Sub-command */
-    DXRT_CMD_GET_LOG                ,
-    DXRT_CMD_DUMP                   ,
-    DXRT_CMD_WRITE_MEM              ,
-    DXRT_CMD_READ_MEM               ,
-    DXRT_CMD_CPU_CACHE_FLUSH        ,
-    DXRT_CMD_SOC_CUSTOM             ,
-    DXRT_CMD_WRITE_INPUT_DMA_CH0    ,
-    DXRT_CMD_WRITE_INPUT_DMA_CH1    ,
-    DXRT_CMD_WRITE_INPUT_DMA_CH2    ,
-    DXRT_CMD_READ_OUTPUT_DMA_CH0    ,
-    DXRT_CMD_READ_OUTPUT_DMA_CH1    ,
-    DXRT_CMD_READ_OUTPUT_DMA_CH2    ,
-    DXRT_CMD_TERMINATE              ,
-    DXRT_CMD_ERROR                  ,
-    DXRT_CMD_DRV_INFO               , /* Sub-command */
-    DXRT_CMD_SCHEDULE               , /* Sub-command */
+    DXRT_CMD_IDENTIFY_DEVICE    = 0, /* Sub-command */
+    DXRT_CMD_GET_STATUS         ,
+    DXRT_CMD_RESET              ,
+    DXRT_CMD_UPDATE_CONFIG      ,
+    DXRT_CMD_UPDATE_FIRMWARE    , /* Sub-command */
+    DXRT_CMD_GET_LOG            ,
+    DXRT_CMD_DUMP               ,
+    DXRT_CMD_WRITE_MEM          ,
+    DXRT_CMD_READ_MEM           ,
+    DXRT_CMD_CPU_CACHE_FLUSH    ,
+    DXRT_CMD_SOC_CUSTOM         ,
+    DXRT_CMD_WRITE_INPUT_DMA_CH0,
+    DXRT_CMD_WRITE_INPUT_DMA_CH1,
+    DXRT_CMD_WRITE_INPUT_DMA_CH2,
+    DXRT_CMD_READ_OUTPUT_DMA_CH0,
+    DXRT_CMD_READ_OUTPUT_DMA_CH1,
+    DXRT_CMD_READ_OUTPUT_DMA_CH2,
+    DXRT_CMD_TERMINATE          ,
+    DXRT_CMD_ERROR              ,
+    DXRT_CMD_DRV_INFO           , /* Sub-command */
+    DXRT_CMD_SCHEDULE           , /* Sub-command */
+    DXRT_CMD_UPLOAD_FIRMWARE    ,
+    DXRT_CMD_NPU_RUN_REQ        ,
+    DXRT_CMD_NPU_RUN_RESP       ,
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
+
+/* CMD : DXRT_CMD_IDENTIFY_DEVICE*/
+typedef enum {
+    DX_IDENTIFY_NONE        = 0,
+    DX_IDENTIFY_FWUPLOAD    = 1,
+} dxrt_ident_sub_cmd_t;
 
 /* CMD : DXRT_CMD_SCHEDULE */
 typedef enum {
@@ -224,9 +243,9 @@ typedef enum {
 
 /* CMD : DXRT_CMD_UPDATE_FIRMWARE */
 typedef enum {
-    FWUPDATE_ONLY      = 0,
-    FWUPDATE_DEV_RESET = BIT(1),
-    FWUPDATE_FORCE     = BIT(2),
+    FWUPDATE_ONLY        = 0,
+    FWUPDATE_DEV_UNRESET = BIT(1),
+    FWUPDATE_FORCE       = BIT(2),
 } dxrt_fwupdate_sub_cmd_t;
 
 #define DXRT_IOCTL_MAGIC     'D'
@@ -237,7 +256,51 @@ typedef enum {
 } dxrt_ioctl_t;
 
 /**********************/
+#define DX_DLMSG_MASIC_S   (8)
+#define DX_DLMSG_SIZE      (0x40)
+#define DX_DLMSG_BAR_MASIC (0xDEE1DEE1)
+typedef enum {
+    DW_NONE         = 0,
+    DW_READY        = 1,
+    DW_DONE         = 2, /* download done */
+    DW_MAGIC_ERR    = 3,
+    DW_HEADER_ERR   = 4,
+    DW_CRC_ERR      = 5,
+    DW_CERT_ERR     = 6,
+    DW_EDMA_ERR     = 7, /* PCIe DMA */
+    DW_CONN_ERR     = 8, /* Connection error */
+    DW_TIMEOUT_ERR  = 9, /* Timeout error */
+} dw_status;
 
+typedef enum {
+    DX_NONE        = 0,
+    DX_ROM         = 1,
+    DX_2ND_BOOT    = 2,
+    DX_RTOS        = 3,
+} boot_step_t;
+
+typedef enum {
+    DW_DEV_NONE = 0,
+    DW_DEV_PCIE = 1,
+    DW_DEV_UART = 2,
+    DW_DEV_USB  = 3,
+    DW_DEV_MAX  = 4,
+} dw_dev_t;
+
+typedef struct {
+    uint8_t      magic[DX_DLMSG_MASIC_S]; /* 0x00 */
+    uint32_t     mode;                    /* 0x08 */
+    uint8_t      sts;                     /* 0x0C */ /*dw_status*/
+    uint8_t      prev_sts;                /* 0x0D */ /*dw_status*/
+    uint8_t      dev_type;                /* 0x0E */ /*dw_dev_t*/
+    uint8_t      bt_step;                 /* 0x0F */ /*boot_step_t*/
+    uint32_t     dl_size;                 /* 0x10 */
+    uint32_t     dl_addr_s;               /* 0x14 */
+    uint32_t     dl_addr_e;               /* 0x18 */
+    uint32_t     bar_magic;               /* 0x1C */
+} __attribute__ ((packed,aligned(4))) dx_download_msg;
+
+/**********************/
 typedef struct _dxrt_queue_t {
     union {
         uint8_t buffer[2048];
@@ -245,13 +308,15 @@ typedef struct _dxrt_queue_t {
     };
     uint32_t lock;
     uint32_t front;
-    uint32_t poped;
     uint32_t rear;
     uint32_t count;
     uint32_t max_count;
     uint32_t elem_size;
     int32_t  enable;
-    uint32_t irq;   /* interrupt handshake */
+    uint32_t irq_done;      /* interrupt handshake */
+    uint32_t id;
+    uint32_t flag;          /* interrupt flags */
+    uint32_t acces_count;   /* access counter from host and device */
 } dxrt_queue_t;
 
 typedef struct dxrt_request_list
@@ -280,6 +345,7 @@ struct dxdev {
     dxrt_device_message_t *msg;
     struct mutex msg_lock;
     uint32_t *log;
+    dx_download_msg *dl;
 
     struct list_head sched;
     spinlock_t       sched_lock;
@@ -320,6 +386,10 @@ typedef int (*dxrt_message_handler)(struct dxdev*, dxrt_message_t*);
 int dxrt_driver_cdev_init(struct dxrt_driver *drv);
 void dxrt_driver_cdev_deinit(struct dxrt_driver *drv);
 int dxrt_request_handler(void *data);
+int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
+int message_handler_general(struct dxdev *dx, dxrt_message_t *msg);
+void dxrt_device_init(struct dxdev* dev);
+/* Queue */
 void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size);
 void dxrt_enable_queue(dxrt_queue_t *q);
 void dxrt_disable_queue(dxrt_queue_t *q);
@@ -330,12 +400,16 @@ int dxrt_is_queue_full(dxrt_queue_t* q);
 int dxrt_lock_queue(dxrt_queue_t *q);
 void dxrt_unlock_queue(dxrt_queue_t *q);
 int dxrt_enqueue(dxrt_queue_t* q, void *elem);
-int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
-int message_handler_general(struct dxdev *dx, dxrt_message_t *msg);
+int dxrt_lock_check(dxrt_queue_t __iomem* q);
 /* Scheduler */
-int set_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
+int add_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
 int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q);
-int delete_matching_queue_list(struct dxdev* dev, npu_bound_op bound);
+int delete_matching_queue(struct dxdev* dev, npu_bound_op bound);
+/* Update */
+bool dx_get_flash_ready(dx_download_msg *msg, int timeout);
+bool dx_get_flash_done(dx_download_msg *msg);
+int8_t dx_get_boot_step(dx_download_msg *msg);
+int8_t dx_get_dl_status(dx_download_msg *msg);
 
 extern dxrt_message_handler message_handler[];
 
@@ -347,6 +421,7 @@ extern dxrt_message_handler message_handler[];
 #define dx_sgdma_read(...) 0
 #define dx_pcie_get_message_area(...) 0
 #define dx_pcie_get_log_area(...) 0
+#define dx_pcie_get_dl_area(...) 0
 #define dx_pcie_get_request_queue(...) 0
 #define dx_pcie_clear_response_queue(...) 0
 #define dx_pcie_is_response_queue_empty(...) 0
@@ -356,6 +431,9 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_get_dev_num(...) 1
 #define dx_pcie_get_download_region(...) 0
 #define dx_pcie_get_download_size(...) 0
+#define dx_pcie_get_booting_region(...) 0
+#define dx_pcie_get_init_completed(...) 0
+#define dx_pcie_set_init_completed(...) 0
 #define dx_pcie_enqueue_error_response(...) 0
 #define dx_pcie_dequeue_error_response(...) 0
 #define dx_pcie_notify_msg_to_device(...) 0

@@ -1,0 +1,2 @@
+cp pci_deepx/dx_dma.ko lib/modules/$(shell uname -r)/kernel/drivers/misc/
+cp rt/dxrt_driver.ko lib/modules/$(shell uname -r)/kernel/drivers/misc/

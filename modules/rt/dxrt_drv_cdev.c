@@ -42,7 +42,7 @@ static int dxrt_dev_open(struct inode *i, struct file *f)
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
     dx = container_of(i->i_cdev, struct dxdev, cdev);
     f->private_data = dx;
-    if(dx->type==0)
+    if(dx->type==DX_ACC)
     {
         dx_sgdma_init(num);
     }
@@ -54,7 +54,7 @@ static int dxrt_dev_release(struct inode *i, struct file *f)
     int num = iminor(f->f_inode);
     struct dxdev *dx = f->private_data;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
-    if(dx->type==0)
+    if(dx->type==DX_ACC)
     {
         dx_sgdma_deinit(num);
     }
@@ -141,7 +141,7 @@ static int dxrt_dev_mmap(struct file *f, struct vm_area_struct *vma)
     int ret = -1;
     struct dxdev *dx = f->private_data;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
-    if(dx->type==1)
+    if(dx->type==DX_STD)
     {
         struct dxnpu *npu = dx->npu;
         unsigned long size = vma->vm_end - vma->vm_start;
@@ -157,7 +157,7 @@ static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
     unsigned int mask = 0;
     unsigned long flags;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
-    if(dx->type==1)
+    if(dx->type==DX_STD)
     {
         struct dxnpu *npu = dx->npu;
         poll_wait(f, &npu->irq_wq, wait);
@@ -214,6 +214,10 @@ static long dxrt_dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
             if(msg.cmd >=0 && msg.cmd < DXRT_CMD_MAX)
             {
                 pr_debug( MODULE_NAME "%d: message %d\n", num, msg.cmd);
+                if (dx_pcie_get_init_completed(dx->id)) {
+                    dx_pcie_set_init_completed(dx->id);
+                    dxrt_device_init(dx);
+                }
                 return message_handler_general(dx, &msg);
                 // return message_handler[msg.cmd](dx, msg.data);
             }

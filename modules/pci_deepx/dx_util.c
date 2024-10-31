@@ -344,6 +344,28 @@ u32 dx_pcie_get_download_size(int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_download_size);
 
+/* will be modified in future(region datas is received from device) */
+u64 dx_pcie_get_booting_region(int dev_id, int id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	return dw->booting_region[id];
+}
+EXPORT_SYMBOL_GPL(dx_pcie_get_booting_region);
+
+bool dx_pcie_get_init_completed(int dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	return dw->init_completed;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_get_init_completed);
+
+void dx_pcie_set_init_completed(int dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	dw->init_completed = false;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_set_init_completed);
+
 /**
  * dx_pci_find_vsec_capability - Find a vendor-specific extended capability
  * @dev: PCI device to query
@@ -371,4 +393,42 @@ u16 dx_pci_find_vsec_capability(struct pci_dev *dev, u16 vendor, int cap)
 	}
 
 	return 0;
+}
+
+/**
+ * dx_pci_read_revision_id - Read the revision ID from the configuration space (offset 0x08)
+ * @dev: PCI device
+ * 
+ * Return :
+ *      0 : PASS
+ */
+int dx_pci_read_revision_id(struct pci_dev *dev, u8 *revision_id)
+{
+    int ret;
+    ret = pci_read_config_byte(dev, PCI_REVISION_ID, revision_id);
+    if (ret) {
+        pr_err("Failed to read Revision ID\n");
+        return ret;
+    }
+    pr_debug("PCIe Device Revision ID: 0x%02x\n", *revision_id);
+    return 0;
+}
+
+/**
+ * dx_pci_read_revision_id - Read the program if from the configuration space (offset 0x08)
+ * @dev: PCI device
+ * 
+ * Return :
+ *      0 : PASS
+ */
+int dx_pci_read_program_if(struct pci_dev *dev, u8 *prog_if)
+{
+    int ret;
+    ret = pci_read_config_byte(dev, PCI_CLASS_PROG, prog_if);
+    if (ret) {
+        pr_err("Failed to read Revision ID\n");
+        return ret;
+    }
+    pr_debug("PCIe Device Program IF: 0x%02x\n", *prog_if);
+    return 0;
 }

@@ -8,17 +8,13 @@
 #ifndef __DXRT_VERSION_H__
 #define __DXRT_VERSION_H__
 
-#define DXRT_MOD_MAJOR		1
-#define DXRT_MOD_MINOR		0
-#define DXRT_MOD_PATCHLEVEL	0
-
 #define DXRT_MODULE_VERSION         \
-    __stringify(DXRT_MOD_MAJOR) "." \
-    __stringify(DXRT_MOD_MINOR) "." \
-    __stringify(DXRT_MOD_PATCHLEVEL)
+    __stringify(RT_VERSION_MAJOR) "." \
+    __stringify(RT_VERSION_MINOR) "." \
+    __stringify(RT_VERSION_PATCH)
 
 #define DXRT_MOD_VERSION_NUMBER  \
-    ((DXRT_MOD_MAJOR)*1000 + (DXRT_MOD_MINOR)*100 + DXRT_MOD_PATCHLEVEL)
+    ((RT_VERSION_MAJOR)*1000 + (RT_VERSION_MINOR)*100 + RT_VERSION_PATCH)
 
 struct dxrt_drv_info {
     unsigned int driver_version;

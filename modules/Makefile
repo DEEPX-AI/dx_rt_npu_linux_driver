@@ -19,8 +19,26 @@ ifneq ($(CROSS_COMPILE),)
 KERNEL_ARCH += CROSS_COMPILE=$(CROSS_COMPILE)
 endif
 
+# rt version
+VERSION_FILE = $(shell pwd)/../release.ver
+VERSION_STRING := $(shell cat $(VERSION_FILE) | cut -d'v' -f2)
+RT_VERSION_MAJOR := $(shell echo $(VERSION_STRING) | cut -d'.' -f1)
+RT_VERSION_MINOR := $(shell echo $(VERSION_STRING) | cut -d'.' -f2)
+RT_VERSION_PATCH := $(shell echo $(VERSION_STRING) | cut -d'.' -f3)
+
+# pcie version
+VERSION_FILE = $(shell pwd)/pci_deepx/release.ver
+VERSION_STRING := $(shell cat $(VERSION_FILE) | cut -d'v' -f2)
+PCIE_VERSION_MAJOR := $(shell echo $(VERSION_STRING) | cut -d'.' -f1)
+PCIE_VERSION_MINOR := $(shell echo $(VERSION_STRING) | cut -d'.' -f2)
+PCIE_VERSION_PATCH := $(shell echo $(VERSION_STRING) | cut -d'.' -f3)
+
 all: check_kbuild_config
-	$(MAKE) -C $(KERNEL_DIR) M=$(MODULE_DIR) $(KERNEL_ARCH) modules
+	@echo "** RT Driver Version : $(RT_VERSION_MAJOR).$(RT_VERSION_MINOR).$(RT_VERSION_PATCH) **"
+	@echo "** PCie Driver Version : $(PCIE_VERSION_MAJOR).$(PCIE_VERSION_MINOR).$(PCIE_VERSION_PATCH) **"
+	$(MAKE) -C $(KERNEL_DIR) M=$(MODULE_DIR) $(KERNEL_ARCH) modules \
+		CCFLAGS="-DRT_VERSION_MAJOR=$(RT_VERSION_MAJOR) -DRT_VERSION_MINOR=$(RT_VERSION_MINOR) -DRT_VERSION_PATCH=$(RT_VERSION_PATCH) \
+		-DPCIE_VERSION_MAJOR=$(PCIE_VERSION_MAJOR) -DPCIE_VERSION_MINOR=$(PCIE_VERSION_MINOR) -DPCIE_VERSION_PATCH=$(PCIE_VERSION_PATCH)"
 
 install:
 	$(MAKE) -C $(KERNEL_DIR) M=$(MODULE_DIR) $(KERNEL_ARCH) modules_install
