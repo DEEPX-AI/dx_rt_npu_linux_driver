@@ -37,7 +37,7 @@
 #define MSGRAM_RESPONSE2_OFFSET_V3 (0x3C00)
 #define MSGRAM_LOG_OFFSET_V3       (0x4000)
 #define MSGRAM_DEBUG_OFFSET_V3     (0x8000)
-#define MSGRAM_ERROR_OFFSET_V3     (0x8000)
+#define MSGRAM_EVENT_OFFSET_V3     (0x8000)
 #define MSGRAM_IRQ_OFFSET_V3       (0x8200)
 #define MSGRAM_END_REGION_V3       (0x8F00)
 #define MSGRAM_DL_OFFSET_V3        (0x8FC0)
@@ -52,7 +52,7 @@ typedef struct _message_ram_table {
 	uint32_t resp2_offs;
 	uint32_t log_offs;
 	uint32_t debug_offs;
-	uint32_t err_offs;
+	uint32_t event_offs;
 	uint32_t irq_offs;
 	uint32_t dl_offs;
 } message_ram_table;
@@ -201,34 +201,42 @@ int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* respons
 }
 EXPORT_SYMBOL_GPL(dx_pcie_dequeue_response);
 
-void dx_pcie_enqueue_error_response(u32 dev_id, uint32_t err_code)
+void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_pcie_msg *dx_msg = dw->dx_msg;
 	unsigned long flags;
 
-	spin_lock_irqsave(&dx_msg->err_lock, flags);
+	spin_lock_irqsave(&dx_msg->event_lock, flags);
 	if (err_code != 0) { /* Check point */
-		dx_msg->err_response.err_code = err_code;
+		dx_msg->event_response.dx_rt_err.err_code = err_code;
 	} else {
-		memcpy_fromio(&dx_msg->err_response, (dx_pcie_dev_err_t *)dx_msg->errors, sizeof(dx_pcie_dev_err_t));
-		dbg_msg("%s:  dev_id %d, code:%d\n", __func__, dev_id, dx_msg->err_response.err_code);
-		memset_io((dx_pcie_dev_err_t *)dx_msg->errors, 0x00, sizeof(dx_pcie_dev_err_t));
+		memcpy_fromio(&dx_msg->event_response, (dx_pcie_dev_event_t *)dx_msg->events, sizeof(dx_pcie_dev_event_t));
+		dbg_msg("%s:  dev_id %d, code:%d\n", __func__, dev_id, dx_msg->event_response.err_code);
+		memset_io((dx_pcie_dev_event_t *)dx_msg->events, 0x00, sizeof(dx_pcie_dev_event_t));
 	}
-	spin_unlock_irqrestore(&dx_msg->err_lock, flags);
+	spin_unlock_irqrestore(&dx_msg->event_lock, flags);
 }
-EXPORT_SYMBOL_GPL(dx_pcie_enqueue_error_response);
+EXPORT_SYMBOL_GPL(dx_pcie_enqueue_event_response);
 
-void dx_pcie_dequeue_error_response(u32 dev_id, dx_pcie_dev_err_t* response)
+void dx_pcie_dequeue_event_response(u32 dev_id, dx_pcie_dev_event_t* response)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_pcie_msg *dx_msg = dw->dx_msg;
 
-	dx_pcie_interrupt_err(dev_id);
-	*response = dx_msg->err_response;
-	memset(&dx_msg->err_response, 0x00, sizeof(dx_pcie_dev_err_t));
+	dx_pcie_interrupt_event(dev_id);
+	*response = dx_msg->event_response;
+	memset(&dx_msg->event_response, 0x00, sizeof(dx_pcie_dev_event_t));
 }
-EXPORT_SYMBOL_GPL(dx_pcie_dequeue_error_response);
+EXPORT_SYMBOL_GPL(dx_pcie_dequeue_event_response);
+
+void dx_pcie_clear_event_response(u32 dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	memset(&dx_msg->event_response, 0x00, sizeof(dx_pcie_dev_event_t));
+}
+EXPORT_SYMBOL_GPL(dx_pcie_clear_event_response);
 
 #define EP_IRQ_MSG_OFFSET		(0x20)
 #define EP_IRQ_MSG_EN_OFFSET	(0x60)
@@ -325,7 +333,7 @@ static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 		ep_ram_info.resp1_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE1_OFFSET_V2;
 		ep_ram_info.log_offs	= ep_ram_info.base_offs + MSGRAM_LOG_OFFSET_V2;
 		ep_ram_info.debug_offs	= ep_ram_info.base_offs + MSGRAM_DEBUG_OFFSET_V2;
-		ep_ram_info.err_offs	= ep_ram_info.base_offs + MSGRAM_ERROR_OFFSET_V2;
+		ep_ram_info.event_offs	= ep_ram_info.base_offs + MSGRAM_ERROR_OFFSET_V2;
 		ep_ram_info.irq_offs	= ep_ram_info.base_offs + MSGRAM_IRQ_OFFSET_V2;
 	} else if (dw->dx_ver == 3) {
 		ep_ram_info.base_offs	= MSGRAM_MSG_OFFSET_V3;
@@ -337,7 +345,7 @@ static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 		ep_ram_info.resp2_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE2_OFFSET_V3;
 		ep_ram_info.log_offs	= ep_ram_info.base_offs + MSGRAM_LOG_OFFSET_V3;
 		ep_ram_info.debug_offs	= ep_ram_info.base_offs + MSGRAM_DEBUG_OFFSET_V3;
-		ep_ram_info.err_offs	= ep_ram_info.base_offs + MSGRAM_ERROR_OFFSET_V3;
+		ep_ram_info.event_offs	= ep_ram_info.base_offs + MSGRAM_EVENT_OFFSET_V3;
 		ep_ram_info.irq_offs	= ep_ram_info.base_offs + MSGRAM_IRQ_OFFSET_V3;
 		ep_ram_info.dl_offs		= ep_ram_info.base_offs + MSGRAM_DL_OFFSET_V3;
 	} else {
@@ -364,7 +372,7 @@ int dx_pcie_message_init(int dev_id)
 	dx_msg->response[0] = dw->npu_region[0].vaddr + ep_ram_info.resp0_offs;
 	dx_msg->response[1] = dw->npu_region[0].vaddr + ep_ram_info.resp1_offs;
 	dx_msg->response[2] = dw->npu_region[0].vaddr + ep_ram_info.resp2_offs;
-	dx_msg->errors      = dw->npu_region[0].vaddr + ep_ram_info.err_offs;
+	dx_msg->events      = dw->npu_region[0].vaddr + ep_ram_info.event_offs;
 	dx_msg->irq_status  = dw->npu_region[0].vaddr + ep_ram_info.irq_offs;
 	dx_msg->notify      = dw->npu_region[1].vaddr;
 
@@ -375,7 +383,7 @@ int dx_pcie_message_init(int dev_id)
 	spin_lock_init(&dx_msg->responses_lock[0]);
 	spin_lock_init(&dx_msg->responses_lock[1]);
 	spin_lock_init(&dx_msg->responses_lock[2]);
-	spin_lock_init(&dx_msg->err_lock);
+	spin_lock_init(&dx_msg->event_lock);
 
 	/* IRQ Status Clear */
 	if (dw->nr_irqs == 1) {

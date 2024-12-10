@@ -74,7 +74,7 @@ struct dx_dma_ioc_info {
 #define IOCTL_XDMA_ADDRMODE_GET	_IOR('q', 5, int)
 #define IOCTL_XDMA_ALIGN_GET	_IOR('q', 6, int)
 
-void dx_pcie_interrupt_err(int dev_id);
+void dx_pcie_interrupt_event(int dev_id);
 void dx_cdev_ctrl_init(struct dx_dma_cdev *xcdev);
 
 #endif /* __DX_CDEV_CTRL_H__ */

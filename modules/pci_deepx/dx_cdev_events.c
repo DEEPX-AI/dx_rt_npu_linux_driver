@@ -15,6 +15,8 @@
 #include "dx_pcie_api.h"
 #endif
 
+// #define DX_PCIE_DBG_WAIT_QUE
+
 /*
  * character device file operations for events
  */
@@ -126,11 +128,11 @@ unsigned int dx_pcie_interrupt(int dev_id, int irq_id)
 	} else {
 		user_irq = &dw->irq[dw->dma_irqs + irq_id].user_irq;
 	}
-	dbg_irq("%s:%d start irq : %d[%p, %p]\n", __func__, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
-
+	dbg_irq("%s:%d:%d start irq : %d[%p, %p]\n", __func__, current->tgid, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
 	wait_event_interruptible(user_irq->events_wq, user_irq->events_irq != 0);
+	dbg_irq("%s:%d:%d wake irq : %d[%p, %p]\n", __func__, current->tgid, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
+
 	spin_lock_irqsave(&user_irq->events_lock, flags);
-	dbg_irq("%s:%d wake irq : %d[%p, %p]\n", __func__, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
 	if (user_irq->events_irq) {
 		mask = user_irq->events_irq;
 		user_irq->events_irq = 0;
@@ -141,56 +143,75 @@ unsigned int dx_pcie_interrupt(int dev_id, int irq_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_interrupt);
 
-void dx_pcie_interrupt_err(int dev_id)
+#ifdef DX_PCIE_DBG_WAIT_QUE
+/** Used in tsk->state:
+ #define TASK_RUNNING			0x0000
+ #define TASK_INTERRUPTIBLE		0x0001
+ #define TASK_UNINTERRUPTIBLE	0x0002
+ */
+static void show_wait_queue_list(wait_queue_head_t *wq)
+{
+	wait_queue_entry_t *entry;
+	struct task_struct *task;
+
+	list_for_each_entry(entry, &wq->head, entry) {
+		task = entry->private;
+		if (task) {
+			pr_info("Task TGID: %d, State: %d\n", task->tgid, task->__state);
+		} else {
+			pr_info("Entry with no task\n");
+		}
+	}
+}
+#endif
+
+void dx_pcie_interrupt_event(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_dma_user_irq *err_irq;
+	struct dx_dma_user_irq *event_irq;
 	unsigned long flags;
 	unsigned int mask = 0;
 
 	if (dw->nr_irqs == 1) {
-		err_irq = &dw->irq[0].user_irqs[dw->err_irq_idx];
+		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
 	} else {
-		err_irq = &dw->irq[dw->dma_irqs + dw->err_irq_idx].user_irq;
+		event_irq = &dw->irq[dw->dma_irqs + dw->event_irq_idx].user_irq;
 	}
-	dbg_irq("%s start irq : %d[%p, %p]\n", __func__, err_irq->events_irq, &err_irq->events_irq, &err_irq->events_wq);
+	dbg_irq("%s:%d start irq : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
+	wait_event_interruptible(event_irq->events_wq, event_irq->events_irq != 0);
+	dbg_irq("%s:%d wake irq : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
 
-	wait_event_interruptible(err_irq->events_wq, err_irq->events_irq != 0);
-	spin_lock_irqsave(&err_irq->events_lock, flags);
-	if (err_irq->events_irq) {
-		mask = err_irq->events_irq;
-		err_irq->events_irq = 0;
+	spin_lock_irqsave(&event_irq->events_lock, flags);
+	if (event_irq->events_irq) {
+		mask = event_irq->events_irq;
+		event_irq->events_irq = 0;
 	}
-	spin_unlock_irqrestore(&err_irq->events_lock, flags);
+	spin_unlock_irqrestore(&event_irq->events_lock, flags);
 }
-EXPORT_SYMBOL_GPL(dx_pcie_interrupt_err);
+EXPORT_SYMBOL_GPL(dx_pcie_interrupt_event);
 
 unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_dma_user_irq *user_irq;
-	struct dx_dma_user_irq *err_irq;
+	struct dx_dma_user_irq *event_irq;
 	unsigned long flags;
 
 	if (dw->nr_irqs == 1) {
-		user_irq = &dw->irq[0].user_irqs[irq_id];
-		err_irq = &dw->irq[0].user_irqs[dw->err_irq_idx];
+		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
 	} else {
-		user_irq = &dw->irq[dw->dma_irqs + irq_id].user_irq;
-		err_irq = &dw->irq[dw->dma_irqs + dw->err_irq_idx].user_irq;
+		event_irq = &dw->irq[dw->dma_irqs + dw->event_irq_idx].user_irq;
 	}
-	dbg_irq("%s start irq : %d[%p, %p]\n", __func__, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
 
-	spin_lock_irqsave(&(user_irq->events_lock), flags);
-	if (!user_irq->events_irq) {
-		user_irq->events_irq = 2;
-		wake_up_interruptible(&(user_irq->events_wq));
+	spin_lock_irqsave(&(event_irq->events_lock), flags);
+	if (!event_irq->events_irq) {
+		event_irq->events_irq = 2;
+#ifdef DX_PCIE_DBG_WAIT_QUE
+		show_wait_queue_list(&(event_irq->events_wq));
+#endif
+		wake_up_interruptible(&(event_irq->events_wq));
 	}
-	if (!err_irq->events_irq) {
-		err_irq->events_irq = 2;
-		wake_up_interruptible(&(err_irq->events_wq));
-	}
-	spin_unlock_irqrestore(&(user_irq->events_lock), flags);
+	spin_unlock_irqrestore(&(event_irq->events_lock), flags);
+	dbg_irq("%s:%d wake-up : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
 
 	return 0;
 }

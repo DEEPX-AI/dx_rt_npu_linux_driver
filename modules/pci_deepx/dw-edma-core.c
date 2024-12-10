@@ -53,7 +53,7 @@ static dx_pcie_host_irq_t dx_pcie_irq[USER_IRQ_NUMS];
 
 /* User IRQ Vector Table */
 static irqreturn_t dw_edma_user_irq_npu(int irq, void *data);
-static irqreturn_t dw_edma_user_errors(int irq, void *data);
+static irqreturn_t dw_edma_user_events(int irq, void *data);
 
 typedef struct user_irq_v_table_t
 {
@@ -71,7 +71,7 @@ static user_irq_v_table_t user_irq_vec_table_v2[USER_IRQ_NUMS] = {
 	/* handler / name / irq_pos / event_id / dma_ch_n / bit */
 	{dw_edma_user_irq_npu, "npu0_d", 0, 0, 0, BIT(0)},
 	{dw_edma_user_irq_npu, "npu1_d", 1, 1, 1, BIT(1)},
-	{dw_edma_user_errors , "errors", 2, 2, 0, BIT(2)},
+	{dw_edma_user_events , "events", 2, 2, 0, BIT(2)},
 };
 /* DX-M1A */
 static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
@@ -79,7 +79,7 @@ static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
 	{dw_edma_user_irq_npu, "npu0_d", 0, 0, 0, BIT(0)},
 	{dw_edma_user_irq_npu, "npu1_d", 1, 1, 1, BIT(1)},
 	{dw_edma_user_irq_npu, "npu2_d", 2, 2, 2, BIT(2)},
-	{dw_edma_user_errors , "errors", 3, 3, 0, BIT(3)},
+	{dw_edma_user_events , "events", 3, 3, 0, BIT(3)},
 };
 
 static inline int get_irq_to_dma_num(int irq_n)
@@ -762,7 +762,7 @@ static irqreturn_t user_irq_errors(struct dx_edma_irq *dw_irq, struct dx_dma_use
 	unsigned long flags;
 
 #if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
-	dx_pcie_enqueue_error_response(dw_irq->dw->idx, 0);
+	dx_pcie_enqueue_event_response(dw_irq->dw->idx, 0);
 #endif
 
 	spin_lock_irqsave(&(user_irq->events_lock), flags);
@@ -949,7 +949,7 @@ static int user_irq_check(int irq, void *data)
 				dx_pcie_irq[i].prev = temp;
 				dx_pcie_irq[i].irq_count++;
 				dbg_irq("user irq is called [Event ID:%d, cnt:%d]\n", event_id, dx_pcie_irq[i].irq_count);
-				if (event_id < dw->err_irq_idx) { /* TODO */
+				if (event_id < dw->event_irq_idx) { /* TODO */
 					user_irq_service(irq, &dw_irq->user_irqs[event_id]);
 				} else {
 					user_irq_errors(dw_irq, &dw_irq->user_irqs[event_id]);
@@ -978,7 +978,7 @@ static irqreturn_t dw_edma_user_irq_npu(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t dw_edma_user_errors(int irq, void *data)
+static irqreturn_t dw_edma_user_events(int irq, void *data)
 {
 	struct dx_edma_irq *dw_irq = data;
 	struct dx_dma_user_irq *user_irq = &dw_irq->user_irq;

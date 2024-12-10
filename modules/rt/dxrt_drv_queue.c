@@ -20,6 +20,7 @@ typedef enum dxqueue_flag_t {
 } dxqueue_flag;
 
 static size_t buffer_offset = offsetof(dxrt_queue_t, buffer[0]);
+
 void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size)
 {
     memset(q, 0, sizeof(dxrt_queue_t));
@@ -31,14 +32,17 @@ void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size)
     q->elem_size = elem_size;
     q->enable = 1;
 }
+
 void dxrt_enable_queue(dxrt_queue_t *q)
 {
     q->enable = 1;
 }
+
 void dxrt_disable_queue(dxrt_queue_t *q)
 {
     q->enable = 0;
 }
+
 int dxrt_is_queue_empty(dxrt_queue_t* q)
 {
     volatile uint32_t val;
@@ -46,6 +50,7 @@ int dxrt_is_queue_empty(dxrt_queue_t* q)
     val = readl(count);
     return val == 0;
 }
+
 int dxrt_is_queue_full(dxrt_queue_t* q)
 {
     volatile uint32_t val;
@@ -53,34 +58,16 @@ int dxrt_is_queue_full(dxrt_queue_t* q)
     val = readl(count);
     return val == q->max_count;
 }
-#define DXRT_ENQUEUE_TIMEOUT    (10000)
-#define DXRT_ENQUEUE_DELAY          (1)
-#define DXRT_LOCK_GET_THRES         (1)
+
 int dxrt_lock_queue(dxrt_queue_t __iomem* q)
 {
-    volatile uint32_t val;
-    int timeout = DXRT_ENQUEUE_TIMEOUT;
     int ret = 1;
-    int lock_cnt = 0;
-    while(timeout >= 0) {
-        val = readl(&q->lock);
-        if (val==0) {
-            if (lock_cnt++ > DXRT_LOCK_GET_THRES)
-                break;
-        } else {
-            lock_cnt = 0;
-            timeout--;
-            udelay(DXRT_ENQUEUE_DELAY);
-        }
-    }
-    if (timeout < 0) {
-        ret = 0;
-        pr_err("%s: failed(%d)\n", __func__, timeout);
-    } else {
-        writel(DX_QUEUE_HOST_LOCK, &q->lock);
-    } 
+    writel(DX_QUEUE_HOST_LOCK, &q->lock);
     return ret;
 }
+
+#define DXRT_ENQUEUE_TIMEOUT        (100000) /* 100ms */
+#define DXRT_ENQUEUE_DELAY          (1)
 int dxrt_lock_check(dxrt_queue_t __iomem* q)
 {
     int timeout = DXRT_ENQUEUE_TIMEOUT;
@@ -107,14 +94,16 @@ void dxrt_unlock_queue(dxrt_queue_t __iomem* q)
     writel(DX_QUEUE_UNLOCK, &q->lock);
     writel(DX_FLAG_UNLOCK, &q->flag);
 }
+
 void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem* q)
 {
     void __iomem *irq_done = &q->irq_done;
     writel(1, irq_done);
 }
+
 int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
 {
-    int timeout = 10000;
+    int timeout = 100000;
     int ret = 0;
     do {
         if (timeout-- < 0) {
@@ -125,6 +114,7 @@ int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
     } while(readl(&q->irq_done) == 1);
     return ret;
 }
+
 int dxrt_enqueue(dxrt_queue_t __iomem* q, void *elem)
 {
     int ret = 0;
@@ -147,6 +137,7 @@ int dxrt_enqueue(dxrt_queue_t __iomem* q, void *elem)
     }
     return ret;
 }
+
 int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock)
 {
     int empty;

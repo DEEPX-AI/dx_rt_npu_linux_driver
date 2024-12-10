@@ -203,7 +203,7 @@ struct dw_edma {
 	struct dx_edma_irq			*irq;
 	int							dma_irqs; /* number of edma irqs */
 	int							nr_irqs;
-	u16							err_irq_idx;	/* Error index of MSI vector table */
+	u16							event_irq_idx;	/* Error index of MSI vector table */
 	
 	enum dx_edma_map_format		mf;
 

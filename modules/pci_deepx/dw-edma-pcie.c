@@ -421,8 +421,8 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		pci_err(pdev, "Please check BIOS setting of host.\n");
 		return -ENOTSUPP;
 	}
-	dw->err_irq_idx = total_irqs - vsec_data.dma_irqs - 1;
-	pci_dbg(pdev, "Error irq index: %d\n", dw->err_irq_idx);
+	dw->event_irq_idx = total_irqs - vsec_data.dma_irqs - 1;
+	pci_dbg(pdev, "Error irq index: %d\n", dw->event_irq_idx);
 
 	/* Check BAR0 size */
 	bar_size = dx_pci_rebar_get_current_size(pdev, 0);
