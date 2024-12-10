@@ -11,7 +11,7 @@
 
 #include <linux/compiler.h>
 
-#define MAX_DEV_NUM		16
+#define MAX_DEV_NUM		(64)
 
 enum channel_id {
 	EDMA_CH_WR = 0,

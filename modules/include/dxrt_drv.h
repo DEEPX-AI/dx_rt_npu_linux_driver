@@ -48,10 +48,16 @@
 
 #define DX_ACC              (0) /* accelator device */
 #define DX_STD              (1) /* stand alone device */
-#define DX_DEVICE_MAX_NUM   (32)
+#define DX_DEVICE_MAX_NUM   (64)
 
 /**********************/
 /* RT/driver sync     */
+
+typedef enum {
+    DXRT_EVENT_ERROR,
+    DXRT_EVENT_NOTIFY_THROT,
+    DXRT_EVENT_NUM,
+} dxrt_event_t;
 
 typedef enum _dxrt_error_t {
     ERR_NONE      = 0,
@@ -62,6 +68,16 @@ typedef enum _dxrt_error_t {
     ERR_PCIE_DMA_CH1_FAIL,
     ERR_PCIE_DMA_CH2_FAIL,
 } dxrt_error_t;
+
+typedef enum _dxrt_notify_throt_t {
+    NTFY_NONE       = 0,
+    NTFY_THROT_FREQ_DOWN,
+    NTFY_THROT_FREQ_UP,
+    NTFY_THROT_VOLT_DOWN,
+    NTFY_THROT_VOLT_UP,
+    NTFY_EMERGENCY_BLOCK,
+    NTFY_EMERGENCY_RELEASE,
+} dxrt_notify_throt_t;
 
 typedef enum _npu_priority_op {
     N_PRIORITY_NORMAL = 0,
@@ -214,7 +230,7 @@ typedef enum {
     DXRT_CMD_READ_OUTPUT_DMA_CH1,
     DXRT_CMD_READ_OUTPUT_DMA_CH2,
     DXRT_CMD_TERMINATE          ,
-    DXRT_CMD_ERROR              ,
+    DXRT_CMD_EVENT              ,
     DXRT_CMD_DRV_INFO           , /* Sub-command */
     DXRT_CMD_SCHEDULE           , /* Sub-command */
     DXRT_CMD_UPLOAD_FIRMWARE    ,
@@ -370,6 +386,7 @@ struct dxdev {
     dxrt_response_t response;
     wait_queue_head_t error_wq;
     dxrt_error_t error;
+    dxrt_notify_throt_t notify;
     spinlock_t error_lock;
 };
 
@@ -434,8 +451,9 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_get_booting_region(...) 0
 #define dx_pcie_get_init_completed(...) 0
 #define dx_pcie_set_init_completed(...) 0
-#define dx_pcie_enqueue_error_response(...) 0
-#define dx_pcie_dequeue_error_response(...) 0
+#define dx_pcie_enqueue_event_response(...) 0
+#define dx_pcie_dequeue_event_response(...) 0
+#define dx_pcie_clear_event_response(...) 0
 #define dx_pcie_notify_msg_to_device(...) 0
 #define dx_pcie_notify_req_to_device(...) 0
 #define dx_pcie_get_driver_info(...) 0

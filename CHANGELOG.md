@@ -1,3 +1,11 @@
+## v1.3.0 / 2024-12-10
+### 1. Changed
+- Update device max num(64)
+### 2. Fixed
+- None
+### 3. Added
+- implement recovery concept
+
 ## v1.1.0 / 2024-10-28
 ### 1. Changed
 - Add driver version mechanism with DO

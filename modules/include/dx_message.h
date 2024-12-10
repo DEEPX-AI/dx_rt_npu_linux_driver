@@ -84,19 +84,35 @@ typedef struct {
     uint32_t reserved_ddr[10];
 } dx_pcie_dev_err_t;
 
+typedef struct {
+    uint32_t ntfy_code;
+    uint32_t npu_id;
+    uint32_t throt_voltage[2];      // [0] current, [1] target
+    uint32_t throt_freq[2];         // [0] current, [1] target
+    uint32_t throt_temper;
+} dx_pcie_dev_ntfy_throt_t;
+
+typedef struct {
+    uint32_t            event_type;
+    union {
+        dx_pcie_dev_err_t           dx_rt_err;
+        dx_pcie_dev_ntfy_throt_t    dx_rt_ntfy_throt;
+    };
+} dx_pcie_dev_event_t;
+
 struct dx_pcie_msg {
     void __iomem                *response[DX_PCIE_RESP_NUM];
-    void __iomem                *errors;
+    void __iomem                *events;
     void __iomem                *irq_status;
     void __iomem                *notify;        /* generate irq to device */
     dx_pcie_response_list_t     responses[DX_PCIE_RESP_NUM];
-    dx_pcie_dev_err_t           err_response;
+    dx_pcie_dev_event_t         event_response;
     spinlock_t                  responses_lock[DX_PCIE_RESP_NUM];
-    spinlock_t                  err_lock;
+    spinlock_t                  event_lock;
 };
 
 void dx_pcie_enqueue_response(u32 dev_id, int dma_ch);
 int dx_pcie_message_init(int dev_id);
-void dx_pcie_enqueue_error_response(u32 dev_id, uint32_t err_code);
+void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code);
 
 #endif

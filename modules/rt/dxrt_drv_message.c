@@ -502,7 +502,7 @@ static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req,
             USER_SPACE_BUF, 0);
         if (size != req->input.size) {
             pr_err("Pcie input write error!(%ld)\n", size);
-            dx_pcie_enqueue_error_response(num, ERR_PCIE_DMA_CH0_FAIL + req->dma_ch);
+            dx_pcie_enqueue_event_response(num, ERR_PCIE_DMA_CH0_FAIL + req->dma_ch);
             ret = -ECOMM;
         }
     } else {
@@ -837,7 +837,7 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg)
                         {
                             pr_err("Pcie output read error!(%ld)\n", size);
                             response.status = ERR_PCIE_DMA_CH0_FAIL + ch;
-                            dx_pcie_enqueue_error_response(num, ERR_PCIE_DMA_CH0_FAIL + ch);
+                            dx_pcie_enqueue_event_response(num, ERR_PCIE_DMA_CH0_FAIL + ch);
                             ret = -ECOMM;
                         }
                     }
@@ -916,7 +916,7 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg)
                 pr_debug("%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }  
-            pr_debug("%d: %s, %d\n", num, __func__, ch);
+            pr_debug("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
             mask = dx_pcie_interrupt_wakeup(num, ch);
         }
         // spin_lock_irqsave(&dev->error_lock, flags);
@@ -1290,7 +1290,7 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg)
 }
 
 /**
- * dxrt_handle_error - Report error to user (only accelator device)
+ * dxrt_handle_event - Report event to user (only accelator device)
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
  *
@@ -1299,32 +1299,43 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg)
  * Return: 0 on success,
  *        -EFAULT    if an error occurs during the copy(user <-> kernel)
 */
-static int dxrt_handle_error(struct dxdev* dev, dxrt_message_t* msg)
+static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg)
 {
     int num = dev->id;
     unsigned long flags;
-    dx_pcie_dev_err_t dev_err;
+    dx_pcie_dev_event_t dev_event;
     struct deepx_pcie_info info;
 
-    pr_debug(MODULE_NAME "%d: %s: start to wait.\n", num, __func__);
+    dev->error = 0;
+    pr_debug(MODULE_NAME "%d:%d %s: start to wait. error %d\n", num, current->tgid, __func__, dev->error);
     {
-        dx_pcie_dequeue_error_response(num, &dev_err);
-        dev->error = dev_err.err_code;
+        dx_pcie_clear_event_response(num);
+        dx_pcie_dequeue_event_response(num, &dev_event);
+        if (dev_event.event_type == DXRT_EVENT_ERROR) {
+            dev->error = dev_event.dx_rt_err.err_code;
+            dev->notify = NTFY_NONE;
+        } else {
+            dev->error = ERR_NONE;
+            dev->notify = dev_event.dx_rt_ntfy_throt.ntfy_code;
+        }
         dx_pcie_get_driver_info(&info, num);
     }
-    // ret = wait_event_interruptible( dev->error_wq, dev->error!=0 );
-    pr_debug(MODULE_NAME "%d: %s: wake up. error %d\n", num, __func__, dev->error);
-    spin_lock_irqsave(&dev->error_lock, flags);
-    dev_err.rt_driver_version   = DXRT_MOD_VERSION_NUMBER;
-    dev_err.pcie_driver_version = info.driver_version;
-    dev_err.bus   = info.bus;
-    dev_err.dev   = info.dev;
-    dev_err.func  = info.func;
-    dev_err.speed = info.speed;
-    dev_err.width = info.width;
-    spin_unlock_irqrestore(&dev->error_lock, flags);
+    pr_debug(MODULE_NAME "%d:%d %s: wake up. error %d\n", num, current->tgid, __func__, dev->error);
+
+    if (dev_event.event_type == DXRT_EVENT_ERROR) {
+        spin_lock_irqsave(&dev->error_lock, flags);
+        dev_event.dx_rt_err.rt_driver_version   = DXRT_MOD_VERSION_NUMBER;
+        dev_event.dx_rt_err.pcie_driver_version = info.driver_version;
+        dev_event.dx_rt_err.bus                 = info.bus;
+        dev_event.dx_rt_err.dev                 = info.dev;
+        dev_event.dx_rt_err.func                = info.func;
+        dev_event.dx_rt_err.speed               = info.speed;
+        dev_event.dx_rt_err.width               = info.width;
+        spin_unlock_irqrestore(&dev->error_lock, flags);
+    }
+
     if (msg->data!=NULL) {
-        if (copy_to_user((void __user*)msg->data, &dev_err, sizeof(dx_pcie_dev_err_t))) {
+        if (copy_to_user((void __user*)msg->data, &dev_event, sizeof(dx_pcie_dev_event_t))) {
             pr_debug("%d: %s failed.\n", num, __func__);
             return -EFAULT;
         }
@@ -1410,7 +1421,7 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_UPDATE_FIRMWARE]      = dxrt_update_firmware,
     [DXRT_CMD_GET_LOG]              = dxrt_get_log,
     [DXRT_CMD_DUMP]                 = dxrt_msg_general,
-    [DXRT_CMD_ERROR]                = dxrt_handle_error,
+    [DXRT_CMD_EVENT]                = dxrt_handle_event,
     [DXRT_CMD_DRV_INFO]             = dxrt_handle_drv_info,
     [DXRT_CMD_SCHEDULE]             = dxrt_schedule,
     [DXRT_CMD_UPLOAD_FIRMWARE]      = dxrt_upload_firmware,
