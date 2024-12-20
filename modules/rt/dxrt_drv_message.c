@@ -466,7 +466,7 @@ static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req, 
 
     spin_lock_irqsave(lock, flags);
     if (dxrt_is_queue_full(queue)) {
-        ret = -EAGAIN;
+        ret = -EBUSY;
         pr_debug( "%s: %d rejected.\n", __func__, req->req_id);
     } else {
         if ((ret = dxrt_lock_queue(queue))) {
@@ -1418,6 +1418,7 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_GET_STATUS]           = dxrt_msg_general,
     [DXRT_CMD_RESET]                = dxrt_reset_device,
     [DXRT_CMD_UPDATE_CONFIG]        = dxrt_msg_general,
+    [DXRT_CMD_UPDATE_CONFIG_JSON]   = dxrt_msg_general,
     [DXRT_CMD_UPDATE_FIRMWARE]      = dxrt_update_firmware,
     [DXRT_CMD_GET_LOG]              = dxrt_get_log,
     [DXRT_CMD_DUMP]                 = dxrt_msg_general,
