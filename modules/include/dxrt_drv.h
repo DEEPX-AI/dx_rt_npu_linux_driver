@@ -236,6 +236,7 @@ typedef enum {
     DXRT_CMD_UPLOAD_FIRMWARE    ,
     DXRT_CMD_NPU_RUN_REQ        ,
     DXRT_CMD_NPU_RUN_RESP       ,
+    DXRT_CMD_UPDATE_CONFIG_JSON ,
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
 

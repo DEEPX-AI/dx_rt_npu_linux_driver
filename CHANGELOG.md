@@ -1,3 +1,11 @@
+## v1.3.1 / 2024-12-19
+### 1. Changed
+- None
+### 2. Fixed
+- fix unknown return type of request_acc func
+### 3. Added
+- None
+
 ## v1.3.0 / 2024-12-10
 ### 1. Changed
 - Update device max num(64)
