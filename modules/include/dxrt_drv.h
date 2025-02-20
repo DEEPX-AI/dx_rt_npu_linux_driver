@@ -194,6 +194,9 @@ typedef struct _dxrt_response_t {
     uint32_t  ppu_filter_num;
     uint32_t  proc_id;
     uint32_t  queue;
+    int32_t   dma_ch;
+    uint32_t  ddr_wr_bw;
+    uint32_t  ddr_rd_bw;
 } dxrt_response_t;
 
 typedef struct
@@ -237,6 +240,8 @@ typedef enum {
     DXRT_CMD_NPU_RUN_REQ        ,
     DXRT_CMD_NPU_RUN_RESP       ,
     DXRT_CMD_UPDATE_CONFIG_JSON ,
+    DXRT_CMD_RECOVERY           ,
+    DXRT_CMD_SET_DDR_FREQ       ,
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
 
@@ -423,6 +428,7 @@ int dxrt_lock_check(dxrt_queue_t __iomem* q);
 int add_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
 int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q);
 int delete_matching_queue(struct dxdev* dev, npu_bound_op bound);
+void clear_queue_list(struct dxdev* dev);
 /* Update */
 bool dx_get_flash_ready(dx_download_msg *msg, int timeout);
 bool dx_get_flash_done(dx_download_msg *msg);

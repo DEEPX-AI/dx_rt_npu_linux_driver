@@ -103,6 +103,9 @@ static int dxrt_copy_resp_to_user_acc(struct dxdev* dev, dxrt_message_t *msg, dx
     user_response.ppu_filter_num = response->ppu_filter_num;
     user_response.proc_id = response->proc_id;
     user_response.queue = response->queue;
+    user_response.dma_ch = response->dma_ch;
+    user_response.ddr_rd_bw = response->ddr_rd_bw;
+    user_response.ddr_wr_bw = response->ddr_wr_bw;
 
     if (copy_to_user((void __user*)msg->data, &user_response, sizeof(dxrt_response_t))) {
         pr_err( MODULE_NAME "%d: %s: memcpy failed.\n", num, __func__);
@@ -1392,6 +1395,32 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg)
     return ret;
 }
 
+/**
+ * dxrt_recovery_device - Driver and firmware recovery in unusual situations
+ * @dev: The deepx device on kernel
+ * @msg: User-space pointer including the data buffer
+ *
+ * This function copies the user-space datas to deepx device provided by the ioctl command.
+ * Also, this function is general interface to communicate with the deepx device.
+ * 
+ * Return: 0 on success,
+ *        -EFAULT    if an error occurs during the copy(user <-> kernel).
+ *        -ETIMEDOUT if an error occurs during waiting from response of deepx device
+ *        -ENOMEM    if an error occurs during memory allocation on kernel space
+ */
+static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg)
+{
+    int ret = 0;
+    if (dev->type == DX_STD) {
+        /* TODO */
+    } else {
+        pr_info("%s\n", __func__);
+        clear_queue_list(dev);
+        ret = dxrt_msg_general(dev, msg);
+    }
+    return ret;
+}
+
 static int dxrt_handle_drv_info(struct dxdev* dev, dxrt_message_t* msg)
 {
     return dxrt_handle_rt_drv_info_sub(dev, msg);
@@ -1428,4 +1457,6 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_UPLOAD_FIRMWARE]      = dxrt_upload_firmware,
     [DXRT_CMD_NPU_RUN_REQ]          = dxrt_npu_run_request,
     [DXRT_CMD_NPU_RUN_RESP]         = dxrt_npu_run_response,
+    [DXRT_CMD_RECOVERY]             = dxrt_recovery_device,
+    [DXRT_CMD_SET_DDR_FREQ]         = dxrt_msg_general,
 };

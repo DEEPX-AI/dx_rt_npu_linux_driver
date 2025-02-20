@@ -29,6 +29,8 @@ typedef struct {
     uint64_t  base;
     uint32_t  offset;
     uint32_t  size;
+    uint32_t  ddr_rd_bw;
+    uint32_t  ddr_wr_bw;
 } dx_pcie_response_t;
 
 typedef struct

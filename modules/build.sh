@@ -63,6 +63,15 @@ function build_usage() {
 	echo ""
 }
 
+function host_reboot() {
+	echo -n "Do you want to reboot now? (y/n): "
+	read -r answer
+	if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
+		echo "Start reboot..."
+		sudo reboot now
+	fi
+}
+
 _device=""
 _module=""
 _destdir="${BUILD_DEFAULT_INSTALL_DIR}"
@@ -246,4 +255,5 @@ if [[ ${_command} == "install" ]]; then
 	if [[ -z ${_compiler} ]]; then
 		./install-udev_rule.sh
 	fi
+	host_reboot
 fi

@@ -410,12 +410,12 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	nr_irqs = pci_alloc_irq_vectors(pdev, 1, total_irqs,
 					PCI_IRQ_MSI | PCI_IRQ_MSIX);
 	if (nr_irqs < 1) {
-		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%u)\n",
+		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%d)\n",
 			nr_irqs);
 		return -EPERM;
 	}
 	if (nr_irqs == 1) {
-		pci_err(pdev, "Fail to alloc IRQ vector(number of IRQs=%u)\n",
+		pci_err(pdev, "Fail to alloc IRQ vector(number of IRQs=%d)\n",
 			nr_irqs);
 		pci_err(pdev, "Deepx's PCIe driver does not currently support Single MSI.\n");
 		pci_err(pdev, "Please check BIOS setting of host.\n");
@@ -645,17 +645,16 @@ static int dx_pcie_suspend(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev);
 	pci_err(pdev, "Power Managerment to enter suspend\n");
 
-	/* Suspend logic using PCI-PM */
-
 	return 0;
 }
 
 static int dx_pcie_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	pci_err(pdev, "Power Managerment to enter resume\n");
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
 
-	/* Wake-up logic using PCI-PM */
+	pci_err(pdev, "Power Managerment to enter resume\n");
+	dw_iatu_default_config_set(chip->dw);
 
 	return 0;
 }
@@ -692,6 +691,29 @@ static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev)
 	return result;
 }
 
+#ifdef CONFIG_PCI_IOV
+static int dx_dma_pcie_sriov_configure(struct pci_dev *pdev, int num_vfs)
+{
+	int ret, max_vfs;
+	pci_err(pdev, ">> %s : %d\n", __func__, num_vfs);
+
+	if (num_vfs == 0) {
+		pci_disable_sriov(pdev);
+		return 0;
+	}
+
+	max_vfs = pci_sriov_get_totalvfs(pdev);
+	if (num_vfs > max_vfs)
+		return -EINVAL;
+
+	ret = pci_enable_sriov(pdev, num_vfs);
+	if (ret) {
+		return ret;
+	}
+	return num_vfs;
+}
+#endif
+
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
 	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0000), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v2) },
 	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
@@ -718,6 +740,9 @@ static struct pci_driver dx_dma_pcie_driver = {
 		pm: &dx_pcie_pm_ops,
 	},
 #endif /* CONFIG_PM_SLEEP */
+#ifdef CONFIG_PCI_IOV
+	.sriov_configure = dx_dma_pcie_sriov_configure,
+#endif
 };
 
 static int dx_dma_mod_init(void)
