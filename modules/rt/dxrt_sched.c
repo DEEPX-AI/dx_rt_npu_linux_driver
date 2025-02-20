@@ -10,11 +10,6 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
-// int queue_empty(struct dxdev* dev,)
-// {
-
-// }
-
 /**
  * add_queue_from_sched_op 
  *  - Save option to list of dev if option is not duplicated in list
@@ -149,4 +144,21 @@ int delete_matching_queue(struct dxdev* dev, npu_bound_op bound)
         ret = -ENOENT;
     }
     return ret;
+}
+
+/**
+ * clear_queue_list 
+ *  - Delete the queue list.
+ * @dev: The deepx device on kernel structure
+ */
+void clear_queue_list(struct dxdev* dev)
+{
+    dx_sched_list *entry, *tmp;
+
+    spin_lock(&dev->sched_lock);
+    list_for_each_entry_safe(entry, tmp, &dev->sched, list) {
+        list_del(&entry->list);
+        kfree(entry);
+    }
+    spin_unlock(&dev->sched_lock);
 }

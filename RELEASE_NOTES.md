@@ -1,3 +1,22 @@
+## v1.3.3 / 2025-02-19
+### 1. Changed
+- None
+### 2. Fixed
+- Fixed DMA Error Issue on NXP i.MX8 (Kernel: v6.6.23)
+  - Fixed an issue where incorrect offset values in the vector table caused problems in handling DMA done interrupts.
+  - Modified the logic to update the configuration space's MSI data when it does not match the cached MSI data.
+### 3. Added
+- None
+
+## v1.3.2 / 2024-12-19
+### 1. Changed
+- Implement auto recovery
+- Add ddr bandwidth info into response data
+### 2. Fixed
+- None
+### 3. Added
+- Update resume function for power management
+
 ## v1.3.1 / 2024-12-19
 ### 1. Changed
 - None

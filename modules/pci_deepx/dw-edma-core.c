@@ -1259,8 +1259,15 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 				dw->nr_irqs = i;
 				return err;
 			}
-			if (irq_get_msi_desc(irq))
+			if (irq_get_msi_desc(irq)) {
+				u16 msi_data;
 				get_cached_msi_msg(irq, &dw->irq[i].msi);
+				msi_data = dx_pci_read_msi_data(dw->pdev);
+				if (dw->irq[i].msi.data != msi_data) {
+					pr_info("Msi data is replaced(%d, cached:%d)\n", msi_data, dw->irq[i].msi.data);
+					dw->irq[i].msi.data = msi_data;
+				}
+			}
 		}
 		/* Register - user irq */
 		for (i = dw->dma_irqs; i < USER_IRQ_NUMS; i++) {
@@ -1275,9 +1282,15 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 					dw->nr_irqs = i;
 					return err;
 				}
-
-				if (irq_get_msi_desc(irq))
+				if (irq_get_msi_desc(irq)) {
+					u16 msi_data;
 					get_cached_msi_msg(irq, &dw->irq[i].msi);
+					msi_data = dx_pci_read_msi_data(dw->pdev);
+					if (dw->irq[i].msi.data != msi_data) {
+						pr_info("Msi data is replaced(%d, cached:%d)\n", msi_data, dw->irq[i].msi.data);
+						dw->irq[i].msi.data = msi_data;
+					}
+				}
 			} else {
 				break;
 			}

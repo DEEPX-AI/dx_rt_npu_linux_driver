@@ -62,6 +62,7 @@ extern void dx_dev_list_remove(struct dw_edma *xdev);
 extern u16 dx_pci_find_vsec_capability(struct pci_dev *dev, u16 vendor, int cap);
 extern int dx_pci_read_revision_id(struct pci_dev *dev, u8 *revision_id);
 extern int dx_pci_read_program_if(struct pci_dev *dev, u8 *prog_if);
+extern u16 dx_pci_read_msi_data(struct pci_dev *pdev);
 
 #ifndef DEFINE_SHOW_ATTRIBUTE
 #define DEFINE_SHOW_ATTRIBUTE(__name)                   \

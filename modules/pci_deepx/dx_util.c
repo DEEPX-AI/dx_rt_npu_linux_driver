@@ -432,3 +432,37 @@ int dx_pci_read_program_if(struct pci_dev *dev, u8 *prog_if)
     pr_debug("PCIe Device Program IF: 0x%02x\n", *prog_if);
     return 0;
 }
+
+/**
+ * dx_pci_read_msi_data - Read the msi data
+ * @dev: PCI device
+ * 
+ * Return : msi data
+ */
+u16 dx_pci_read_msi_data(struct pci_dev *pdev)
+{
+	int pos;
+	u16 control;
+	u16 msi_data;
+	u32 addr_low, addr_high;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+	if (!pos) {
+		pr_err("MSI capability not found\n");
+		return 0;
+	}
+
+	pci_read_config_word(pdev, pos + PCI_MSI_FLAGS, &control);
+	pci_read_config_dword(pdev, pos + PCI_MSI_ADDRESS_LO, &addr_low);
+	if (control & PCI_MSI_FLAGS_64BIT) {
+		pci_read_config_dword(pdev, pos + PCI_MSI_ADDRESS_HI, &addr_high);
+		pci_read_config_word(pdev, pos + PCI_MSI_DATA_64, &msi_data);
+	} else {
+		addr_high = 0;
+		pci_read_config_word(pdev, pos + PCI_MSI_DATA_32, &msi_data);
+	}
+	pr_debug("MSI Address: 0x%llx, Data: 0x%x\n",
+			((u64)addr_high << 32) | addr_low, msi_data);
+
+	return msi_data;
+}
