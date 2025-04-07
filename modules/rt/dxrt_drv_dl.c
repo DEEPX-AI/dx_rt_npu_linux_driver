@@ -9,7 +9,7 @@
 #include <linux/delay.h>
 #include "dxrt_drv.h"
 
-#define PCIE_COMM_FAIL_VAL  (0xFFFFFFFF)
+#define PCIE_COMM_FAIL_VAL  (0xFF)
 /*
     true : ready
     false : not ready

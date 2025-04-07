@@ -241,7 +241,7 @@ typedef enum {
     DXRT_CMD_NPU_RUN_RESP       ,
     DXRT_CMD_UPDATE_CONFIG_JSON ,
     DXRT_CMD_RECOVERY           ,
-    DXRT_CMD_SET_DDR_FREQ       ,
+    DXRT_CMD_CUSTOM             , /* Sub-command */
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
 
@@ -269,6 +269,13 @@ typedef enum {
     FWUPDATE_DEV_UNRESET = BIT(1),
     FWUPDATE_FORCE       = BIT(2),
 } dxrt_fwupdate_sub_cmd_t;
+
+/* CMD : DXRT_CMD_CUSTOM */
+typedef enum {
+    DX_SET_DDR_FREQ         = 1,
+    DX_GET_OTP              = 2,
+    DX_SET_OTP              = 3,
+} dxrt_custom_sub_cmt_t;
 
 #define DXRT_IOCTL_MAGIC     'D'
 typedef enum {

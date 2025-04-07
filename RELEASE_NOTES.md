@@ -1,3 +1,19 @@
+## v1.4.1 / 2025-03-20
+### 1. Changed
+- None
+### 2. Fixed
+- fix bounding error when multi-processes are running with multi-bounding options
+### 3. Added
+- None
+
+## v1.4.0 / 2025-03-11
+### 1. Changed
+- None
+### 2. Fixed
+- None
+### 3. Added
+- Add Otp read / write api
+
 ## v1.3.3 / 2025-02-19
 ### 1. Changed
 - None
