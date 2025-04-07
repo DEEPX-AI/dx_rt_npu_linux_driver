@@ -1,0 +1,382 @@
+name: release_notes_automation
+run-name: "PR #${{ github.event.pull_request.number }} merged and closed - automated writing RELEASE_NOTES.md"
+
+on:
+  pull_request:
+    types: [closed]
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  PR_TITLE: ${{ github.event.pull_request.title }}
+  PR_BODY: ${{ github.event.pull_request.body }}
+
+permissions: write-all
+
+jobs:
+  check_pr_merged_closed:
+    name: Check if this PR is closed due to merge
+    runs-on: self-hosted
+    if: |
+      github.repository == 'deepx/dx_rt_npu_linux_driver' && 
+      github.event.pull_request.merged && 
+      github.event.pull_request.base.ref == 'dev'
+    steps:
+      - name: init pr_merged variable
+        id: set
+        run: |
+          MERGED_CLOSED="true"
+          echo "MERGED_CLOSED=${MERGED_CLOSED}" >> $GITHUB_OUTPUT
+    outputs:
+      MERGED_CLOSED: ${{ steps.set.outputs.MERGED_CLOSED }}
+
+  get_version_before_bump:
+    name: Get version before bump
+    needs: check_pr_merged_closed
+    runs-on: self-hosted
+    if: needs.check_pr_merged_closed.outputs.MERGED_CLOSED == 'true'
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_DCI_TOKEN }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get version before bump
+        id: set
+        run: |
+          echo "Get version before bump..."
+          VERSION_BEFORE_BUMP=$(grep 'current_version =' .bumpversion.cfg | cut -d ' ' -f 3)
+          echo "VERSION_BEFORE_BUMP=${VERSION_BEFORE_BUMP}"
+          echo "VERSION_BEFORE_BUMP=${VERSION_BEFORE_BUMP}" >> $GITHUB_OUTPUT
+    outputs:
+      VERSION_BEFORE_BUMP: ${{ steps.set.outputs.VERSION_BEFORE_BUMP }}
+
+  dispatch_bump_version:
+    name: pr merge close to dev dispatch bump-version-dev.yml action
+    needs: check_pr_merged_closed
+    runs-on: self-hosted
+    if: needs.check_pr_merged_closed.outputs.MERGED_CLOSED == 'true'
+    steps:
+      - name: Trigger bump-version-dev workflow
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: "bump-version-dev.yml"
+          token: ${{ secrets.GH_DCI_TOKEN }}
+          ref: dev
+
+      - name: Wait for bump-version-dev to complete
+        run: sleep 60s
+        shell: bash
+
+      - name: Check if bump-version-dev done alright
+        id: dispatch_action
+        run: |
+          RUN_INFO=$(curl -s -H "Authorization: token ${{ secrets.GH_DCI_TOKEN }}" \
+            "https://gh.deepx.ai/api/v3/repos/${{ github.repository }}/actions/workflows/bump-version-dev.yml/runs?branch=dev" | jq -r '.workflow_runs | sort_by(.created_at) | reverse | .[0]')
+
+          STATUS=$(echo "$RUN_INFO" | jq -r '.status')
+          CONCLUSION=$(echo "$RUN_INFO" | jq -r '.conclusion')
+
+          echo "Final Status: $STATUS (Conclusion: $CONCLUSION)"
+
+          if [[ "$CONCLUSION" == "success" ]]; then
+            echo "✅ bump-version-dev completed successfully."
+            echo "BUMP_VERSION_ACTION_DONE=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ bump-version-dev failed."
+            echo "BUMP_VERSION_ACTION_DONE=false" >> $GITHUB_OUTPUT
+          fi
+    outputs:
+      BUMP_VERSION_ACTION_DONE: ${{ steps.dispatch_action.outputs.BUMP_VERSION_ACTION_DONE }}
+
+  check_release_notes_need_change:
+    name: check whether RELEASE_NOTES should be changed
+    runs-on: self-hosted
+    needs: check_pr_merged_closed
+    if: github.repository == 'deepx/dx_rt_npu_linux_driver' && needs.check_pr_merged_closed.outputs.MERGED_CLOSED == 'true'
+    steps:
+      - name: check if CHANGED, FIXED, ADDED are all empty or None
+        id: modified
+        run: |
+          RELEASE_NOTES_CHANGE_NEEDED="false"
+          
+          CHANGED_WITH_JIRA_NUM=$(echo "${{ env.PR_BODY }}" | awk '/^### 1. Changed/{flag=1; next} /^### /{flag=0} flag' | tr -d '\r')
+          FIXED_WITH_JIRA_NUM=$(echo "${{ env.PR_BODY }}" | awk '/^### 2. Fixed/{flag=1; next} /^### /{flag=0} flag' | tr -d '\r')
+          ADDED_WITH_JIRA_NUM=$(echo "${{ env.PR_BODY }}" | awk '/^### 3. Added/{flag=1; next} /^### /{flag=0} flag' | tr -d '\r')
+          combined="${CHANGED_WITH_JIRA_NUM} ${FIXED_WITH_JIRA_NUM} ${ADDED_WITH_JIRA_NUM}"
+          if [[ ! "$combined" =~ ^((- None|None|-|)[[:space:]]*)+$ ]]; then
+            RELEASE_NOTES_CHANGE_NEEDED="true"
+          fi
+          
+          echo "CHANGED_WITH_JIRA_NUM : "
+          echo "$CHANGED_WITH_JIRA_NUM"
+          echo "FIXED_WITH_JIRA_NUM : "
+          echo "$FIXED_WITH_JIRA_NUM"
+          echo "ADDED_WITH_JIRA_NUM : "
+          echo "$ADDED_WITH_JIRA_NUM"
+
+          # Remove Jira ticket references
+          echo "Removing Jira ticket references..."
+          CHANGED=$(echo "$CHANGED_WITH_JIRA_NUM" | sed -E 's/\[[A-Za-z0-9_-]+\](\([^)]+\))?//g' | sed 's/[[:space:]]*$//')
+          FIXED=$(echo "$FIXED_WITH_JIRA_NUM" | sed -E 's/\[[A-Za-z0-9_-]+\](\([^)]+\))?//g' | sed 's/[[:space:]]*$//')
+          ADDED=$(echo "$ADDED_WITH_JIRA_NUM" | sed -E 's/\[[A-Za-z0-9_-]+\](\([^)]+\))?//g' | sed 's/[[:space:]]*$//')
+
+          echo "CHANGED (After Removing Jira Ticket Number) : "
+          echo "$CHANGED"
+          echo "FIXED (After Removing Jira Ticket Number) : "
+          echo "$FIXED"
+          echo "ADDED (After Removing Jira Ticket Number) : "
+          echo "$ADDED"
+
+          {
+            echo "CHANGED_WITH_JIRA_NUM<<EOF"
+            echo "$CHANGED_WITH_JIRA_NUM"
+            echo "EOF"
+            echo "FIXED_WITH_JIRA_NUM<<EOF"
+            echo "$FIXED_WITH_JIRA_NUM"
+            echo "EOF"
+            echo "ADDED_WITH_JIRA_NUM<<EOF"
+            echo "$ADDED_WITH_JIRA_NUM"
+            echo "EOF"
+            echo "CHANGED<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+            echo "FIXED<<EOF"
+            echo "$FIXED"
+            echo "EOF"
+            echo "ADDED<<EOF"
+            echo "$ADDED"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "RELEASE_NOTES_CHANGE_NEEDED=${RELEASE_NOTES_CHANGE_NEEDED}"
+          echo "RELEASE_NOTES_CHANGE_NEEDED=${RELEASE_NOTES_CHANGE_NEEDED}" >> $GITHUB_OUTPUT
+    outputs:
+      RELEASE_NOTES_CHANGE_NEEDED: ${{ steps.modified.outputs.RELEASE_NOTES_CHANGE_NEEDED }}
+      CHANGED_WITH_JIRA_NUM: ${{ steps.modified.outputs.CHANGED_WITH_JIRA_NUM }}
+      FIXED_WITH_JIRA_NUM: ${{ steps.modified.outputs.FIXED_WITH_JIRA_NUM }}
+      ADDED_WITH_JIRA_NUM: ${{ steps.modified.outputs.ADDED_WITH_JIRA_NUM }}
+      CHANGED: ${{ steps.modified.outputs.CHANGED }}
+      FIXED: ${{ steps.modified.outputs.FIXED }}
+      ADDED: ${{ steps.modified.outputs.ADDED }}
+
+  fetch_release_notes_section:
+    name: Fetch RELEASE_NOTES section from PR body
+    runs-on: self-hosted
+    if: |
+      github.repository == 'deepx/dx_rt_npu_linux_driver'
+    steps:
+      - name: fetch RELEASE_NOTES section from PR body under 'RELEASE_NOTES TO BE ADDED'
+        id: fetch_release_notes
+        run: |
+          echo "Fetching release notes section from PR body..."
+          RELEASE_NOTES_SECTION_WITH_JIRA_NUM=$(echo "${{ env.PR_BODY }}" | sed -n '/# RELEASE_NOTES TO BE ADDED/,/^$/p' | sed '1d')
+          RELEASE_NOTES_SECTION=$(echo "$RELEASE_NOTES_SECTION_WITH_JIRA_NUM" | sed -E 's/\[[A-Za-z0-9_-]+\](\([^)]+\))?//g' | sed 's/[[:space:]]*$//')
+          {
+            echo "RELEASE_NOTES_SECTION_WITH_JIRA_NUM<<EOF"
+            echo "$RELEASE_NOTES_SECTION_WITH_JIRA_NUM"
+            echo "EOF"
+            echo "RELEASE_NOTES_SECTION<<EOF"
+            echo "$RELEASE_NOTES_SECTION"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "RELEASE_NOTES_SECTION_WITH_JIRA_NUM: "
+          echo "$RELEASE_NOTES_SECTION_WITH_JIRA_NUM"
+          echo "RELEASE_NOTES_SECTION (After Removing Jira Ticket Number) : "
+          echo "$RELEASE_NOTES_SECTION"
+    outputs:
+      RELEASE_NOTES_SECTION_WITH_JIRA_NUM: ${{ steps.fetch_release_notes.outputs.RELEASE_NOTES_SECTION_WITH_JIRA_NUM }}
+      RELEASE_NOTES_SECTION: ${{ steps.fetch_release_notes.outputs.RELEASE_NOTES_SECTION }}
+
+  check_bump_version_modify_release_notes:
+    name: Check if Bump version and then modify RELEASE_NOTES.md
+    runs-on: self-hosted
+    needs:
+      [
+        fetch_release_notes_section,
+        check_release_notes_need_change,
+        get_version_before_bump,
+        dispatch_bump_version,
+      ]
+    if: |
+      github.repository == 'deepx/dx_rt_npu_linux_driver' && needs.check_pr_merged_closed.outputs.MERGED_CLOSED == 'true' &&
+      needs.check_release_notes_need_change.outputs.RELEASE_NOTES_CHANGE_NEEDED == 'true'  &&
+      needs.dispatch_bump_version.outputs.BUMP_VERSION_ACTION_DONE == 'true'
+    env:
+      RELEASE_NOTES_SECTION_WITH_JIRA_NUM: ${{ needs.fetch_release_notes_section.outputs.RELEASE_NOTES_SECTION_WITH_JIRA_NUM }}
+      RELEASE_NOTES_SECTION: ${{ needs.fetch_release_notes_section.outputs.RELEASE_NOTES_SECTION }}
+      VERSION_BEFORE_BUMP: ${{ needs.get_version_before_bump.outputs.VERSION_BEFORE_BUMP }}
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_DCI_TOKEN }}
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get dev version
+        id: set
+        run: |
+          echo "Get dev version of PR branch..."
+          DEV_VERSION=$(grep 'current_version =' .bumpversion.cfg | cut -d ' ' -f 3)
+          echo "DEV_VERSION=${DEV_VERSION}"
+          echo "DEV_VERSION=${DEV_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Compare current version and dev version
+        id: versions
+        run: |
+          if [[ "${{ steps.set.outputs.DEV_VERSION }}" != "${{ env.VERSION_BEFORE_BUMP}}" ]]; then
+            echo "VERSION_BEFORE_BUMP and DEV_VERSION are not the same, Bump version occurred."
+            echo "BUMP_VERSION=true" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION_BEFORE_BUMP and DEV_VERSION are the same, Bump version didn't occur."
+            echo "BUMP_VERSION=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: if RELEASE_NOTES_WITH_JIRA_NUM.md doesn't exist then make one
+        run: |
+          if [[ ! -f RELEASE_NOTES_WITH_JIRA_NUM.md && -f RELEASE_NOTES.md ]]; then
+            cp RELEASE_NOTES.md RELEASE_NOTES_WITH_JIRA_NUM.md
+            echo "Created RELEASE_NOTES_WITH_JIRA_NUM.md from RELEASE_NOTES.md"
+          fi
+
+      - name: if Bump version, then add new version draft
+        if: steps.versions.outputs.BUMP_VERSION == 'true'
+        run: |
+          echo "Adding new version release notes draft to RELEASE_NOTES.md..."
+          # Define static header
+          HEADER="# RELEASE_NOTES\n"
+
+          # Define new version section
+          NEW_VERSION_HEADER="## v${{ steps.set.outputs.DEV_VERSION }} / $(date +'%Y-%m-%d')"
+          echo "NEW_VERSION_HEADER=${NEW_VERSION_HEADER}"
+
+          # Find the first line number where the current body starts
+          FIRST_BODY_LINE=$(grep -n '^## ' RELEASE_NOTES.md | head -n 1 | cut -d: -f1)
+
+          if [[ -n "$FIRST_BODY_LINE" ]]; then
+            TAIL_CONTENT=$(tail -n +$FIRST_BODY_LINE RELEASE_NOTES.md)
+            TAIL_CONTENT_WITH_JIRA_NUM=$(tail -n +$FIRST_BODY_LINE RELEASE_NOTES_WITH_JIRA_NUM.md)
+          else
+            TAIL_CONTENT=""
+            TAIL_CONTENT_WITH_JIRA_NUM=""
+          fi
+
+          # Write new RELEASE_NOTES_WITH_JIRA_NUM.md
+          echo -e "$HEADER\n$NEW_VERSION_HEADER\n${{ env.RELEASE_NOTES_SECTION_WITH_JIRA_NUM }}\n$TAIL_CONTENT_WITH_JIRA_NUM"
+          echo -e "$HEADER\n$NEW_VERSION_HEADER\n${{ env.RELEASE_NOTES_SECTION_WITH_JIRA_NUM }}\n\n$TAIL_CONTENT_WITH_JIRA_NUM" > RELEASE_NOTES_WITH_JIRA_NUM.md
+
+          # Write new RELEASE_NOTES.md
+          echo -e "$HEADER\n$NEW_VERSION_HEADER\n${{ env.RELEASE_NOTES_SECTION}}\n$TAIL_CONTENT"
+          echo -e "$HEADER\n$NEW_VERSION_HEADER\n${{ env.RELEASE_NOTES_SECTION}}\n\n$TAIL_CONTENT" > RELEASE_NOTES.md
+
+      - name: if not Bump version, then modify latest version draft
+        if: steps.versions.outputs.BUMP_VERSION == 'false'
+        run: |
+          echo "Modifying latest version release notes draft..."
+
+          FIRST_CHANGED_LINE=$(grep -n '^### ' RELEASE_NOTES.md | sed -n '1p' | cut -d: -f1)
+          echo "FIRST_CHANGED_LINE: $FIRST_CHANGED_LINE"
+          FIRST_FIXED_LINE=$(grep -n '^### ' RELEASE_NOTES.md | sed -n '2p' | cut -d: -f1)
+          echo "FIRST_FIXED_LINE: $FIRST_FIXED_LINE"
+          FIRST_ADDED_LINE=$(grep -n '^### ' RELEASE_NOTES.md | sed -n '3p' | cut -d: -f1)
+          echo "FIRST_ADDED_LINE: $FIRST_ADDED_LINE"
+
+          is_useless_content() {
+            local content="$1"
+            # Trim leading and trailing spaces
+            content=$(echo "$content" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ "$content" == "- None" || "$content" == "-" || "$content" == "" ]]
+          }
+
+          # ✅ Variables for normal release notes
+          CHANGED_CONTENT="${{ needs.check_release_notes_need_change.outputs.CHANGED }}"
+          FIXED_CONTENT="${{ needs.check_release_notes_need_change.outputs.FIXED }}"
+          ADDED_CONTENT="${{ needs.check_release_notes_need_change.outputs.ADDED }}"
+
+          VALID_CHANGED_CONTENT="$CHANGED_CONTENT"
+          VALID_FIXED_CONTENT="$FIXED_CONTENT"
+          VALID_ADDED_CONTENT="$ADDED_CONTENT"
+
+          # ✅ Variables for release notes with Jira numbers
+          CHANGED_WITH_JIRA_NUM_CONTENT="${{ needs.check_release_notes_need_change.outputs.CHANGED_WITH_JIRA_NUM }}"
+          FIXED_WITH_JIRA_NUM_CONTENT="${{ needs.check_release_notes_need_change.outputs.FIXED_WITH_JIRA_NUM }}"
+          ADDED_WITH_JIRA_NUM_CONTENT="${{ needs.check_release_notes_need_change.outputs.ADDED_WITH_JIRA_NUM }}"
+
+          VALID_CHANGED_WITH_JIRA_NUM_CONTENT="$CHANGED_WITH_JIRA_NUM_CONTENT"
+          VALID_FIXED_WITH_JIRA_NUM_CONTENT="$FIXED_WITH_JIRA_NUM_CONTENT"
+          VALID_ADDED_WITH_JIRA_NUM_CONTENT="$ADDED_WITH_JIRA_NUM_CONTENT"
+
+          if is_useless_content "$CHANGED_CONTENT"; then
+            VALID_CHANGED_CONTENT=""
+            VALID_CHANGED_WITH_JIRA_NUM_CONTENT=""
+          fi
+          echo "VALID_CHANGED_CONTENT: "
+          echo "$VALID_CHANGED_CONTENT"
+
+          if is_useless_content "$FIXED_CONTENT"; then
+            VALID_FIXED_CONTENT=""
+            VALID_FIXED_WITH_JIRA_NUM_CONTENT=""
+          fi
+          echo "VALID_FIXED_CONTENT: "
+          echo "$VALID_FIXED_CONTENT"
+
+          if is_useless_content "$ADDED_CONTENT"; then
+            VALID_ADDED_CONTENT=""
+            VALID_ADDED_WITH_JIRA_NUM_CONTENT=""
+          fi
+          echo "VALID_ADDED_CONTENT: "
+          echo "$VALID_ADDED_CONTENT"
+
+          # 📝 Modify RELEASE_NOTES.md (without Jira numbers)
+          awk -v changed_line="$FIRST_CHANGED_LINE" \
+              -v fixed_line="$FIRST_FIXED_LINE" \
+              -v added_line="$FIRST_ADDED_LINE" \
+              -v changed_content="$VALID_CHANGED_CONTENT" \
+              -v fixed_content="$VALID_FIXED_CONTENT" \
+              -v added_content="$VALID_ADDED_CONTENT" \
+              '{
+                  print;
+                  if (NR == changed_line && changed_content != "") print changed_content;
+                  if (NR == fixed_line && fixed_content != "") print fixed_content;
+                  if (NR == added_line && added_content != "") print added_content;
+              }' RELEASE_NOTES.md > RELEASE_NOTES.tmp && mv RELEASE_NOTES.tmp RELEASE_NOTES.md
+
+          echo "Updated RELEASE_NOTES.md:"
+          cat RELEASE_NOTES.md
+
+          # 📝 Modify RELEASE_NOTES_WITH_JIRA_NUM.md (with Jira numbers)
+          awk -v changed_line="$FIRST_CHANGED_LINE" \
+              -v fixed_line="$FIRST_FIXED_LINE" \
+              -v added_line="$FIRST_ADDED_LINE" \
+              -v changed_content="$VALID_CHANGED_WITH_JIRA_NUM_CONTENT" \
+              -v fixed_content="$VALID_FIXED_WITH_JIRA_NUM_CONTENT" \
+              -v added_content="$VALID_ADDED_WITH_JIRA_NUM_CONTENT" \
+              '{
+                  print;
+                  if (NR == changed_line && changed_content != "") print changed_content;
+                  if (NR == fixed_line && fixed_content != "") print fixed_content;
+                  if (NR == added_line && added_content != "") print added_content;
+              }' RELEASE_NOTES_WITH_JIRA_NUM.md > RELEASE_NOTES_WITH_JIRA_NUM.tmp && mv RELEASE_NOTES_WITH_JIRA_NUM.tmp RELEASE_NOTES_WITH_JIRA_NUM.md
+
+          echo "Updated RELEASE_NOTES_WITH_JIRA_NUM.md:"
+          cat RELEASE_NOTES_WITH_JIRA_NUM.md
+
+      - name: Commit and Push Change
+        run: |
+          git config user.name "dx-ci"
+          git config user.email "dci@deepx.ai"
+          git checkout dev
+          git add RELEASE_NOTES.md
+          git add RELEASE_NOTES_WITH_JIRA_NUM.md
+          git commit -m "docs: update RELEASE_NOTES.md"
+          git push origin dev
+          git tag -d v${{ steps.set.outputs.DEV_VERSION }}
+          git tag v${{ steps.set.outputs.DEV_VERSION }}
+          git push origin v${{ steps.set.outputs.DEV_VERSION }} --force
+          echo "✅ RELEASE_NOTES.md Change pushed to dev."

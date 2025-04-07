@@ -1221,7 +1221,7 @@ static int dxrt_upload_firmware(struct dxdev* dev, dxrt_message_t* msg)
         }
 
         if (!ret) {
-            if (dx_get_flash_ready(dev->dl, 10*1000*1000)) { /* timeout:10s */
+            if (dx_get_flash_ready(dev->dl, 2*1000*1000)) { /* timeout:2s */
                 switch (boot_step = dx_get_boot_step(dev->dl)) {
                     case DX_ROM:
                         dxrt_write_firmware(num,
@@ -1458,5 +1458,5 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_NPU_RUN_REQ]          = dxrt_npu_run_request,
     [DXRT_CMD_NPU_RUN_RESP]         = dxrt_npu_run_response,
     [DXRT_CMD_RECOVERY]             = dxrt_recovery_device,
-    [DXRT_CMD_SET_DDR_FREQ]         = dxrt_msg_general,
+    [DXRT_CMD_CUSTOM]               = dxrt_msg_general,
 };
