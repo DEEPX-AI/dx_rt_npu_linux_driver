@@ -66,7 +66,7 @@ int dxrt_lock_queue(dxrt_queue_t __iomem* q)
     return ret;
 }
 
-#define DXRT_ENQUEUE_TIMEOUT        (100000) /* 100ms */
+#define DXRT_ENQUEUE_TIMEOUT        (1000000) /* 1000ms */
 #define DXRT_ENQUEUE_DELAY          (1)
 int dxrt_lock_check(dxrt_queue_t __iomem* q)
 {
@@ -92,7 +92,6 @@ int dxrt_lock_check(dxrt_queue_t __iomem* q)
 void dxrt_unlock_queue(dxrt_queue_t __iomem* q)
 {    
     writel(DX_QUEUE_UNLOCK, &q->lock);
-    writel(DX_FLAG_UNLOCK, &q->flag);
 }
 
 void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem* q)
@@ -103,7 +102,7 @@ void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem* q)
 
 int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
 {
-    int timeout = 100000;
+    int timeout = 1000000;  /* 1000ms */
     int ret = 0;
     do {
         if (timeout-- < 0) {
@@ -118,23 +117,39 @@ int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
 int dxrt_enqueue(dxrt_queue_t __iomem* q, void *elem)
 {
     int ret = 0;
+    u32 rear, count, acces_count;
+
     pr_debug( "%s: %d\n", __func__, ((dxrt_request_acc_t*)elem)->req_id);
-    if (!q->enable) return -EINVAL;
-    else
-    {
-        memcpy_toio(
-            (void __iomem*)q + buffer_offset + (q->rear * q->elem_size), 
-            elem,
-            q->elem_size
-        );
-        q->rear = (q->rear + 1) % q->max_count;
-        q->acces_count++;
-        q->count++;
-        dxrt_enqueue_irq_notify(q);
-        pr_debug( "%s: %d f:%d r:%d c:%d a:%d done.\n",
-            __func__, ((dxrt_request_acc_t*)elem)->req_id,
-            q->front, q->rear, q->count, q->acces_count);
-    }
+    if (readl(&q->enable) == 0) return -EINVAL; 
+
+    rear = readl(&q->rear);
+    memcpy_toio(
+        (void __iomem*)q + buffer_offset + (rear * readl(&q->elem_size)),
+        elem,
+        readl(&q->elem_size)
+    );
+
+    wmb();
+
+    rear = (rear + 1) % readl(&q->max_count);
+    writel(rear, &q->rear);
+
+    acces_count = readl(&q->acces_count);
+    acces_count++;
+    writel(acces_count, &q->acces_count);
+
+    count = readl(&q->count);
+    count++;
+    writel(count, &q->count);
+
+    wmb(); 
+
+    dxrt_enqueue_irq_notify(q); 
+
+    pr_debug( "%s: %d f:%d r:%d c:%d a:%d done.\n",
+        __func__, ((dxrt_request_acc_t*)elem)->req_id,
+        readl(&q->front), rear, count, acces_count);
+
     return ret;
 }
 

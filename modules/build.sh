@@ -8,7 +8,7 @@
 # BUILD_DEFAULT_INSTALL_DIR=<INSTALL_MOD_PATH> : -i [install dir], module install directory
 #
 
-BUILD_DEFAULT_DEVICE="m1a"
+BUILD_DEFAULT_DEVICE="m1"
 BUILD_DEFAULT_PCIE="deepx"
 BUILD_DEFAULT_KERNEL_DIR=""
 BUILD_DEFAULT_ARCH=""
@@ -16,7 +16,7 @@ BUILD_DEFAULT_CROSS_COMPILE=""
 BUILD_DEFAULT_INSTALL_DIR=""
 BUILD_DEFAULT_DBG=""
 
-SUPPORT_DEVICE=("m1" "m1a" "l1" "l3")
+SUPPORT_DEVICE=("m1")
 
 declare -A SUPPORT_PCIE_MODULE=(
 	["deepx"]="$(pwd)/pci_deepx"
@@ -47,7 +47,7 @@ function build_usage() {
 	echo ""
 	echo " options:"
 	echo -e "\t-d, --device   [device]      select target device: ${SUPPORT_DEVICE[*]}"
-	echo -e "\t-m, --module   [module]      select PCIe module: ${!SUPPORT_PCIE_MODULE[@]}"
+	echo -e "\t-m, --module   [module]      select PCIe module: deepx"
 	echo -e "\t-k, --kernel   [kernel dir]  'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located"
 	echo -e "\t                             default: /lib/modules/$(uname -r)/build)"
 	echo -e "\t-a, --arch     [arch]        set 'ARCH=[arch]' Target CPU architecture for cross-compilation, default: $(uname -m)"
@@ -232,11 +232,20 @@ fi
 
 # make build
 logmsg "\n *** Build : ${_command} ***"
-logmsg " $ make ${_args[*]}\n"
-if ! eval make "${_args[*]}"; then
-	logext " - FAILED"
+if [[ ${_command} == "sparse" ]]; then
+	logmsg " $ make sparse ${_args[*]}\n"
+	if ! eval make sparse "${_args[*]}"; then
+		logext " - FAILED"
+	else
+		logmsg " - SUCCESS"
+	fi
 else
-	logmsg " - SUCCESS"
+	logmsg " $ make ${_args[*]}\n"
+	if ! eval make "${_args[*]}"; then
+		logext " - FAILED"
+	else
+		logmsg " - SUCCESS"
+	fi
 fi
 
 # install

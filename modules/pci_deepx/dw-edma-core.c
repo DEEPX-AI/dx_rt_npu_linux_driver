@@ -20,7 +20,6 @@
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
 #include "dw-edma-v0-regs.h"
-#include "dmaengine.h"
 #include "virt-dma.h"
 #include "dx_sgdma_cdev.h"
 #include "dx_lib.h"
@@ -421,7 +420,7 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 {
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(dchan);
 	int err = 0;
-	LIST_HEAD(head);
+
 	dbg_core("[%s] start!!\n", __func__);
 
 	if (!chan->configured) {
@@ -840,6 +839,7 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 {
 	struct dx_edma_irq *dw_irq = data;
 	struct dw_edma *dw = dw_irq->dw;
+	irqreturn_t ret = IRQ_NONE;
 	unsigned long total, pos, val;
 	unsigned long off;
 	u32 mask;
@@ -888,6 +888,7 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 		struct dw_edma_chan *chan = &dw->chan[pos + off];
 
 		dw_edma_done_interrupt(chan);
+		ret = IRQ_HANDLED;
 	}
 
 	val = dw_edma_v0_core_status_abort_int(dw, write ?
@@ -901,9 +902,10 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 		struct dw_edma_chan *chan = &dw->chan[pos + off];
 
 		dw_edma_abort_interrupt(chan);
+		ret = IRQ_HANDLED;
 	}
 
-	return IRQ_HANDLED;
+	return ret;
 }
 
 static inline irqreturn_t dw_edma_interrupt_write(int irq, void *data)

@@ -281,7 +281,9 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     }
     dxdev->dev->dma_mask = (u64 *)&dmamask;
     dxdev->dev->coherent_dma_mask = DMA_BIT_MASK(32);
+#if IS_STANDALONE
     dxdev->npu = dxrt_npu_init(dxdev);
+#endif
     INIT_LIST_HEAD(&dxdev->requests.list);
     INIT_LIST_HEAD(&dxdev->responses.list);
     INIT_LIST_HEAD(&dxdev->sched);
@@ -296,11 +298,13 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     spin_lock_init(&dxdev->responses_lock);
     spin_lock_init(&dxdev->error_lock);
     mutex_init(&dxdev->msg_lock);
+#if IS_STANDALONE
     if (dxdev->type == DX_STD) {
         dxdev->request_handler = kthread_run(
             dxrt_request_handler, (void*)dxdev, "dxrt-th%d", dxdev->id
         );
     }
+#endif
     pr_info(" [%d] created device %d:%d:%d, %p, %p\n",
         dxdev->variant, id,
         MAJOR(drv->dev_num + id), MINOR(drv->dev_num + id), dxdev->dev, dxdev->npu);
@@ -308,7 +312,9 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
 }
 static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
 {
+#if IS_STANDALONE
     dxrt_npu_deinit(dxdev);
+#endif
     device_destroy(drv->dev_class, drv->dev_num + dxdev->id);
     cdev_del(&dxdev->cdev);
     kfree(dxdev);    

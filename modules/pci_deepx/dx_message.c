@@ -212,7 +212,7 @@ void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code)
 		dx_msg->event_response.dx_rt_err.err_code = err_code;
 	} else {
 		memcpy_fromio(&dx_msg->event_response, (dx_pcie_dev_event_t *)dx_msg->events, sizeof(dx_pcie_dev_event_t));
-		dbg_msg("%s:  dev_id %d, code:%d\n", __func__, dev_id, dx_msg->event_response.dx_rt_err);
+		dbg_msg("%s:  dev_id %d, code:%d\n", __func__, dev_id, dx_msg->event_response.event_type);
 		memset_io((dx_pcie_dev_event_t *)dx_msg->events, 0x00, sizeof(dx_pcie_dev_event_t));
 	}
 	spin_unlock_irqrestore(&dx_msg->event_lock, flags);

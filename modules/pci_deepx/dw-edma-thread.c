@@ -228,8 +228,9 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sched_set_fifo(current);
 #endif
 
-	wait_event_interruptible_timeout(info->done_wait, done->done,
-			     msecs_to_jiffies(timeout));
+	wait_event_interruptible_timeout(info->done_wait,
+		done->done,
+		msecs_to_jiffies(timeout));
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
 	if (policy == SCHED_NORMAL)
@@ -246,57 +247,45 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
 	if (!done->done) {
-		dev_err(dev, "%s: timeout\n", dma_chan_name(chan));
 		f_tm_cnt++;
+		dmaengine_terminate_all(chan);
+		cb->result = -ETIMEDOUT;
 	} else if (status != DMA_COMPLETE) {
 		if (status == DMA_ERROR) {
-			dev_err(dev, "%s:  completion error status\n",
-				dma_chan_name(chan));
 			f_cpl_err++;
 		} else {
-			dev_err(dev, "%s: completion busy status\n",
-				dma_chan_name(chan));
 			f_cpl_bsy++;
 		}
+		dmaengine_terminate_all(chan);
+		cb->result = -EIO;
+	} else {
+		cb->result = 0;
 	}
 
 err_stats:
-	/* Display some stats information */
 	if (f_prp_cnt || f_sbt_cnt || f_tm_cnt || f_cpl_err || f_cpl_bsy) {
-		dev_err(dev, "%s: test failed - dmaengine_prep_slave_sg=%u, dma_submit_error=%u, timeout=%u, completion error status=%u, completion busy status=%u\n",
-			 dma_chan_name(chan), f_prp_cnt, f_sbt_cnt,
-			 f_tm_cnt, f_cpl_err, f_cpl_bsy);
-		cb->result = -1;
-	} else {
-		cb->result = 0;
-		if (direction == DMA_DEV_TO_MEM) {
-			info->host_buf_addr = sconf.dst_addr;
-			info->ep_buf_addr = sconf.src_addr;
-		} else {
-			info->host_buf_addr = sconf.src_addr;
-			info->ep_buf_addr = sconf.dst_addr;
-		}
-		info->size = cb->len;
+		dev_err(dev, "%s: failed - dmaengine_prep_slave_sg=%u, dma_submit_error=%u, timeout=%u, completion error status=%u, completion busy status=%u\n",
+			dma_chan_name(chan), f_prp_cnt, f_sbt_cnt,
+			f_tm_cnt, f_cpl_err, f_cpl_bsy);
+		if (cb->result == 0) cb->result = -EIO;
 	}
 
 	/* Unmap scatter gatter mapping */
-	if (direction == DMA_DEV_TO_MEM) {
-		dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_FROM_DEVICE);
-	} else {
-		dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_TO_DEVICE);
+	if (sgt->nents > 0) {
+		if (direction == DMA_DEV_TO_MEM) {
+			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_FROM_DEVICE);
+		} else {
+			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_TO_DEVICE);
+		}
 	}
-
-	/* Terminate any DMA operation, (fail safe) */
-	dmaengine_terminate_all(chan);
 
 	/* TODO - need a recovery code in case of dma errors. */
 
 err_alloc_descs:
 	sg_free_table(sgt);
+	info->done = true; 
 
-	info->done = true;
-
-	return 0;
+	return cb->result; // Return 0 on success, negative error code on failure
 }
 
 static bool dw_edma_ch_filter(struct dma_chan *chan, void *filter)

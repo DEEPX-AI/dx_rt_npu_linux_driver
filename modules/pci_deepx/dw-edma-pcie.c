@@ -134,42 +134,6 @@ struct dw_edma_pcie_data {
 #endif /*SRAM_DESC_TABLE*/
 
 /* DXNN V2 - m1 */
-static const struct dw_edma_pcie_data dx_pcie_data_v2 = {
-	.version			= 2,
-	.desc_addr			= 0xA00000000,
-	/* eDMA registers location */
-	.rg.bar				= BAR_2,
-	.rg.off				= 0x00000000,	/*  0   Kbytes */ 
-	.rg.sz				= 0x00000A00,	/*  2.5 Kbytes */
-	/* eDMA memory linked list location */
-	.ll_wr = {
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS,					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-	},
-	.ll_rd = {
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS,					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-	},
-	/* Other */
-	.mf					= DX_DMA_MF_HDMA_COMPAT,
-	.dma_irqs			= 1,
-	.wr_ch_cnt			= 2,
-	.rd_ch_cnt			= 2,
-	/* iATU registers */
-	.iatu.bar			= BAR_2,
-	.iatu.off			= 0x00000A00,
-	.iatu.sz			= 0x00001000,
-	/* NPU registers */
-	.user_reg_cnt		= 2,
-	.users = {
-		DW_NPU_BLOCK(BAR_3, 0x00000000, 0x00100000, 0xD8100000) /* MESSAGE RAM */
-		DW_NPU_BLOCK(BAR_4, 0x00000000, 0x00100000, 0xCD800000) /* NON-USED */
-	},
-	.download_region	= 0xD8110000,
-	.download_size		= 0xEF000,
-};
-
-/* DXNN V2 - m1a */
 static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	.version			= 3,
 #ifdef SRAM_DESC_TABLE
@@ -198,18 +162,20 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
 		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
 		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
 	},
 	.ll_rd = {
 		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
 		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
 		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
 	},
 #endif
 	/* Other */
 	.mf					= DX_DMA_MF_HDMA_COMPAT,
 	.dma_irqs			= 1,
-	.wr_ch_cnt			= 3,
-	.rd_ch_cnt			= 3,
+	.wr_ch_cnt			= 4,
+	.rd_ch_cnt			= 4,
 	/* iATU registers */
 	.iatu.bar			= BAR_2,
 	.iatu.off			= 0x00000A00,
@@ -715,9 +681,8 @@ static int dx_dma_pcie_sriov_configure(struct pci_dev *pdev, int num_vfs)
 #endif
 
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
-	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0000), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v2) },
+	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0000), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
 	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE(0x16c3, 0x1005), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v2) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, dx_dma_pcie_id_table);

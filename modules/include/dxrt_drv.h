@@ -36,9 +36,6 @@
 /* L2 cache flush api */
 #include <asm/sbi.h>
 #endif
-#if DEVICE_VARIANT==DX_L1
-#include <soc/eyenix/cdma.h>
-#endif
 
 #define MODULE_NAME "dxrt"
 
@@ -242,6 +239,7 @@ typedef enum {
     DXRT_CMD_UPDATE_CONFIG_JSON ,
     DXRT_CMD_RECOVERY           ,
     DXRT_CMD_CUSTOM             , /* Sub-command */
+    DXRT_CMD_START              ,
     DXRT_CMD_MAX,
 } dxrt_cmd_t;
 
@@ -269,13 +267,6 @@ typedef enum {
     FWUPDATE_DEV_UNRESET = BIT(1),
     FWUPDATE_FORCE       = BIT(2),
 } dxrt_fwupdate_sub_cmd_t;
-
-/* CMD : DXRT_CMD_CUSTOM */
-typedef enum {
-    DX_SET_DDR_FREQ         = 1,
-    DX_GET_OTP              = 2,
-    DX_SET_OTP              = 3,
-} dxrt_custom_sub_cmt_t;
 
 #define DXRT_IOCTL_MAGIC     'D'
 typedef enum {
@@ -415,7 +406,6 @@ typedef int (*dxrt_message_handler)(struct dxdev*, dxrt_message_t*);
 
 int dxrt_driver_cdev_init(struct dxrt_driver *drv);
 void dxrt_driver_cdev_deinit(struct dxrt_driver *drv);
-int dxrt_request_handler(void *data);
 int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
 int message_handler_general(struct dxdev *dx, dxrt_message_t *msg);
 void dxrt_device_init(struct dxdev* dev);
@@ -457,6 +447,7 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_clear_response_queue(...) 0
 #define dx_pcie_is_response_queue_empty(...) 0
 #define dx_pcie_interrupt(...) 0
+#define dx_pcie_interrupt_clear(...) 0
 #define dx_pcie_interrupt_wakeup(...) 0
 #define dx_pcie_dequeue_response(...) 0
 #define dx_pcie_get_dev_num(...) 1
@@ -497,6 +488,8 @@ typedef struct {
     uint32_t err_code;
     /* System Infomation power / temperature, etc,,,, */
 } dx_pcie_dev_err_t;
+
+int dxrt_request_handler(void *data);
 #endif
 #if IS_ACCELERATOR
 #define sbi_l2cache_flush(...) { /*do nothing*/ }

@@ -1,3 +1,12 @@
+## v1.4.2 / 2024-05-07
+### 1. Changed
+- Remove unused code
+- Change the numger of dma channel(3->4)
+### 2. Fixed
+- Fix dma transaction fail with iommu
+### 3. Added
+- None
+
 ## v1.4.1 / 2025-03-20
 ### 1. Changed
 - None

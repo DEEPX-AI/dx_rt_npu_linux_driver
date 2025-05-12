@@ -58,9 +58,6 @@ $ make DEVICE=m1 PCIE=[deepx|xilinx]
 |--------|-----------------------------------------------|
 | m1     | CONFIG_DX_AI_ACCEL_M1=y                       |
 |        | submodule: CONFIG_DX_AI_ACCEL_PCIE_DEEPX      |
-|        | submodule: CONFIG_DX_AI_ACCEL_PCIE_XILINX     |
-| l1     | CONFIG_DX_AI_ACCEL_L1=y                       |
-| l3     | CONFIG_DX_AI_ACCEL_L3=y                       |
 
 ***Kbuild***
 - Support Linux kernel Kbuild system.
@@ -70,7 +67,7 @@ $ make DEVICE=m1 PCIE=[deepx|xilinx]
 
 | Parameter Name   | Description                                    |
 |------------------|------------------------------------------------|
-| DEVICE           | m1 or l1 refer to 'device.mk'                  |
+| DEVICE           | m1 refer to 'device.mk'                  |
 | KERNEL_DIR       | Kernel Build Directory                         |
 | INSTALL_MOD_PATH | [PATH]/lib/modules/$(KERNELRELEASE)/extra/     |
 | ARCH             | Architecture Name                              |
@@ -83,7 +80,7 @@ $ make DEVICE=m1 PCIE=[deepx|xilinx]
 	build.sh <options>
 
  options:
-	-d [device]	     select target device: m1 l1 l3
+	-d [device]	     select target device: m1
 	-m [module]	     select PCIe module: deepx xilinx
 	-k [kernel dir]	 'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located
 			         default: /lib/modules/5.15.0-100-generic/build)
