@@ -328,74 +328,68 @@ u32 dw_edma_v0_core_status_abort_int(struct dw_edma *dw, enum dw_edma_dir dir)
 			 GET_RW_32(dw, dir, int_status));
 }
 
-static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, int dma_n, int ch_n)
-{
-	struct dw_edma_burst *child;
-	struct dw_edma_v0_lli __iomem *lli;
-	struct dw_edma_v0_llp __iomem *llp;
-	u32 control = 0, i = 0;
-	int j;
+static void dw_edma_v0_gen_lli(struct dw_edma_v0_lli __iomem *lli,
+							   struct dw_edma_chunk *chunk,
+							   struct dw_edma_burst *burst,
+							   int ch_n, u32 idx, int remain) {
+	u32 control = 0;
 
-	dx_pcie_start_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
-
-	lli = chunk->ll_region.vaddr;
-
-	if (chunk->cb)
+	if (chunk->cb) {
 		control = DW_EDMA_V0_CB;
-
-	j = chunk->bursts_alloc;
-	list_for_each_entry(child, &chunk->burst->list, list) {
-		j--;
-		if (!j) { /* Last element */
-			control |= (DW_EDMA_V0_LIE | DW_EDMA_V0_RIE);
-		}
-
-		/* Channel control */
-		SET_LL_32(&lli[i].control, control);
-		/* Transfer size */
-		SET_LL_32(&lli[i].transfer_size, child->sz);
-		/* SAR */
-		#if defined(CONFIG_64BIT) && defined(CONFIG_X86_64)
-			SET_LL_64(&lli[i].sar.reg, child->sar);
-		#else /* CONFIG_64BIT */
-			SET_LL_32(&lli[i].sar.lsb, lower_32_bits(child->sar));
-			SET_LL_32(&lli[i].sar.msb, upper_32_bits(child->sar));
-		#endif /* CONFIG_64BIT */
-		/* DAR */
-		#if defined(CONFIG_64BIT) && defined(CONFIG_X86_64)
-			SET_LL_64(&lli[i].dar.reg, child->dar);
-		#else /* CONFIG_64BIT */
-			SET_LL_32(&lli[i].dar.lsb, lower_32_bits(child->dar));
-			SET_LL_32(&lli[i].dar.msb, upper_32_bits(child->dar));
-		#endif /* CONFIG_64BIT */
-		#ifdef DUMP_DESC_TABLE
-		if ((i < 5) || (j < 5)) {
-			pr_err("%s,[DESC_#%d CH:%d] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%08x, dar:0x%x%08x, Off:0x%x\n",
-				(ch_n == EDMA_DIR_WRITE) ? "W" : "R",
-				i, chunk->chan->id,
-				(control & DW_EDMA_V0_CB)  ? 1:0,
-				(control & DW_EDMA_V0_TCB) ? 1:0,
-				(control & DW_EDMA_V0_LLP) ? 1:0,
-				(control & DW_EDMA_V0_LIE) ? 1:0,
-				(control & DW_EDMA_V0_RIE) ? 1:0,
-				(control & DW_EDMA_V0_CCS) ? 1:0,
-				(control & DW_EDMA_V0_LLE) ? 1:0,
-				child->sz,
-				upper_32_bits(child->sar), lower_32_bits(child->sar),
-				upper_32_bits(child->dar), lower_32_bits(child->dar),
-				i*24
-			);
-		}
-		#endif /* DUMP_DESC_TABLE */
-		i++;
 	}
 
-	llp = (void __iomem *)&lli[i];
+	if (!remain) { /* Last element */
+		control |= (DW_EDMA_V0_LIE | DW_EDMA_V0_RIE);
+	}
+
+	/* Channel control */
+	SET_LL_32(&lli[idx].control, control);
+	/* Transfer size */
+	SET_LL_32(&lli[idx].transfer_size, burst->sz);
+	/* SAR */
+	#if defined(CONFIG_64BIT) && defined(CONFIG_X86_64)
+		SET_LL_64(&lli[idx].sar.reg, burst->sar);
+	#else /* CONFIG_64BIT */
+		SET_LL_32(&lli[idx].sar.lsb, lower_32_bits(burst->sar));
+		SET_LL_32(&lli[idx].sar.msb, upper_32_bits(burst->sar));
+	#endif /* CONFIG_64BIT */
+	/* DAR */
+	#if defined(CONFIG_64BIT) && defined(CONFIG_X86_64)
+		SET_LL_64(&lli[idx].dar.reg, burst->dar);
+	#else /* CONFIG_64BIT */
+		SET_LL_32(&lli[idx].dar.lsb, lower_32_bits(burst->dar));
+		SET_LL_32(&lli[idx].dar.msb, upper_32_bits(burst->dar));
+	#endif /* CONFIG_64BIT */
+
+	#ifdef DUMP_DESC_TABLE
+	if ((idx < 5) || (remain < 5)) {
+		pr_err("%s,[DESC_#%u CH:%d] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%08x, dar:0x%x%08x, Off:0x%x\n",
+			(ch_n == EDMA_DIR_WRITE) ? "W" : "R", 
+			idx, chunk->chan->id,
+			(control & DW_EDMA_V0_CB)  ? 1:0,
+			(control & DW_EDMA_V0_TCB) ? 1:0,
+			(control & DW_EDMA_V0_LLP) ? 1:0,
+			(control & DW_EDMA_V0_LIE) ? 1:0,
+			(control & DW_EDMA_V0_RIE) ? 1:0,
+			(control & DW_EDMA_V0_CCS) ? 1:0,
+			(control & DW_EDMA_V0_LLE) ? 1:0,
+			burst->sz,
+			upper_32_bits(burst->sar), lower_32_bits(burst->sar),
+			upper_32_bits(burst->dar), lower_32_bits(burst->dar),
+			idx*24
+		);
+	}
+	#endif /* DUMP_DESC_TABLE */
+}
+
+static void dw_edma_v0_gen_llp(struct dw_edma_v0_llp __iomem *llp,
+							   struct dw_edma_chunk *chunk) {
+	u32 control = 0;
+
 	control = DW_EDMA_V0_LLP | DW_EDMA_V0_TCB;
 	if (!chunk->cb)
 		control |= DW_EDMA_V0_CB;
-
-	/* Channel control */
+    /* Channel control */
 	SET_LL_32(&llp->control, control);
 	/* Linked list */
 	#if defined(CONFIG_64BIT) && defined(CONFIG_X86_64)
@@ -404,21 +398,63 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		SET_LL_32(&llp->llp.lsb, lower_32_bits(chunk->ll_region.paddr));
 		SET_LL_32(&llp->llp.msb, upper_32_bits(chunk->ll_region.paddr));
 	#endif /* CONFIG_64BIT */
-	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
 
-#ifdef DUMP_DESC_TABLE
-	pr_err("[DESC_LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%x, Off:0x%x\n",
-		(control & DW_EDMA_V0_CB)  ? 1:0,
-		(control & DW_EDMA_V0_TCB) ? 1:0,
-		(control & DW_EDMA_V0_LLP) ? 1:0,
-		(control & DW_EDMA_V0_LIE) ? 1:0,
-		(control & DW_EDMA_V0_RIE) ? 1:0,
-		(control & DW_EDMA_V0_CCS) ? 1:0,
-		(control & DW_EDMA_V0_LLE) ? 1:0,
-		upper_32_bits(chunk->ll_region.paddr), lower_32_bits(chunk->ll_region.paddr),
-		i*24
-	);
-#endif /* DUMP_DESC_TABLE */
+	#ifdef DUMP_DESC_TABLE
+		pr_err("[DESC_LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%x\n",
+			(control & DW_EDMA_V0_CB)  ? 1:0,
+			(control & DW_EDMA_V0_TCB) ? 1:0,
+			(control & DW_EDMA_V0_LLP) ? 1:0,
+			(control & DW_EDMA_V0_LIE) ? 1:0,
+			(control & DW_EDMA_V0_RIE) ? 1:0,
+			(control & DW_EDMA_V0_CCS) ? 1:0,
+			(control & DW_EDMA_V0_LLE) ? 1:0,
+			upper_32_bits(chunk->ll_region.paddr), lower_32_bits(chunk->ll_region.paddr)
+		);
+	#endif /* DUMP_DESC_TABLE */
+}
+
+static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, int dma_n, int ch_n)
+{
+	struct dw_edma_burst *child, *curr, *next, *ptr;
+	struct dw_edma_v0_lli __iomem *lli;
+	struct dw_edma_v0_llp __iomem *llp;
+	u32 i = 0;
+	int j = 0;
+
+	dx_pcie_start_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
+
+	ptr = list_first_entry(&chunk->burst->list, struct dw_edma_burst, list);
+	list_for_each_entry_safe(curr, next,&chunk->burst->list, list) {
+		bool contd = false;
+		if(ptr == curr) continue;
+
+		if (ch_n == EDMA_DIR_WRITE && curr->dar == (ptr->dar + ptr->sz)) {
+			contd = true;
+		} else if (ch_n == EDMA_DIR_READ && curr->sar == (ptr->sar + ptr->sz)) {
+			contd = true;
+		}
+			
+		if(contd) {
+			ptr->sz += curr->sz;
+			list_del(&curr->list);
+			kfree(curr);
+			chunk->bursts_alloc--;
+		} else {
+			ptr = curr;
+		}
+	}
+
+	lli = chunk->ll_region.vaddr;
+	j = chunk->bursts_alloc;
+	list_for_each_entry(child, &chunk->burst->list, list) {
+		j--;
+		dw_edma_v0_gen_lli(lli, chunk, child, ch_n, i, j);
+		i++;
+	}
+
+	llp = (void __iomem *)&lli[i];
+	dw_edma_v0_gen_llp(llp, chunk);
+	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
 }
 
 void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_desc, bool is_llm)

@@ -1,0 +1,37 @@
+name: Merge Conflict Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-pr-branch-has-main-commit:
+    runs-on: self-hosted
+    steps:
+      - name: Clean
+        run: |
+          sudo rm -rf ${{ github.workspace }}/*
+          sudo rm -rf ${{ github.workspace }}/.[!.]* 2>/dev/null || true
+          sudo rm -rf ${{ github.workspace }}/..?* 2>/dev/null || true
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GH_DCI_TOKEN }}
+          fetch-depth: 0
+
+      - name: Check if MAIN_COMMIT exists in PR branch
+        run: |
+          git remote add upstream ${{ github.event.pull_request.base.repo.clone_url }}
+          git fetch upstream main
+          MAIN_COMMIT=$(git rev-parse upstream/main)
+          echo "MAIN_COMMIT=$MAIN_COMMIT"
+          BRANCH_LIST=$(git branch --contains $MAIN_COMMIT || true)
+          echo "$BRANCH_LIST"
+          if echo "$BRANCH_LIST" | grep -q ${{ github.head_ref }}; then
+            echo "✅ MAIN_COMMIT is present in ${{ github.head_ref }}"
+          else
+            echo "❌ MAIN_COMMIT is NOT present in ${{ github.head_ref }}"
+            exit 1
+          fi

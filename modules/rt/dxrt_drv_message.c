@@ -8,6 +8,8 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
+#define MAX_PCIE_CH_NUM     (3)
+
 /*
 * Initialization function to drive the device
 */
@@ -121,6 +123,7 @@ static int dxrt_polling_ack(struct dxdev *dev, int ms)
     while(true) {
         mdelay(ms);
         if (++fail_cnt > ACK_POLLING_THRESHOLD) {
+            pr_err( MODULE_NAME "%s: timeout.\n", __func__);
             ret = -ETIMEDOUT;
             break;
         }
@@ -338,7 +341,7 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg)
 {
     int ret = 0, num = dev->id;
     dx_shced_data data;
-    if ((dev->type == DX_ACC) && (dev->variant == DX_M1A)) {
+    if (dev->type == DX_ACC) {
         if (msg->data!=NULL) {
             if (copy_from_user(&data.bound, (void __user*)msg->data, sizeof(npu_bound_op))) {
                 pr_debug("%d: %s: failed.\n", num, __func__);
@@ -419,7 +422,7 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
             meminfo.offset,
             meminfo.size
         );
-        if (ch>2) {
+        if (ch>MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
             return -EINVAL;
         }
@@ -546,8 +549,7 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg)
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (dev->variant == DX_M1A)
-                ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
+            ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
             pr_debug("%d: %s: ch %d, req %d, type %d, [%d cmds @ %x, weight @ %x], [%d cmds @ %x, weight @ %x], input @ %llx+%x(%x), output @ %llx+%x(%x), %x, pr:%d, bw:%d, bd:%d, q:%d\n", 
                 num, __func__, req.dma_ch,
                 req.req_id, req.model_type, 
@@ -645,8 +647,7 @@ static int dxrt_npu_run_request(struct dxdev* dev, dxrt_message_t *msg)
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (dev->variant == DX_M1A)
-                ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
+            ret = get_queue_from_sched_op(dev, req.bound, &req.queue);
             pr_debug("%d: %s: ch %d, req %d, type %d, [%d cmds @ %x, weight @ %x], [%d cmds @ %x, weight @ %x], input @ %llx+%x(%x), output @ %llx+%x(%x), %x, pr:%d, bw:%d, bd:%d, q:%d\n", 
                 num, __func__, req.dma_ch,
                 req.req_id, req.model_type, 
@@ -734,7 +735,7 @@ static int dxrt_npu_run_response(struct dxdev* dev, dxrt_message_t *msg)
                 pr_err( MODULE_NAME "%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch>2) {
+            if (ch>MAX_PCIE_CH_NUM) {
                 pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }
@@ -743,6 +744,7 @@ static int dxrt_npu_run_response(struct dxdev* dev, dxrt_message_t *msg)
                 mask = dx_pcie_interrupt(num, ch);
                 pr_debug(MODULE_NAME "%d: %s, ch%d: wake up.\n", num, __func__, ch);
             } else {
+                dx_pcie_interrupt_clear(num, ch);
                 mask = 1;
             }
             if (mask==1) {
@@ -804,7 +806,7 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg)
                 pr_err( MODULE_NAME "%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch>2) {
+            if (ch>MAX_PCIE_CH_NUM) {
                 pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }
@@ -915,7 +917,7 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg)
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch<0 || ch>2) {
+            if (ch<0 || ch>MAX_PCIE_CH_NUM) {
                 pr_debug("%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }  
@@ -980,7 +982,7 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
             meminfo.offset,
             meminfo.size
         );
-        if (ch>2) {
+        if (ch>MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
             return -EINVAL;
         }
@@ -1064,17 +1066,7 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg)
     pr_info("%d: %s: %llx\n", num, __func__, (uint64_t)msg->data);
     if (dev->type == DX_STD)
     {
-#if DEVICE_VARIANT==DX_L1
-        if (msg->data!=NULL)
-        {
-            uint32_t data[3];
-            if (copy_from_user(data, (void __user*)msg->data, sizeof(uint32_t)*3)) {
-                pr_debug("%d: %s: failed.\n", num, __func__);
-                return -EFAULT;
-            }
-            en677_npu_dma_copy(data);
-        }
-#endif
+        /* do nothing */
     }
     else
     {
@@ -1459,4 +1451,5 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_NPU_RUN_RESP]         = dxrt_npu_run_response,
     [DXRT_CMD_RECOVERY]             = dxrt_recovery_device,
     [DXRT_CMD_CUSTOM]               = dxrt_msg_general,
+    [DXRT_CMD_START]                = dxrt_msg_general,
 };

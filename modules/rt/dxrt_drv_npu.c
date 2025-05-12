@@ -16,27 +16,7 @@
 #include "dxrt_drv.h"
 
 struct dxnpu_cfg npu_cfg = {
-#if DEVICE_VARIANT==DX_L1
-    /* DX-L1 */
-    .clock_khz = 594000,
-    .default_values = {0x240, 0x200, 0x240},
-    .init = dx_l1_npu_init,
-    .prefare_inference = dx_l1_npu_prepare_inference,
-    .run = dx_l1_npu_run,
-    .reg_dump = dx_l1_npu_reg_dump,
-    .deinit = dx_l1_npu_deinit,
-#elif DEVICE_VARIANT==DX_L3
-    /* DX-L3 */
-    .clock_khz = 74250,
-    .default_values = {0x2C0, 0x200, 0x2C0},
-    .init = dx_l3_npu_init,
-    .prefare_inference = dx_l3_npu_prepare_inference,
-    .run = dx_l3_npu_run,
-    .reg_dump = dx_l3_npu_reg_dump,
-    .deinit = dx_l3_npu_deinit,
-#else
     0,
-#endif
 };
 
 struct dxnpu *dxrt_npu_init(void *dxdev_)

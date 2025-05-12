@@ -143,6 +143,25 @@ unsigned int dx_pcie_interrupt(int dev_id, int irq_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_interrupt);
 
+void dx_pcie_interrupt_clear(int dev_id, int irq_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct dx_dma_user_irq *user_irq;
+	unsigned long flags;
+
+	if (dw->nr_irqs == 1) {
+		user_irq = &dw->irq[0].user_irqs[irq_id];
+	} else {
+		user_irq = &dw->irq[dw->dma_irqs + irq_id].user_irq;
+	}
+	dbg_irq("%s:%d:%d clear irq : %d[%p, %p]\n", __func__, current->tgid, irq_id, user_irq->events_irq, &user_irq->events_irq, &user_irq->events_wq);
+
+	spin_lock_irqsave(&user_irq->events_lock, flags);
+	user_irq->events_irq = 0;
+	spin_unlock_irqrestore(&user_irq->events_lock, flags);
+}
+EXPORT_SYMBOL_GPL(dx_pcie_interrupt_clear);
+
 #ifdef DX_PCIE_DBG_WAIT_QUE
 /** Used in tsk->state:
  #define TASK_RUNNING			0x0000
