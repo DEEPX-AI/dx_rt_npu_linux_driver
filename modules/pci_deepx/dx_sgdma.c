@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
+#include <linux/version.h>
 
 #include <linux/scatterlist.h>
 #include <asm/cacheflush.h>
@@ -28,6 +29,10 @@
 #include "dx_util.h"
 #if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
 #include "dx_pcie_api.h"
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
+#include <linux/vmalloc.h>
 #endif
 
 static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
@@ -51,7 +56,11 @@ static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
 	if (i != cb->pages_nr)
 		pr_info("sgl pages %d/%u.\n", i, cb->pages_nr);
 
-	kfree(cb->pages);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
+	kvfree(cb->pages);
+#else
+	kfree(cb->pages)
+#endif
 	cb->pages = NULL;
 }
 
@@ -77,7 +86,11 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 	}
 	dx_pcie_end_profile(PCIE_SG_TABLE_ALLOC_T, 0, dev_n, dma_n, write);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
+	cb->pages = kvmalloc_array(pages_nr, sizeof(struct page *), GFP_KERNEL);
+#else
 	cb->pages = kcalloc(pages_nr, sizeof(struct page *), GFP_KERNEL);
+#endif
 	if (!cb->pages) {
 		pr_err("pages OOM.\n");
 		rv = -ENOMEM;
