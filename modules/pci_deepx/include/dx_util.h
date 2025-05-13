@@ -12,6 +12,10 @@
 #include <linux/ktime.h>
 #include "dw-edma-core.h"
 
+#define KVM_KERNEL_MAJ 4
+#define KVM_KERNEL_MIN 12
+#define KVM_KERNEL_PAT 0
+
 #define PCIE_GET_BW(size, time)     ((size*1000*1000*1000)/(time*1024*1024))
 
 typedef enum dx_pcie_perf_t {
