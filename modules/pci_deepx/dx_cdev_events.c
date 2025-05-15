@@ -218,6 +218,33 @@ unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 	if (dw->nr_irqs == 1) {
 		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
 	} else {
+		event_irq = &dw->irq[dw->dma_irqs + irq_id].user_irq;
+	}
+
+	spin_lock_irqsave(&(event_irq->events_lock), flags);
+	if (!event_irq->events_irq) {
+		event_irq->events_irq = 2;
+#ifdef DX_PCIE_DBG_WAIT_QUE
+		show_wait_queue_list(&(event_irq->events_wq));
+#endif
+		wake_up_interruptible(&(event_irq->events_wq));
+	}
+	spin_unlock_irqrestore(&(event_irq->events_lock), flags);
+	pr_info("%s:%d wake-up : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_interrupt_wakeup);
+
+unsigned int dx_pcie_interrupt_event_wakeup(int dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct dx_dma_user_irq *event_irq;
+	unsigned long flags;
+
+	if (dw->nr_irqs == 1) {
+		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
+	} else {
 		event_irq = &dw->irq[dw->dma_irqs + dw->event_irq_idx].user_irq;
 	}
 
@@ -234,7 +261,7 @@ unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(dx_pcie_interrupt_wakeup);
+EXPORT_SYMBOL_GPL(dx_pcie_interrupt_event_wakeup);
 
 void dx_cdev_event_init(struct dx_dma_cdev *xcdev, u8 idx)
 {

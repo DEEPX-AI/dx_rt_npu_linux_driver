@@ -39,8 +39,17 @@ jobs:
 
             - name: Get to tag
               run: echo "TO_TAG=${{ github.event.head_commit.message }}" >> $GITHUB_ENV
-            - name: make latest_release.md
-              run: awk '/^## v/{if (found) exit; found=1} found' RELEASE_NOTES.md > latest_release.md
+
+            - name: Get current release tag
+              run: |
+                CURRENT_RELEASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+                "https://api.github.com/repos/DEEPX-AI/dx_rt_npu_linux_driver/releases/latest" | jq -r .tag_name | cut -d+ -f1)
+                echo "CURRENT_RELEASE_TAG=$CURRENT_RELEASE_TAG" >> $GITHUB_ENV
+
+            - name: Make latest_release.md
+              run: |
+                awk 'NR == 1 { next } /^[[:space:]]*$/ && !started { next } /^## ${{ env.CURRENT_RELEASE_TAG }}/ { exit } { started=1; print }' \
+                RELEASE_NOTES.md > latest_release.md
 
             - name: Create release
               uses: ncipollo/release-action@v1
@@ -50,3 +59,6 @@ jobs:
                 makeLatest: true
                 draft: true
                 bodyfile: latest_release.md
+
+            - name: Clean latest_release.md
+              run: sudo rm -rf latest_release.md

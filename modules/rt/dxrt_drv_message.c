@@ -892,7 +892,48 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg)
 }
 
 /**
- * dxrt_terminate - Notifies the device to terminate.
+ * dxrt_terminate_event - Wakeup wait event.
+ * @dev: The deepx device on kernel structure
+ * @msg: User-space pointer including the data buffer
+ *
+ * If the user wants to terminate normally,
+ * the corresponding API is called and the driver is notified of termination.
+ * 
+ * Return: 0 on success,
+ *        Currently no other return values ​​are defined. 
+ */
+static int dxrt_terminate_event(struct dxdev* dev, dxrt_message_t* msg)
+{
+    int num = dev->id;
+    pr_debug("%d:%d %s\n", num, current->tgid, __func__);
+    if (dev->type == DX_ACC)
+    {        
+        unsigned int mask = 0;
+        mask = dx_pcie_interrupt_event_wakeup(num);
+        return mask;
+    }
+    else
+    {
+        dxnpu_t *npu = dev->npu;
+        unsigned long flags;
+        pr_debug(MODULE_NAME "%d: %s start \n", num, __func__);
+        spin_lock_irqsave(&npu->irq_event_lock, flags);
+        npu->irq_event = 1;
+        wake_up_interruptible(&npu->irq_wq);
+        spin_unlock_irqrestore(&npu->irq_event_lock, flags);
+        {
+            spin_lock_irqsave(&dev->error_lock, flags);
+            dev->error = 99;
+            wake_up_interruptible(&dev->error_wq);
+            spin_unlock_irqrestore(&dev->error_lock, flags);
+        }
+        pr_debug(MODULE_NAME "%d: %s done.\n", num, __func__);
+        return 0;
+    }
+}
+
+/**
+ * dxrt_terminate - Wakeup output event.
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
  *
@@ -921,7 +962,7 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg)
                 pr_debug("%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }  
-            pr_debug("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
+            pr_info("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
             mask = dx_pcie_interrupt_wakeup(num, ch);
         }
         // spin_lock_irqsave(&dev->error_lock, flags);
@@ -1304,7 +1345,6 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg)
     dev->error = 0;
     pr_debug(MODULE_NAME "%d:%d %s: start to wait. error %d\n", num, current->tgid, __func__, dev->error);
     {
-        dx_pcie_clear_event_response(num);
         dx_pcie_dequeue_event_response(num, &dev_event);
         if (dev_event.event_type == DXRT_EVENT_ERROR) {
             dev->error = dev_event.dx_rt_err.err_code;
@@ -1317,8 +1357,8 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg)
     }
     pr_debug(MODULE_NAME "%d:%d %s: wake up. error %d\n", num, current->tgid, __func__, dev->error);
 
+    spin_lock_irqsave(&dev->error_lock, flags);
     if (dev_event.event_type == DXRT_EVENT_ERROR) {
-        spin_lock_irqsave(&dev->error_lock, flags);
         dev_event.dx_rt_err.rt_driver_version   = DXRT_MOD_VERSION_NUMBER;
         dev_event.dx_rt_err.pcie_driver_version = info.driver_version;
         dev_event.dx_rt_err.bus                 = info.bus;
@@ -1326,8 +1366,8 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg)
         dev_event.dx_rt_err.func                = info.func;
         dev_event.dx_rt_err.speed               = info.speed;
         dev_event.dx_rt_err.width               = info.width;
-        spin_unlock_irqrestore(&dev->error_lock, flags);
     }
+    spin_unlock_irqrestore(&dev->error_lock, flags);
 
     if (msg->data!=NULL) {
         if (copy_to_user((void __user*)msg->data, &dev_event, sizeof(dx_pcie_dev_event_t))) {
@@ -1434,7 +1474,7 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_READ_OUTPUT_DMA_CH0]  = dxrt_read_output,
     [DXRT_CMD_READ_OUTPUT_DMA_CH1]  = dxrt_read_output,
     [DXRT_CMD_READ_OUTPUT_DMA_CH2]  = dxrt_read_output,
-    [DXRT_CMD_TERMINATE]            = dxrt_terminate,
+    [DXRT_CMD_TERMINATE_EVENT]      = dxrt_terminate_event,
     [DXRT_CMD_SOC_CUSTOM]           = dxrt_soc_custom,
     [DXRT_CMD_GET_STATUS]           = dxrt_msg_general,
     [DXRT_CMD_RESET]                = dxrt_reset_device,
@@ -1452,4 +1492,5 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_RECOVERY]             = dxrt_recovery_device,
     [DXRT_CMD_CUSTOM]               = dxrt_msg_general,
     [DXRT_CMD_START]                = dxrt_msg_general,
+    [DXRT_CMD_TERMINATE]            = dxrt_terminate,
 };
