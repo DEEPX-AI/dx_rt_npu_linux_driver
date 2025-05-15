@@ -9,6 +9,7 @@
 - Implements termiation api
   If the user wants to terminate normally, the corresponding API is called and the driver is notified of termination.
 
+
 ## v1.4.3 / 2025-05-12
 ### 1. Changed
 - None

@@ -50,6 +50,7 @@ ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch,
 unsigned int dx_pcie_interrupt(int dev_id, int irq_id);
 void dx_pcie_interrupt_clear(int dev_id, int irq_id);
 unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id);
+unsigned int dx_pcie_interrupt_event_wakeup(int dev_id);
 void __iomem *dx_pcie_get_message_area(u32 dev_id);
 void __iomem *dx_pcie_get_log_area(u32 dev_id);
 void __iomem *dx_pcie_get_dl_area(u32 dev_id);
