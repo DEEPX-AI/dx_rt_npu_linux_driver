@@ -1,0 +1,72 @@
+# LEAF_REPO/.github/workflows/gh-cloud-dispatch-submodule-update.yml
+name: dx-runtime-dispatch-update
+run-name: dispatch submodule update of dx-runtime by ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - staging
+
+env:
+  OWNER: DEEPX-AI
+  REPO: dx-runtime
+
+jobs:
+  dispatch:
+    runs-on:
+      - self-hosted
+      - sdk
+    steps:
+      - name: Clean Workspace
+        run: |
+          sudo rm -rf ${{ github.workspace }}
+          mkdir -p ${{ github.workspace }}
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GC_DCI_TOKEN }}
+
+      - name: Extract and Validate Tag
+        id: extract_tag
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          # Check if the commit message starts with 'vX.Y.Z+' pattern
+          if echo "$MSG" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\+'; then
+            TAG_PREFIX=$(echo "$MSG" | cut -d'+' -f1)
+            echo "::notice::Valid tag format found: $TAG_PREFIX"
+            echo "tag_name=$TAG_PREFIX" >> $GITHUB_OUTPUT
+            echo "is_valid_tag=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Invalid tag format (expected vX.Y.Z+*). Skipping tag creation."
+            echo "tag_name=" >> $GITHUB_OUTPUT # Ensure tag_name is empty if not valid
+            echo "is_valid_tag=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Tag
+        # Only create tag if a valid semantic version format was extracted
+        if: steps.extract_tag.outputs.is_valid_tag == 'true'
+        uses: rickstaa/action-create-tag@v1
+        with:
+          tag_exists_error: false # Do not error if tag already exists
+          tag: ${{ steps.extract_tag.outputs.tag_name }}
+          force_push_tag: true # Force push if tag already exists
+          commit_sha: ${{ github.event.head_commit.id }}
+          message: '${{ github.event.head_commit.message }}'
+
+      - name: Dispatch Submodule Update of dx-runtime
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GC_DCI_TOKEN }}
+          repository: ${{ env.OWNER }}/${{ env.REPO }}
+          event-type: update-submodule
+          client-payload: |
+            {
+              "name": "dx_rt_npu_linux_driver",
+              "sha": "${{ github.sha }}",
+              "ref": "${{ github.ref_name }}",
+              "tag_version": "${{ steps.extract_tag.outputs.tag_name }}"
+            }
