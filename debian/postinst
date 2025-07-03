@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+# 패키지 설치 시 소스 코드를 압축 해제합니다.
+PACKAGER="dxrt-driver"
+SRC_DIR="/usr/share/${PACKAGER}/src"
+MAIN_ZIP_FILE="/usr/share/${PACKAGER}/source.zip"
+KERNEL_DIR="/lib/modules/$(uname -r)/kernel/drivers/misc"
+
+# 메인 소스 코드 압축 해제
+rm -rf $SRC_DIR
+mkdir -p "$SRC_DIR"
+unzip -o "$MAIN_ZIP_FILE" -d "$SRC_DIR"
+rm -rf $MAIN_ZIP_FILE
+
+# 빌드
+cd "$SRC_DIR/modules"
+#DEVICE=m1a PCIE=deepx dh build
+./build.sh --device m1a --module deepx
+
+# 드라이버 설치
+mkdir -p "$KERNEL_DIR"
+cp pci_deepx/dx_dma.ko "$KERNEL_DIR"
+cp rt/dxrt_driver.ko "$KERNEL_DIR"
+
+modprobe dx_dma || true
+modprobe dxrt_driver || true
+
+depmod -a
+
+exit 0

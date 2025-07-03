@@ -1,0 +1,64 @@
+name: main
+run-name: ${{github.event.head_commit.message}}(${{github.event.head_commit.ref}})
+
+on:
+    workflow_dispatch:
+    push:
+        branches:
+            - main
+
+permissions: write-all
+
+jobs:
+    release:
+        name: checkout
+        if: github.repository == 'DEEPX-AI/dx_rt_npu_linux_driver'
+        runs-on: self-hosted
+        timeout-minutes: 20
+        steps:
+            - name: Clean
+              run: |
+                  sudo rm -rf ${{ github.workspace }}
+                  mkdir -p ${{ github.workspace }}
+            
+            - name: Checkout 
+              uses: actions/checkout@v4
+              with:
+                fetch-depth: 0
+                fetch-tags: true
+                token: ${{ secrets.GH_TOKEN }}
+            
+            - name: Create tag
+              uses: rickstaa/action-create-tag@v1
+              with:
+                  tag_exists_error: false
+                  tag: ${{ github.event.head_commit.message }}
+                  force_push_tag: true
+                  commit_sha: ${{ github.event.head_commit.ref}}
+                  message: '${{ github.event.head_commit.message }}'
+
+            - name: Get to tag
+              run: echo "TO_TAG=${{ github.event.head_commit.message }}" >> $GITHUB_ENV
+
+            - name: Get current release tag
+              run: |
+                CURRENT_RELEASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+                "https://api.github.com/repos/DEEPX-AI/dx_rt_npu_linux_driver/releases/latest" | jq -r .tag_name | cut -d+ -f1)
+                echo "CURRENT_RELEASE_TAG=$CURRENT_RELEASE_TAG" >> $GITHUB_ENV
+
+            - name: Make latest_release.md
+              run: |
+                awk 'NR == 1 { next } /^[[:space:]]*$/ && !started { next } /^## ${{ env.CURRENT_RELEASE_TAG }}/ { exit } { started=1; print }' \
+                RELEASE_NOTES.md > latest_release.md
+
+            - name: Create release
+              uses: ncipollo/release-action@v1
+              with:
+                tag: ${{ env.TO_TAG }}
+                allowUpdates: false
+                makeLatest: true
+                draft: true
+                bodyfile: latest_release.md
+
+            - name: Clean latest_release.md
+              run: sudo rm -rf latest_release.md
