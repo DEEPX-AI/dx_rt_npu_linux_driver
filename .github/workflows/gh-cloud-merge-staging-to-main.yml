@@ -33,7 +33,6 @@ jobs:
       - name: Get Last Staging Commit Message
         id: get_staging_message
         run: |
-          # Get the last commit message from the staging branch
           LAST_STAGING_COMMIT_MESSAGE=$(git log -1 --pretty=%B origin/staging)
           echo "LAST_STAGING_COMMIT_MESSAGE=$LAST_STAGING_COMMIT_MESSAGE" >> $GITHUB_ENV
 
@@ -51,23 +50,34 @@ jobs:
       - name: Merge Staging to Main (Squash)
         if: steps.check_diff.outputs.has_changes == 'true'
         run: |
+          echo "Pulling latest changes from origin/main before merge..."
+          git pull origin main # 최신 main 브랜치 상태를 가져옴
+
+          echo "Attempting to squash merge origin/staging into main..."
           git merge --squash origin/staging -m "${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
-          git commit -m "${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
-          git push origin main
+
+          # Merge 후 스테이징된 변경 사항이 있는지 확인
+          if git diff --staged --quiet; then
+            echo "::notice::No new changes were staged after squash merge. Skipping commit."
+          else
+            echo "::notice::Changes staged. Proceeding with commit and push."
+            git commit -m "${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
+            git push origin main
+          fi
 
       - name: Recreate Staging Branch from Main
         if: steps.check_diff.outputs.has_changes == 'true'
         run: |
           echo "Deleting remote origin/staging branch..."
-          git push origin --delete staging || true # Ignore error if branch doesn't exist
-          
+          git push origin --delete staging || true
+
           echo "Checking out main branch and pulling latest..."
           git checkout main
           git pull origin main
-          
+
           echo "Creating new staging branch from main..."
           git checkout -b staging
-          
+
           echo "Pushing new staging branch to origin..."
           git push -u origin staging
 
