@@ -16,13 +16,13 @@ BUILD_DEFAULT_CROSS_COMPILE=""
 BUILD_DEFAULT_INSTALL_DIR=""
 BUILD_DEFAULT_DBG=""
 
-SUPPORT_DEVICE=("m1")
+SUPPORT_DEVICE=("m1" "v3")
 
 declare -A SUPPORT_PCIE_MODULE=(
 	["deepx"]="$(pwd)/pci_deepx"
 	["xilinx"]="$(pwd)/pci_xilinx"
 )
-PCIE_DEPEND_DEVICE=("m1" "m1a")
+PCIE_DEPEND_DEVICE=("m1")
 
 declare -A PCIE_MODPROBE_CONF=(
 	["deepx"]="$(pwd)/dx_dma.conf"
