@@ -13,7 +13,9 @@ jobs:
     release:
         name: checkout
         if: github.repository == 'DEEPX-AI/dx_rt_npu_linux_driver'
-        runs-on: self-hosted
+        runs-on: 
+          - self-hosted
+          - sdk
         timeout-minutes: 20
         steps:
             - name: Clean

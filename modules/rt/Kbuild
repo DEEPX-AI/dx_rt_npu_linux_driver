@@ -10,12 +10,12 @@ ccflags-y += -DIS_ACCELERATOR=1
 ccflags-y += -DIS_STANDALONE=0
 ccflags-y += -DDEVICE_TYPE=0
 ccflags-y += -DDEVICE_VARIANT=DX_M1
-else ifeq ($(CONFIG_DX_AI_ACCEL_V3),y)
+else ifeq ($(CONFIG_DX_AI_STAND_V3),y)
 ccflags-y += -DIS_ACCELERATOR=0
 ccflags-y += -DIS_STANDALONE=1
 ccflags-y += -DDEVICE_TYPE=1
 ccflags-y += -DDEVICE_VARIANT=DX_V3
-ccflags-y += -DNUM_DEVICES=1
+ccflags-y += -DNUM_DEVICES=2
 else
 $(error Error: No selected device)
 endif
@@ -34,6 +34,6 @@ dxrt_driver-y := dxrt_drv.o dxrt_drv_cdev.o \
 		dxrt_drv_message.o dxrt_drv_queue.o \
 		dxrt_sched.o dxrt_drv_dl.o
 
-dxrt_driver-$(CONFIG_DX_AI_ACCEL_V3) += dxrt_drv_npu.o dxrt_drv_thread.o
+dxrt_driver-$(CONFIG_DX_AI_STAND_V3) += dxrt_drv_npu.o dxrt_drv_thread.o dxrt_drv_npu_v3.o
 
 obj-$(CONFIG_DX_AI_ACCEL_RT) += dxrt_driver.o

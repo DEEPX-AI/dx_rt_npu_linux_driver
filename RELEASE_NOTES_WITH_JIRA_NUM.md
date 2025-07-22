@@ -1,4 +1,25 @@
 # RELEASE_NOTES
+## v1.7.1 / 2025-07-16
+### 1. Changed
+### 2. Fixed
+- Fix device identification error
+### 3. Added
+
+## v1.7.0 / 2025-07-07
+### 1. Changed
+### 2. Fixed
+### 3. Added
+- Implement command for getting PCIe Status from device.
+
+
+## v1.6.0 / 2025-05-22
+### 1. Changed
+- dxrt_drv.c dxrt_drv_cdev.c dxrt_drv_message.c dxrt_drv_npu.c
+- dxrt_drv.h dxrt_drv_common.h dxrt_drv_npu.h
+### 2. Fixed
+- Kbuild build.sh device.mk
+### 3. Added
+- dxrt_drv_npu_v3.c npu_reg_debug_DX_V3.h npu_reg_dma_DX_V3.h npu_reg_sys_DX_V3.h
 
 ## v1.5.0 / 2025-05-14
 ### 1. Changed
