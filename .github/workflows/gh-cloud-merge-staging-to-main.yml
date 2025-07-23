@@ -114,16 +114,6 @@ jobs:
             echo "EOF"
           } >> $GITHUB_ENV
 
-      - name: Check Bump version output
-        id: semver
-        run: |
-          echo "Parsing bump type from commit message..."
-          echo "Commit Message: $LAST_STAGING_COMMIT_MESSAGE"
-          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+')
-          echo "Parsed bump type: $bump_type"
-          echo "bump=$bump_type" >> $GITHUB_OUTPUT
-          echo "BUMP_TYPE=$bump_type" >> $GITHUB_ENV
-
       - name: Check Diff Between Main and Staging
         id: check_diff
         run: |
@@ -133,6 +123,22 @@ jobs:
           else
             echo "::notice::Differences found. Proceeding with merge."
             echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Bump version output
+        if: steps.check_diff.outputs.has_changes == 'true'
+        id: semver
+        run: |
+          echo "Parsing bump type from commit message..."
+          echo "Commit Message: $LAST_STAGING_COMMIT_MESSAGE"
+          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+')
+          echo "Parsed bump type: $bump_type"
+          echo "bump=$bump_type" >> $GITHUB_OUTPUT
+          echo "BUMP_TYPE=$bump_type" >> $GITHUB_ENV
+          
+          if [[ "$bump_type" == "" ]]; then
+            echo "::notice::Invalid bump_type coming in. skip this workflow"
+            exit 0
           fi
 
       - name: Merge Staging to Main (Squash)
