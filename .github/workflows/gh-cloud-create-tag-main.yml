@@ -50,7 +50,7 @@ jobs:
             - name: Get current release tag
               run: |
                 CURRENT_RELEASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GC_DCI_TOKEN }}" \
-                "https://api.github.com/repos/DEEPX-AI/dx_app/releases/latest" | jq -r .tag_name | cut -d+ -f1)
+                "https://api.github.com/repos/DEEPX-AI/dx_rt_npu_linux_driver/releases/latest" | jq -r .tag_name | cut -d+ -f1)
                 echo "CURRENT_RELEASE_TAG=$CURRENT_RELEASE_TAG" >> $GITHUB_ENV
 
             - name: Make latest_release.md

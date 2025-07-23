@@ -30,11 +30,99 @@ jobs:
       - name: Fetch Staging Branch
         run: git fetch origin staging
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
       - name: Get Last Staging Commit Message
         id: get_staging_message
         run: |
           LAST_STAGING_COMMIT_MESSAGE=$(git log -1 --pretty=%B origin/staging)
           echo "LAST_STAGING_COMMIT_MESSAGE=$LAST_STAGING_COMMIT_MESSAGE" >> $GITHUB_ENV
+
+        # 릴리즈 노트 작성을 위한 재료 수집
+      - name: Collect and store Changed sections
+        run: |
+          CHANGED_ITEMS=$(awk '
+              /^(### 1\. Changed)/ {
+                in_target_section = 1;
+                next;
+              }
+              /^(### [0-9]\.|^## PR)/ {
+                in_target_section = 0;
+              }
+              in_target_section {
+                print;
+              }
+            ' RELEASE_NOTES_MATERIAL.md | \
+            grep '^[[:space:]]*- ' | \
+            grep -v '^[[:space:]]*- None$' || true
+          )
+          
+          {
+            echo "CHANGED_ITEMS<<EOF"
+            echo "$CHANGED_ITEMS"
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Collect and store Fixed sections
+        run: |
+          FIXED_ITEMS=$(awk '
+              /^(### 2\. Fixed)/ {
+                in_target_section = 1;
+                next;
+              }
+              /^(### [0-9]\.|^## PR)/ {
+                in_target_section = 0;
+              }
+              in_target_section {
+                print;
+              }
+            ' RELEASE_NOTES_MATERIAL.md | \
+            grep '^[[:space:]]*- ' | \
+            grep -v '^[[:space:]]*- None$' || true
+          )
+          
+          {
+            echo "FIXED_ITEMS<<EOF"
+            echo "$FIXED_ITEMS"
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Collect and store Added sections
+        run: |
+          ADDED_ITEMS=$(awk '
+              /^(### 3\. Added)/ {
+                in_target_section = 1;
+                next;
+              }
+              /^(### [0-9]\.|^## PR)/ {
+                in_target_section = 0;
+              }
+              in_target_section {
+                print;
+              }
+            ' RELEASE_NOTES_MATERIAL.md | \
+            grep '^[[:space:]]*- ' | \
+            grep -v '^[[:space:]]*- None$' || true
+          )
+          
+          {
+            echo "ADDED_ITEMS<<EOF"
+            echo "$ADDED_ITEMS"
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Check Bump version output
+        id: semver
+        run: |
+          echo "Parsing bump type from commit message..."
+          echo "Commit Message: $LAST_STAGING_COMMIT_MESSAGE"
+          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+')
+          echo "Parsed bump type: $bump_type"
+          echo "bump=$bump_type" >> $GITHUB_OUTPUT
+          echo "BUMP_TYPE=$bump_type" >> $GITHUB_ENV
 
       - name: Check Diff Between Main and Staging
         id: check_diff
@@ -49,21 +137,92 @@ jobs:
 
       - name: Merge Staging to Main (Squash)
         if: steps.check_diff.outputs.has_changes == 'true'
+        env:
+          CHANGED_ITEMS: ${{ env.CHANGED_ITEMS }}
+          FIXED_ITEMS: ${{ env.FIXED_ITEMS }}
+          ADDED_ITEMS: ${{ env.ADDED_ITEMS }}
         run: |
           echo "Pulling latest changes from origin/main before merge..."
           git pull origin main # 최신 main 브랜치 상태를 가져옴
 
-          echo "Attempting to squash merge origin/staging into main..."
-          git merge --squash origin/staging -m "${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
+          # Clean up untracked files that might conflict with merge
+          echo "Cleaning up untracked files before merge..."
+          git clean -fd
 
-          # Merge 후 스테이징된 변경 사항이 있는지 확인
+          echo "Attempting to squash merge origin/staging into main..."
+          git merge --squash origin/staging
+
+          chmod +x .github/scripts/write_release_notes.sh
+          
+          echo "Deleting RELEASE_NOTES_WITH_JIRA_NUM.md if exists..."
+          rm -f RELEASE_NOTES_WITH_JIRA_NUM.md
+
+          echo "Checking if anything is staged..."
           if git diff --staged --quiet; then
-            echo "::notice::No new changes were staged after squash merge. Skipping commit."
-          else
-            echo "::notice::Changes staged. Proceeding with commit and push."
-            git commit -m "${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
-            git push origin main
+            echo "::notice::No changes staged after squash merge. Skipping commit."
+            exit 0
           fi
+
+          bump_type="${{ env.BUMP_TYPE }}"
+          tag_message=$(echo "${{ env.LAST_STAGING_COMMIT_MESSAGE }}" | cut -d'+' -f2)
+          if [[ "$bump_type" != "none" ]]; then
+            echo "::notice::Applying bump2version for $bump_type"
+            pip install bump2version
+
+            # bump2version 수행 & new_version 추출
+            NEW_VERSION=$(bump2version "$bump_type" --no-commit --no-tag --allow-dirty --list | grep new_version | cut -d= -f2 | tr -d ' ')
+            echo "NEW_VERSION=$NEW_VERSION"
+            echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+            # 릴리즈노트 작성
+            .github/scripts/write_release_notes.sh "$bump_type" $NEW_VERSION
+
+            # Remove the script before committing to main
+            echo "Removing release notes script before commit..."
+            rm -f .github/scripts/write_release_notes.sh
+
+            git add .
+            COMMIT_MESSAGE="v$NEW_VERSION"
+
+            git tag -a "v$NEW_VERSION" -m "$tag_message"
+            git push origin "v$NEW_VERSION"
+          else
+            echo "::notice::No version bump requested"
+
+            OLD_VERSION=$(cat release.ver | tr -d ' \n')
+            echo "OLD_VERSION=$OLD_VERSION"
+
+            COMMIT_MESSAGE_SUFFIX=$(echo "${{ env.LAST_STAGING_COMMIT_MESSAGE }}" | sed -n 's/^bump=none+\(manual\.sha\.[0-9a-fA-F]*\)$/\1/p')
+
+            .github/scripts/write_release_notes.sh "none"
+
+            # Remove the script before committing to main
+            echo "Removing release notes script before commit..."
+            rm -f .github/scripts/write_release_notes.sh
+
+            git add .
+
+            if [ -z "$COMMIT_MESSAGE_SUFFIX" ]; then
+                echo "Warning: Could not extract suffix from LAST_STAGING_COMMIT_MESSAGE. Using full message." >&2
+                COMMIT_MESSAGE="${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
+            else
+                COMMIT_MESSAGE="${OLD_VERSION}+${COMMIT_MESSAGE_SUFFIX}"
+            fi
+
+            echo "COMMIT_MESSAGE: $COMMIT_MESSAGE"
+
+            # 기존 태그 삭제 (local + remote)
+            git tag -d "$OLD_VERSION" || true
+            git push origin :refs/tags/$OLD_VERSION || true
+
+            # 새 태그 재생성
+            git tag -a "$OLD_VERSION" -m "$tag_message"
+            git push origin "$OLD_VERSION"
+          fi
+
+          echo "::notice::Creating squash commit with message: $COMMIT_MESSAGE"
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin main
 
       - name: Recreate Staging Branch from Main
         if: steps.check_diff.outputs.has_changes == 'true'
