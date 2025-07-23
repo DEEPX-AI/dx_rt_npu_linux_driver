@@ -131,7 +131,7 @@ jobs:
         run: |
           echo "Parsing bump type from commit message..."
           echo "Commit Message: $LAST_STAGING_COMMIT_MESSAGE"
-          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+')
+          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+' 2>/dev/null)
           echo "Parsed bump type: $bump_type"
           echo "bump=$bump_type" >> $GITHUB_OUTPUT
           echo "BUMP_TYPE=$bump_type" >> $GITHUB_ENV
