@@ -202,9 +202,6 @@ jobs:
             echo "OLD_VERSION=$OLD_VERSION"
             COMMIT_MESSAGE_SUFFIX=$(echo "${{ env.LAST_STAGING_COMMIT_MESSAGE }}" | sed -n 's/^bump=none+\(manual\.sha\.[0-9a-fA-F]*\)$/\1/p')
             .github/scripts/write_release_notes.sh "none"
-            # Remove the script before committing to main
-            echo "Removing release notes script before commit..."
-            rm -f .github/scripts/write_release_notes.sh
             git add .
             if [ -z "$COMMIT_MESSAGE_SUFFIX" ]; then
                 echo "Warning: Could not extract suffix from LAST_STAGING_COMMIT_MESSAGE. Using full message." >&2
