@@ -2,6 +2,19 @@ name: Merge Staging to Main
 run-name: Merging staging of ${{ github.event.client_payload.repo_name }} to main (Triggered by ${{ github.event.client_payload.parent_sha }})
 
 on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: 'Submodule repo name'
+        required: false
+      parent_ref:
+        description: 'Parent repo ref (e.g. main)'
+        required: false
+      dispatch_target_repo:
+        description: 'Dispatch Update to Parent Repository (e.g. DEEPX-AI/dx-runtime or DEEPX-AI/dx-all-suite)'
+        required: false  
+
+
   repository_dispatch:
     types:
       - merge-staging-to-main
@@ -15,20 +28,25 @@ jobs:
       - sdk
     timeout-minutes: 10
     steps:
+      - name: Debug dispatch params
+        run: |
+          echo "event_name = ${{ github.event_name }}"
+          echo "repo_name = ${{ github.event.client_payload.repo_name || github.event.inputs.repo_name }}"
+          echo "parent_ref = ${{ github.event.client_payload.parent_ref || github.event.inputs.parent_ref }}"
+          echo "dispatch_target_repo = ${{ github.event.inputs.dispatch_target_repo }}"
       - name: Clean Workspace
         run: |
           sudo rm -rf ${{ github.workspace }}
           mkdir -p ${{ github.workspace }}
-
-      - name: Checkout Main Branch
+      - name: Checkout Staging Branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: staging
           token: ${{ secrets.GC_DCI_TOKEN }}
           fetch-depth: 0
 
-      - name: Fetch Staging Branch
-        run: git fetch origin staging
+      # - name: Fetch Staging Branch
+      #   run: git fetch origin staging
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -40,7 +58,6 @@ jobs:
         run: |
           LAST_STAGING_COMMIT_MESSAGE=$(git log -1 --pretty=%B origin/staging)
           echo "LAST_STAGING_COMMIT_MESSAGE=$LAST_STAGING_COMMIT_MESSAGE" >> $GITHUB_ENV
-
         # 릴리즈 노트 작성을 위한 재료 수집
       - name: Collect and store Changed sections
         run: |
@@ -65,7 +82,6 @@ jobs:
             echo "$CHANGED_ITEMS"
             echo "EOF"
           } >> $GITHUB_ENV
-
       - name: Collect and store Fixed sections
         run: |
           FIXED_ITEMS=$(awk '
@@ -89,7 +105,6 @@ jobs:
             echo "$FIXED_ITEMS"
             echo "EOF"
           } >> $GITHUB_ENV
-
       - name: Collect and store Added sections
         run: |
           ADDED_ITEMS=$(awk '
@@ -113,18 +128,16 @@ jobs:
             echo "$ADDED_ITEMS"
             echo "EOF"
           } >> $GITHUB_ENV
-
       - name: Check Diff Between Main and Staging
         id: check_diff
         run: |
-          if git diff --quiet main origin/staging; then
+          if git diff --quiet origin/main origin/staging; then
             echo "::notice::No differences between main and staging. Skipping merge."
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
             echo "::notice::Differences found. Proceeding with merge."
             echo "has_changes=true" >> $GITHUB_OUTPUT
           fi
-
       - name: Check Bump version output
         if: steps.check_diff.outputs.has_changes == 'true'
         id: semver
@@ -138,128 +151,114 @@ jobs:
           
           if [[ "$bump_type" == "" ]]; then
             echo "::notice::Invalid bump_type coming in. skip this workflow"
-            exit 0
+            echo "valid_bump_type=false" >> $GITHUB_OUTPUT
+          else
+            echo "valid_bump_type=true" >> $GITHUB_OUTPUT
           fi
-
       - name: Merge Staging to Main (Squash)
-        if: steps.check_diff.outputs.has_changes == 'true'
+        if: steps.check_diff.outputs.has_changes == 'true' && steps.semver.outputs.valid_bump_type == 'true'
         env:
           CHANGED_ITEMS: ${{ env.CHANGED_ITEMS }}
           FIXED_ITEMS: ${{ env.FIXED_ITEMS }}
           ADDED_ITEMS: ${{ env.ADDED_ITEMS }}
         run: |
           echo "Pulling latest changes from origin/main before merge..."
-          git pull origin main # 최신 main 브랜치 상태를 가져옴
-
+          git checkout main
+          git pull # 최신 main 브랜치 상태를 가져옴
           # Clean up untracked files that might conflict with merge
           echo "Cleaning up untracked files before merge..."
           git clean -fd
-
           echo "Attempting to squash merge origin/staging into main..."
           git merge --squash origin/staging
-
           chmod +x .github/scripts/write_release_notes.sh
           
           echo "Deleting RELEASE_NOTES_WITH_JIRA_NUM.md if exists..."
           rm -f RELEASE_NOTES_WITH_JIRA_NUM.md
-
+          echo "Deleting RELEASE_NOTES_MATERIAL.md..."
+          rm -f RELEASE_NOTES_MATERIAL.md
           echo "Checking if anything is staged..."
           if git diff --staged --quiet; then
             echo "::notice::No changes staged after squash merge. Skipping commit."
             exit 0
           fi
-
           bump_type="${{ env.BUMP_TYPE }}"
           tag_message=$(echo "${{ env.LAST_STAGING_COMMIT_MESSAGE }}" | cut -d'+' -f2)
           if [[ "$bump_type" != "none" ]]; then
             echo "::notice::Applying bump2version for $bump_type"
             pip install bump2version
-
             # bump2version 수행 & new_version 추출
             NEW_VERSION=$(bump2version "$bump_type" --no-commit --no-tag --allow-dirty --list | grep new_version | cut -d= -f2 | tr -d ' ')
             echo "NEW_VERSION=$NEW_VERSION"
             echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-
             # 릴리즈노트 작성
             .github/scripts/write_release_notes.sh "$bump_type" $NEW_VERSION
-
-            # Remove the script before committing to main
-            echo "Removing release notes script before commit..."
-            rm -f .github/scripts/write_release_notes.sh
-
             git add .
             COMMIT_MESSAGE="v$NEW_VERSION"
-
             git tag -a "v$NEW_VERSION" -m "$tag_message"
             git push origin "v$NEW_VERSION"
           else
             echo "::notice::No version bump requested"
-
             OLD_VERSION=$(cat release.ver | tr -d ' \n')
             echo "OLD_VERSION=$OLD_VERSION"
-
             COMMIT_MESSAGE_SUFFIX=$(echo "${{ env.LAST_STAGING_COMMIT_MESSAGE }}" | sed -n 's/^bump=none+\(manual\.sha\.[0-9a-fA-F]*\)$/\1/p')
-
             .github/scripts/write_release_notes.sh "none"
-
             # Remove the script before committing to main
             echo "Removing release notes script before commit..."
             rm -f .github/scripts/write_release_notes.sh
-
             git add .
-
             if [ -z "$COMMIT_MESSAGE_SUFFIX" ]; then
                 echo "Warning: Could not extract suffix from LAST_STAGING_COMMIT_MESSAGE. Using full message." >&2
                 COMMIT_MESSAGE="${{ env.LAST_STAGING_COMMIT_MESSAGE }}"
             else
                 COMMIT_MESSAGE="${OLD_VERSION}+${COMMIT_MESSAGE_SUFFIX}"
             fi
-
             echo "COMMIT_MESSAGE: $COMMIT_MESSAGE"
-
             # 기존 태그 삭제 (local + remote)
             git tag -d "$OLD_VERSION" || true
             git push origin :refs/tags/$OLD_VERSION || true
-
             # 새 태그 재생성
             git tag -a "$OLD_VERSION" -m "$tag_message"
             git push origin "$OLD_VERSION"
           fi
-
           echo "::notice::Creating squash commit with message: $COMMIT_MESSAGE"
           git commit -m "$COMMIT_MESSAGE"
           git push origin main
-
       - name: Recreate Staging Branch from Main
-        if: steps.check_diff.outputs.has_changes == 'true'
+        if: steps.check_diff.outputs.has_changes == 'true' && steps.semver.outputs.valid_bump_type == 'true'
         run: |
           echo "Deleting remote origin/staging branch..."
           git push origin --delete staging || true
-
           echo "Checking out main branch and pulling latest..."
           git checkout main
-          git pull origin main
-
+          git pull main
+          git status
+          echo "remove local staging branch..."
+          git branch -D staging
           echo "Creating new staging branch from main..."
           git checkout -b staging
-
+          git status
           echo "Pushing new staging branch to origin..."
           git push -u origin staging
-
       - name: Get New Main SHA
         id: get_sha
-        run: echo "main_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Dispatch Update to Parent Repository
+        run: |
+          git checkout main
+          git pull
+          git status
+          echo "main_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: Dispatch Update to Parent Repository 
+        if: >
+          github.event_name == 'repository_dispatch' ||
+          (github.event.inputs.repo_name != '' && github.event.inputs.parent_ref != '' && github.event.inputs.dispatch_target_repo != '')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.GC_DCI_TOKEN }}
-          repository: ${{ github.event.client_payload.parent_owner }}/${{ github.event.client_payload.parent_repo }}
+          repository: ${{ github.event_name == 'repository_dispatch' && format('{0}/{1}', github.event.client_payload.parent_owner, github.event.client_payload.parent_repo) || github.event.inputs.dispatch_target_repo }}
           event-type: update-submodule-from-child
           client-payload: |
             {
-              "submodule_name": "${{ github.event.client_payload.repo_name }}",
+              "submodule_name": "${{ github.event.client_payload.repo_name || github.event.inputs.repo_name }}",
               "submodule_sha": "${{ steps.get_sha.outputs.main_sha }}",
               "submodule_ref": "main",
-              "parent_ref": "${{ github.event.client_payload.parent_ref }}"
+              "parent_ref": "${{ github.event.client_payload.parent_ref || github.event.inputs.parent_ref }}"
             }
