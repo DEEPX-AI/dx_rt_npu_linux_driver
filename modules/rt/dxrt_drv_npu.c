@@ -16,7 +16,18 @@
 #include "dxrt_drv.h"
 
 struct dxnpu_cfg npu_cfg = {
+#if DEVICE_VARIANT==DX_V3
+    /* DX-V3 */
+    .clock_khz = 800000,//74250,
+    .default_values = {0x3C0, 0x200, 0x2C0},
+    .init = dx_v3_npu_init,
+    .prepare_inference = dx_v3_npu_prepare_inference,
+    .run = dx_v3_npu_run,
+    .reg_dump = dx_v3_npu_reg_dump,
+    .deinit = dx_v3_npu_deinit,    
+#else
     0,
+#endif
 };
 
 struct dxnpu *dxrt_npu_init(void *dxdev_)
@@ -39,7 +50,7 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
         for(i=0;i<3;i++) npu->default_values[i] = npu_cfg.default_values[i];
         npu->dev = dxdev->dev;
         npu->init = npu_cfg.init;
-        npu->prefare_inference = npu_cfg.prefare_inference;
+        npu->prepare_inference = npu_cfg.prepare_inference;
         npu->run = npu_cfg.run;
         npu->reg_dump = npu_cfg.reg_dump;
         npu->deinit = npu_cfg.deinit;        
@@ -53,12 +64,21 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
             struct device_node *np = pdev->dev.of_node;
             struct resource *res;
             const __be32 *prop;
+            
             res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
             if (res==NULL) {
                 pr_err( "%s: failed to find IO resource for npu.\n", __func__);
                 return NULL;
             }
+            npu->reg_ctrl_addr = res->start;
+
+            res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+            if (res==NULL) {
+                pr_err( "%s: failed to find IO resource for npu.\n", __func__);
+                return NULL;
+            }
             npu->reg_base_addr = res->start;
+            
             npu->irq_num = platform_get_irq(pdev, 0);
             if (npu->irq_num < 0) {
                 pr_err( "%s: failed to find IRQ number for npu.\n", __func__);

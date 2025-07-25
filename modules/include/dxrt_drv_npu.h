@@ -15,6 +15,9 @@
 #include "dxrt_drv_common.h"
 
 #if IS_STANDALONE
+#include "npu_reg_sys_DX_V3.h"
+#include "npu_reg_dma_DX_V3.h"
+#include "npu_reg_debug_DX_V3.h"
 typedef dxSYSTEM_t npu_reg_sys_t;
 typedef dxDMA_t npu_reg_dma_t;
 #endif
@@ -28,6 +31,8 @@ struct dxnpu {
     uint32_t reg_base_addr;
     volatile void __iomem *reg_base;
 #if IS_STANDALONE
+    uint32_t reg_ctrl_addr;
+    volatile void __iomem *reg_ctrl;
     npu_reg_sys_t *reg_sys;
     npu_reg_dma_t *reg_dma;
 #endif
@@ -43,7 +48,7 @@ struct dxnpu {
     uint32_t default_values[3];
     struct _dxrt_response_t *response;
     int (*init)(struct dxnpu*);
-    int (*prefare_inference)(struct dxnpu*);
+    int (*prepare_inference)(struct dxnpu*);
     int (*run)(struct dxnpu*, void *);
     int (*reg_dump)(struct dxnpu*);
     int (*deinit)(struct dxnpu*);
@@ -55,7 +60,7 @@ struct dxnpu_cfg {
     int irq_num;
     uint32_t default_values[3];
     int (*init)(struct dxnpu*);
-    int (*prefare_inference)(struct dxnpu*);
+    int (*prepare_inference)(struct dxnpu*);
     int (*run)(struct dxnpu*, void *);
     int (*reg_dump)(struct dxnpu*);
     int (*deinit)(struct dxnpu*);
@@ -66,4 +71,9 @@ typedef struct dxnpu_cfg dxnpu_cfg_t;
 struct dxnpu *dxrt_npu_init(void *);
 void dxrt_npu_deinit(void *dxdev_);
 
+int dx_v3_npu_init(dxnpu_t *npu);
+int dx_v3_npu_prepare_inference(dxnpu_t *npu);
+int dx_v3_npu_run(dxnpu_t *npu, void*);
+int dx_v3_npu_reg_dump(dxnpu_t *npu);
+int dx_v3_npu_deinit(dxnpu_t *npu);
 #endif // __DXRT_DRV_NPU_H

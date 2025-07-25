@@ -29,12 +29,13 @@
 #include "dxrt_drv_common.h"
 #include "dxrt_drv_npu.h"
 
-#if IS_ACCELERATOR
+//#if IS_ACCELERATOR
 #include "dx_pcie_api.h"
-#endif
+//#endif
 #if IS_STANDALONE
 /* L2 cache flush api */
-#include <asm/sbi.h>
+//#include <asm/sbi.h>
+#include <asm/cacheflush.h>
 #endif
 
 #define MODULE_NAME "dxrt"
@@ -117,8 +118,7 @@ typedef struct _dx_sched_list {
 typedef struct device_info
 {
     uint32_t type; /* 0: ACC type, 1: STD type */
-    uint32_t variant; /* 100: L1, 101: L2, 102: L3, 103: L4,
-                        200: M1, 201: M1A */
+    uint32_t variant; /* 104: V3, 200: M1 */
     uint64_t mem_addr;
     uint64_t mem_size;
     uint32_t num_dma_ch;
@@ -243,7 +243,8 @@ typedef enum {
     DXRT_CMD_CUSTOM             , /* Sub-command */
     DXRT_CMD_START              ,
     DXRT_CMD_TERMINATE          ,
-    DXRT_CMD_MAX,
+    DXRT_CMD_PCIE               , /* Sub-command */
+    DXRT_CMD_MAX                ,
 } dxrt_cmd_t;
 
 /* CMD : DXRT_CMD_IDENTIFY_DEVICE*/
@@ -359,7 +360,7 @@ struct dxdev {
     struct platform_device *pdev;
     struct device *dev;    
     uint32_t type; /* 0: ACC type, 1: STD type */
-    uint32_t variant; /* 100: L1, 101: L2, 102: L3, 103: L4, 200: M1, 201: M1A */
+    uint32_t variant; /* 104: V3, 200: M1 */
     uint64_t mem_addr;
     uint64_t mem_size;
     uint32_t num_dma_ch;
@@ -467,6 +468,10 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_notify_req_to_device(...) 0
 #define dx_pcie_get_driver_info(...) 0
 
+int dxrt_request_handler(void *data);
+#endif
+
+#if 0//IS_STANDALONE
 struct deepx_pcie_info {
     unsigned int    driver_version;
     unsigned char   bus;
@@ -493,7 +498,6 @@ typedef struct {
     /* System Infomation power / temperature, etc,,,, */
 } dx_pcie_dev_err_t;
 
-int dxrt_request_handler(void *data);
 #endif
 #if IS_ACCELERATOR
 #define sbi_l2cache_flush(...) { /*do nothing*/ }
