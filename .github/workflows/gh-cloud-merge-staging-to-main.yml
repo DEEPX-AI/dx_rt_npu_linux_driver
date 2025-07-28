@@ -194,6 +194,11 @@ jobs:
             .github/scripts/write_release_notes.sh "$bump_type" $NEW_VERSION
             git add .
             COMMIT_MESSAGE="v$NEW_VERSION"
+
+            echo "::notice::Creating squash commit with message: $COMMIT_MESSAGE"
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin main
+
             git tag -a "v$NEW_VERSION" -m "$tag_message"
             git push origin "v$NEW_VERSION"
           else
@@ -210,6 +215,11 @@ jobs:
                 COMMIT_MESSAGE="${OLD_VERSION}+${COMMIT_MESSAGE_SUFFIX}"
             fi
             echo "COMMIT_MESSAGE: $COMMIT_MESSAGE"
+
+            echo "::notice::Creating squash commit with message: $COMMIT_MESSAGE"
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin main
+
             # 기존 태그 삭제 (local + remote)
             git tag -d "$OLD_VERSION" || true
             git push origin :refs/tags/$OLD_VERSION || true
@@ -217,9 +227,7 @@ jobs:
             git tag -a "$OLD_VERSION" -m "$tag_message"
             git push origin "$OLD_VERSION"
           fi
-          echo "::notice::Creating squash commit with message: $COMMIT_MESSAGE"
-          git commit -m "$COMMIT_MESSAGE"
-          git push origin main
+          
       - name: Recreate Staging Branch from Main
         if: steps.check_diff.outputs.has_changes == 'true' && steps.semver.outputs.valid_bump_type == 'true'
         run: |
@@ -227,13 +235,11 @@ jobs:
           git push origin --delete staging || true
           echo "Checking out main branch and pulling latest..."
           git checkout main
-          git pull main
-          git status
+          git pull
           echo "remove local staging branch..."
           git branch -D staging
           echo "Creating new staging branch from main..."
           git checkout -b staging
-          git status
           echo "Pushing new staging branch to origin..."
           git push -u origin staging
       - name: Get New Main SHA
@@ -241,7 +247,6 @@ jobs:
         run: |
           git checkout main
           git pull
-          git status
           echo "main_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
       - name: Dispatch Update to Parent Repository 
         if: >
