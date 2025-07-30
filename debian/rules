@@ -1,44 +1,69 @@
 #!/usr/bin/make -f
-#export DH_VERBOSE=1
 
-TEMPDIR := $(CURDIR)/debian/tmp
-ROOTDIR := $(CURDIR)
+# Must match the Package name in the control file
+PACKAGER:= dxrt-driver-dkms
 
-PACKAGER := dxrt-driver
-MAINZIPFILE := ${PACKAGER}_src.zip
+# Must match the package name in dkms.conf
+DKMS_MODULE_NAME:= dxrt-driver-dkms
+
+# Parse the version from debian/changelog
+DKMS_MODULE_VERSION:= $(strip $(shell dpkg-parsechangelog --show-field Version | head -n 1))
+DKMS_INSTALL_DEST:=/usr/src/$(DKMS_MODULE_NAME)-$(DKMS_MODULE_VERSION)
 
 %:
 	dh $@
 
 build:
-	echo "ROOTDIR: $(ROOTDIR)"
-	echo "TEMPDIR: $(TEMPDIR)"
-	git archive -o $(MAINZIPFILE) HEAD;
-
-	mkdir -p $(TEMPDIR)
-	unzip -o $(MAINZIPFILE) -d $(TEMPDIR)
-
-	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
-		echo $$submodule_path; \
-        zip_file="$$(echo $$submodule_path | sed 's/\//-/g')_archive.zip"; \
-		echo $$zip_file; \
-        (cd $$submodule_path && git archive --format=zip --output=$(ROOTDIR)/$$zip_file HEAD); \
-		mkdir -p $(TEMPDIR)/$$submodule_path; \
-		unzip -o $$zip_file -d $(TEMPDIR)/$$submodule_path; \
-	done
-
-	rm -rf $(ROOTDIR)/source.zip
-	(cd $(TEMPDIR) && zip -r $(ROOTDIR)/source.zip ./)
+	dh build
 	
+override_dh_install:
+# The dh_install command installs files into the .deb package based on debian/dxrt-driver-dkms.install
+	dh_install
 
-install:
-#	dh install
-	mkdir -p debian/$(PACKAGER)/usr/share/$(PACKAGER)
-	cp source.zip debian/$(PACKAGER)/usr/share/$(PACKAGER)/
+# Copy DKMS module source code to the DKMS_INSTALL_DEST path inside the package staging directory.
+# This path represents the absolute path inside the final .deb file.
+	mkdir -p "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)"
+	
+# Remove any existing contents (safe cleanup in case of previous build artifacts)
+	rm -rf -- "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)"/*
+
+# Copy working directory (including uncommitted changes) to DKMS_INSTALL_DEST
+	rsync -a --exclude=".git" --exclude="debian" ./ \
+		"$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/"
+
+# Handle submodules manually (copy working directory)
+	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
+		echo "Handling submodule: $$submodule_path"; \
+		rsync -a --exclude=".git" "./$$submodule_path/" \
+			"$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/$$submodule_path/"; \
+	done
+	
+# # Use git archive to export all current project files and copy them to DKMS_INSTALL_DEST.
+# 	$(eval TEMP_ZIP_FILE_VAR := $(shell mktemp --suffix=.zip))
+# 	git archive --format=zip --output="$(TEMP_ZIP_FILE_VAR)" HEAD
+# 	unzip -o "$(TEMP_ZIP_FILE_VAR)" -d "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)"
+# 	rm -f "$(TEMP_ZIP_FILE_VAR)" 
+
+# # Handle submodules manually (since git archive does not include submodules)
+# 	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
+# 		echo "Handling submodule: $$submodule_path"; \
+# 		SUBMODULE_TEMP_ZIP_VAR=$$(mktemp --suffix=.zip) ; \
+# 		\
+# 		(cd "$$submodule_path" && git archive --format=zip --output="$$SUBMODULE_TEMP_ZIP_VAR" HEAD); \
+# 		\
+# 		mkdir -p "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/$$submodule_path"; \
+# 		\
+# 		unzip -o "$$SUBMODULE_TEMP_ZIP_VAR" -d "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/$$submodule_path"; \
+# 		\
+# 		rm -f "$$SUBMODULE_TEMP_ZIP_VAR"; \
+# 	done
+	
+# Copy the dkms.conf file to a temporary location, then inject the version
+	cp "$(CURDIR)/dkms.conf" "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/"
+	
+# Replace @DKMS_MODULE_VERSION@ in dkms.conf with the actual version
+	sed -i "s/@DKMS_MODULE_VERSION@/$(DKMS_MODULE_VERSION)/g" "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/dkms.conf"
 
 clean:
 	dh clean
-	rm -rf $(MAINZIPFILE)
-	rm -rf *_archive.zip
-	rm -rf $(TEMPDIR)
-	rm -rf $(ROOTDIR)/source.zip
+# rm -rf "$(CURDIR)/debian/$(PACKAGER)/usr/src/$(DKMS_MODULE_NAME)-*"
