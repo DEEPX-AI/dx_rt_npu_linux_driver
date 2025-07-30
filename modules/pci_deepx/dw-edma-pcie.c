@@ -118,19 +118,21 @@ struct dw_edma_pcie_data {
      DMA Read Descriptor   (Size : DESC_WR_RD_SIZE)
 -------------------------------------------------- */
 
+// #define SRAM_DESC_TABLE
+
 #define BAR0_MEM_SIZE		(4*1024*1024) /* 4MB */
 #define DESC_WR_BASE_OFFS	(0x00)
 #define DESC_RD_BASE_OFFS	(0x200000)
 #define DESC_WR_RD_SIZE		(0x100000)
 
-#define BAR0_MEM_SIZE_M1A		(8*1024*1024) /* 8MB */
-#define DESC_WR_BASE_OFFS_M1A	(0x00)
+#define BAR0_MEM_SIZE_M1		(8*1024*1024) /* 8MB */
+#define DESC_WR_BASE_OFFS_M1	(0x00)
 #ifdef SRAM_DESC_TABLE
 	#undef DESC_WR_RD_SIZE
 	#define DESC_WR_RD_SIZE			(0x1000)
-	#define DESC_RD_BASE_OFFS_M1A	(DESC_WR_RD_SIZE*3)
+	#define DESC_RD_BASE_OFFS_M1	(DESC_WR_RD_SIZE)
 #else
-	#define DESC_RD_BASE_OFFS_M1A	(0x400000)
+	#define DESC_RD_BASE_OFFS_M1	(0x400000)
 #endif /*SRAM_DESC_TABLE*/
 
 /* DXNN V2 - m1 */
@@ -148,27 +150,27 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 	/* eDMA memory linked list location */
 #ifdef SRAM_DESC_TABLE
 	.ll_wr = {
-		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A, 					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1, 					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_5, DESC_WR_BASE_OFFS_M1+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
 	},
 	.ll_rd = {
-		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1,					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_5, DESC_RD_BASE_OFFS_M1+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
 	},
 #else
 	.ll_wr = {
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
-		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1A+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
+		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1,					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_0, DESC_WR_BASE_OFFS_M1+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
 	},
 	.ll_rd = {
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A,					DESC_WR_RD_SIZE)	/* Channel 0 */
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
-		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1A+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
+		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1,					DESC_WR_RD_SIZE)	/* Channel 0 */
+		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1+DESC_WR_RD_SIZE,	DESC_WR_RD_SIZE)	/* Channel 1 */
+		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1+DESC_WR_RD_SIZE*2,DESC_WR_RD_SIZE)	/* Channel 2 */
+		DW_BLOCK(BAR_0, DESC_RD_BASE_OFFS_M1+DESC_WR_RD_SIZE*3,DESC_WR_RD_SIZE)	/* Channel 3 */
 	},
 #endif
 	/* Other */
@@ -211,8 +213,10 @@ static void dx_pcie_set_pdata_by_rev(struct dw_edma_pcie_data *pdata, u8 rev, u8
 				break;
 		}
 		high_addr <<= 32;
+#ifndef SRAM_DESC_TABLE
 		pdata->desc_addr       = (0x04000000 | high_addr);
 		pdata->download_region = (0x03F00000 | high_addr);
+#endif
 		pdata->download_size   = 0x100000;
 	}
 }
@@ -400,7 +404,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 				return -ENOMEM;
 			}
 		} else if (vsec_data.version == 3) {
-			if (bar_size !=  BAR0_MEM_SIZE_M1A) {
+			if (bar_size !=  BAR0_MEM_SIZE_M1) {
 				pci_err(pdev, "size of a BAR is not matched(%d)\n", bar_size);
 				return -ENOMEM;
 			}

@@ -16,6 +16,8 @@ export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=m
     else
     $(error ERROR: Not support sub-module 'make DEVICE=$(DEVICE) PCIE=[deepx|xilinx]')
     endif
+else ifeq ($(DEVICE),v3)
+export CONFIG_DX_AI_STAND_V3=y
 else
-$(error ERROR: Not support device[$(DEVICE)] 'make DEVICE=[m1]')
+$(error ERROR: Not support device[$(DEVICE)] 'make DEVICE=[m1|v3]')
 endif
