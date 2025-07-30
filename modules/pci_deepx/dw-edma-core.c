@@ -66,13 +66,6 @@ typedef struct user_irq_v_table_t
 
 static user_irq_v_table_t *user_irq_vec_table;
 /* DX-M1 */
-static user_irq_v_table_t user_irq_vec_table_v2[USER_IRQ_NUMS] = {
-	/* handler / name / irq_pos / event_id / dma_ch_n / bit */
-	{dw_edma_user_irq_npu, "npu0_d", 0, 0, 0, BIT(0)},
-	{dw_edma_user_irq_npu, "npu1_d", 1, 1, 1, BIT(1)},
-	{dw_edma_user_events , "events", 2, 2, 0, BIT(2)},
-};
-/* DX-M1A */
 static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
 	/* handler / name / irq_pos / event_id / dma_ch_n / bit */
 	{dw_edma_user_irq_npu, "npu0_d", 0, 0, 0, BIT(0)},
@@ -97,10 +90,10 @@ static inline int get_irq_to_dma_num(int irq_n)
 
 void set_user_irq_vec_table(struct dw_edma *dw)
 {
-	if (dw->dx_ver == 2)
-		user_irq_vec_table = user_irq_vec_table_v2;
-	else if (dw->dx_ver == 3)
+	if (dw->dx_ver == 3)
 		user_irq_vec_table = user_irq_vec_table_v3;
+	else
+		pr_err("Undefined version error(%d)\n", dw->dx_ver);
 }
 
 int get_nr_user_irqs(void)

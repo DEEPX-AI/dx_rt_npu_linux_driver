@@ -59,6 +59,15 @@ $ make DEVICE=m1 PCIE=[deepx|xilinx]
 | m1     | CONFIG_DX_AI_ACCEL_M1=y                       |
 |        | submodule: CONFIG_DX_AI_ACCEL_PCIE_DEEPX      |
 
+- For a device like v3, set DEVICE to v3.
+```console
+$ make DEVICE=v3
+```
+
+| DEVICE | CONFIG                                        |
+|--------|-----------------------------------------------|
+| v3     | CONFIG_DX_AI_STAND_V3=y                       |
+
 ***Kbuild***
 - Support Linux kernel Kbuild system.
 
