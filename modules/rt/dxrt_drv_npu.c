@@ -109,13 +109,3 @@ struct dxnpu *dxrt_npu_init(void *dxdev_)
     }
     return npu;
 }
-void dxrt_npu_deinit(void *dxdev_)
-{
-    // struct dxdev *dxdev = (struct dxdev *)dxdev_;
-    struct dxnpu *npu = NULL;    
-    pr_debug( "%s\n", __func__);
-    if (npu) {
-        npu->deinit(npu);
-        kfree(npu);
-    }
-}

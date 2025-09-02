@@ -4,6 +4,7 @@
 ### 2. Fixed
 - Fix device identification error
 ### 3. Added
+- add uninstall script and utility functions for project cleanup
 
 ## v1.7.0 / 2025-07-07
 ### 1. Changed
