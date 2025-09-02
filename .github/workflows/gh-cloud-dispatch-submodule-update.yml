@@ -8,89 +8,12 @@ on:
     branches:
       - staging
 
-env:
-  TARGET_PARENT_REPO: dx-runtime
-
 jobs:
-  dispatch:
-    runs-on:
-      - self-hosted
-      - sdk
-    steps:
-      - name: Parse and set as environment variables
-        run: |
-          REPO="${{ github.repository }}"
-          echo "OWNER=${REPO%/*}" >> $GITHUB_ENV
-          echo "CUR_REPO_NAME=${REPO#*/}" >> $GITHUB_ENV
-          echo "CURRENT_DATE=$(date +'%Y-%m-%d')" >> "$GITHUB_ENV"
-
-      - name: Print environment variables
-        run: |
-          echo "Owner: ${{ env.OWNER }}"
-          echo "Current Repo Name: ${{ env.CUR_REPO_NAME }}"
-          echo "Current Date: ${{ env.CURRENT_DATE }}"
-
-      - name: Clean Workspace
-        run: |
-          sudo rm -rf ${{ github.workspace }}
-          mkdir -p ${{ github.workspace }}
-
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          token: ${{ secrets.GC_DCI_TOKEN }}
-
-      - name: Validate Bump Type
-        id: valdiate_bump_type
-        run: |
-          LAST_STAGING_COMMIT_MESSAGE=$(git log -1 --pretty=%B origin/staging)
-          echo "Parsing bump type from commit message..."
-          echo "Commit Message: $LAST_STAGING_COMMIT_MESSAGE"
-          bump_type=$(echo "$LAST_STAGING_COMMIT_MESSAGE" | grep -oP 'bump=\K[^+]+') || bump_type=""
-          echo "Parsed bump type: $bump_type"
-          if [[ "$bump_type" == "" ]]; then
-            echo "::notice::Invalid bump_type coming in. skip this workflow"
-            echo "valid_bump_type=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          else
-            echo "valid_bump_type=true" >> "$GITHUB_OUTPUT"
-            echo "BUMP_TYPE=${bump_type}" >> "$GITHUB_ENV"
-          fi
-
-      - name: Generate Tag Name
-        id: generate_tag_name
-        if: steps.valdiate_bump_type.outputs.valid_bump_type == 'true'
-        run: |
-          echo "::notice::Applying bump2version for $bump_type"
-          pip install bump2version
-          # bump2version 수행 & new_version 추출
-          NEW_VERSION=$(bump2version "${{ env.BUMP_TYPE }}" --no-commit --no-tag --allow-dirty --list | grep new_version | cut -d= -f2 | tr -d ' ')
-          echo "NEW_VERSION=$NEW_VERSION"
-          echo "tag_name=$NEW_VERSION-rc-${{ env.CURRENT_DATE }}" >> "$GITHUB_OUTPUT"
-
-      - name: Create Tag
-        if: steps.valdiate_bump_type.outputs.valid_bump_type == 'true'
-        uses: rickstaa/action-create-tag@v1
-        with:
-          tag_exists_error: false # Do not error if tag already exists
-          tag: ${{ steps.generate_tag_name.outputs.tag_name }}
-          force_push_tag: true # Force push if tag already exists
-          commit_sha: ${{ github.event.head_commit.id }}
-          message: '${{ github.event.head_commit.message }}'
-
-      - name: Dispatch Submodule Update of Parent Repo
-        if: steps.valdiate_bump_type.outputs.valid_bump_type == 'true'
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.GC_DCI_TOKEN }}
-          repository: ${{ env.OWNER }}/${{ env.TARGET_PARENT_REPO }}
-          event-type: update-submodule
-          client-payload: |
-            {
-              "name": "${{ env.CUR_REPO_NAME }}",
-              "sha": "${{ github.sha }}",
-              "ref": "${{ github.ref_name }}",
-              "tag_version": "${{ steps.generate_tag_name.outputs.tag_name }}"
-            }
+  call_dispatch_update_submodule:
+    uses: DEEPX-AI/do_workflows-central/.github/workflows/update-submodule.yml@main
+    with:
+      source_child_repo: "dx_rt_npu_linux_driver"
+      target_parent_repo: "DEEPX-AI/dx-runtime"
+      target_branch: "staging"
+    secrets:
+      token: ${{ secrets.GC_DCI_TOKEN }}
