@@ -51,6 +51,7 @@ static void get_ppu_data(dxnpu_t *npu)
 
     // check
     filter_num = READ_SYSTEM_PPU_OUT_FILTER_INFO(reg) & 0xffff;
+    //WRITE_SYSTEM_PPU_OUT_FILTER_INFO(reg, 0);//clear filter_num ==> read only
     if(filter_num>0)
     {
         // flush dma //TODO
@@ -94,7 +95,7 @@ static irqreturn_t npu_irq_handler(int irq, void *data)
     pr_debug("npu%d irq: %x\n", npu->id, READ_SYSTEM_IRQ_STATUS(reg)); // this log causes worse latency.
 
     // clear IRQ
-    WRITE_SYSTEM_IRQ_STATUS(reg, 0xC0000000);
+    WRITE_SYSTEM_IRQ_STATUS(reg, 0xC0000000);//this register is read only, but this code can automatically clear IRQ
 
     // ppu processing
     model_type = READ_SYSTEM_SWREG3(reg);
@@ -148,7 +149,7 @@ int dx_v3_npu_init(dxnpu_t *npu)
     npu->reg_dma = (volatile npu_reg_dma_t*)(npu->reg_base + 0x10000);
     reg = npu->reg_base;
     /* IRQ */
-    WRITE_SYSTEM_IRQ_STATUS(reg, 0xC0000000);
+    WRITE_SYSTEM_IRQ_STATUS(reg, 0xC0000000);//this register is read only, but this code can automatically clear IRQ
     ret = request_irq(npu->irq_num, npu_irq_handler, 0, "deepx-npu", (void*)npu);
     if(ret)
     {
@@ -245,6 +246,8 @@ int dx_v3_npu_deinit(dxnpu_t *npu)
 {
     pr_debug("%s\n", __func__);
     dma_free_coherent(npu->dev, npu->dma_buf_size, npu->dma_buf, npu->dma_buf_addr);
+    disable_irq(npu->irq_num);
+    synchronize_irq(npu->irq_num);
     free_irq(npu->irq_num, (void*)npu);
     iounmap(npu->reg_base);
     return 0;

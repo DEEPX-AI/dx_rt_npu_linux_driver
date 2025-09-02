@@ -446,6 +446,16 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
 #if IS_STANDALONE        
         if (dev->type == DX_STD)
         {
+            pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x), %x]\n",
+                num, ch,
+                __func__,
+                meminfo.data,
+                meminfo.base,
+                meminfo.offset,
+                meminfo.size,
+                dev->npu->dma_buf
+            );
+
             if (copy_from_user(dev->npu->dma_buf + meminfo.offset, (void __user*)meminfo.data, meminfo.size)) {
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;

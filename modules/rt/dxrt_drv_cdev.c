@@ -321,9 +321,7 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
 }
 static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
 {
-#if IS_STANDALONE
-    dxrt_npu_deinit(dxdev);
-#endif
+
     device_destroy(drv->dev_class, drv->dev_num + dxdev->id);
     cdev_del(&dxdev->cdev);
     kfree(dxdev);    
@@ -404,7 +402,10 @@ void dxrt_driver_cdev_deinit(struct dxrt_driver *drv)
     struct task_struct *request_handler;
     pr_debug( "%s\n", __func__);
 #if IS_STANDALONE
-	i = dxrt_dev_get_device_id(drv);
+	//i = dxrt_dev_get_device_id(drv);
+    i = atomic_read(&dxdev_refcnt) - 1;//device_id    
+
+    pr_info( "%s: device_id = %d\n", __func__, i);
 #else
     for(i=0;i<drv->num_devices;i++)
 #endif	
