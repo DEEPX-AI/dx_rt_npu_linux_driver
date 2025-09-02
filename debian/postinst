@@ -28,11 +28,31 @@ case "$1" in
         echo "Configuring ${PACKAGE_NAME} DKMS module version ${DKMS_MODULE_VERSION}..."
 
         # 1. Attempt to unload existing modules (safety measure)
-        # Unload the driver modules if they are already loaded to avoid conflicts during DKMS operations.
-        # '|| true' ensures the script continues even if unload fails (e.g., module not loaded).
-        echo "Attempting to unload existing modules (if loaded)..."
-        modprobe -r dxrt_driver || true
-        modprobe -r dx_dma || true
+        # Check if modules are actually loaded before attempting removal
+        # This prevents duplicate removal attempts during package upgrades (prerm already handles removal)
+        echo "Checking and unloading existing modules if needed..."
+        
+        # Check if dxrt systemd service is enabled and stop it if active
+        DXRT_SERVICE_WAS_ENABLED=false
+        if systemctl is-enabled --quiet dxrt 2>/dev/null; then
+            DXRT_SERVICE_WAS_ENABLED=true
+            # Stop the service if it's currently active
+            if systemctl is-active --quiet dxrt 2>/dev/null; then
+                echo "Stopping dxrt systemd service..."
+                systemctl stop dxrt || true
+            fi
+        fi
+        
+        # Only remove modules if they are actually loaded (avoid duplicate removal)
+        if lsmod | grep -q "^dxrt_driver"; then
+            echo "Removing loaded dxrt_driver module..."
+            rmmod -f dxrt_driver || true
+        fi
+        
+        if lsmod | grep -q "^dx_dma"; then
+            echo "Removing loaded dx_dma module..."
+            rmmod -f dx_dma || true
+        fi
 
         # # 2. Remove legacy-installed .ko files from any location under /lib/modules/<kernel-version>
         KERNEL_VERSION="$(uname -r)"
@@ -62,8 +82,9 @@ case "$1" in
 
         # 5. Install the DKMS module
         # This copies the compiled module to /lib/modules/<kernel_version>/updates/dkms/.
+        # Set environment variable to prevent DKMS hooks from running during package update
         echo "Installing ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}..."
-        if ! dkms install "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+        if ! DKMS_PACKAGE_UPDATE=1 dkms install "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
             echo "Error: 'dkms install' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
             exit 1
         fi
@@ -97,6 +118,14 @@ case "$1" in
         modprobe dxrt_driver || {
             echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
         }
+        
+        # 10. Restart dxrt systemd service if it was enabled before
+        if [ "$DXRT_SERVICE_WAS_ENABLED" = "true" ]; then
+            echo "Restarting dxrt systemd service..."
+            systemctl restart dxrt || {
+                echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
+            }
+        fi
         
     ;;
 

@@ -28,12 +28,21 @@ case "$1" in
         echo "Preparing to remove ${PACKAGE_NAME} DKMS module version ${DKMS_MODULE_VERSION}..."
 
         # 1. Attempt to unload modules (important before removal)
+        # First check if dxrt systemd service is active and stop it if needed
         # Always try to unload modules first. This prevents the system from crashing
         # if the modules are actively in use when files are removed.
         # '|| true' ensures the script continues even if unload fails (e.g., module not loaded).
         echo "Attempting to unload modules (if loaded) before removal..."
-        modprobe -r dxrt_driver || true
-        modprobe -r dx_dma || true
+        
+        # Check if dxrt systemd service is active and stop it
+        if systemctl is-active --quiet dxrt 2>/dev/null; then
+            echo "Stopping dxrt systemd service..."
+            systemctl stop dxrt || true
+        fi
+        
+        # Force remove modules
+        rmmod -f dxrt_driver || true
+        rmmod -f dx_dma || true
 
         # 2. Remove the module from DKMS
         # This unregisters the module from DKMS, uninstalls it from /lib/modules/,
