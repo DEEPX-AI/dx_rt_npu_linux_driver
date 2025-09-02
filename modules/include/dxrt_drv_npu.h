@@ -69,7 +69,6 @@ typedef struct dxnpu dxnpu_t;
 typedef struct dxnpu_cfg dxnpu_cfg_t;
 
 struct dxnpu *dxrt_npu_init(void *);
-void dxrt_npu_deinit(void *dxdev_);
 
 int dx_v3_npu_init(dxnpu_t *npu);
 int dx_v3_npu_prepare_inference(dxnpu_t *npu);
