@@ -15,6 +15,7 @@ BUILD_DEFAULT_ARCH=""
 BUILD_DEFAULT_CROSS_COMPILE=""
 BUILD_DEFAULT_INSTALL_DIR=""
 BUILD_DEFAULT_DBG=""
+DXRT_SERVICE_WAS_ACTIVE=0
 
 SUPPORT_DEVICE=("m1" "v3")
 
@@ -155,6 +156,7 @@ function stop_dxrt_service() {
     # Use 'systemctl is-active' which is quiet and efficient for checks.
     if systemctl is-active --quiet dxrt.service; then
         logerr "--> Found active dxrt.service. Stopping it now..."
+        DXRT_SERVICE_WAS_ACTIVE=1
         if ! sudo systemctl stop dxrt.service; then
             logerr "--> FAILED to stop dxrt.service. Manual intervention may be required."
             exit 1
@@ -163,6 +165,28 @@ function stop_dxrt_service() {
         fi
     else
         logmsg "--> Service dxrt.service is not active."
+    fi
+}
+
+# Restart dxrt.service only if it was active before stopping.
+function restart_dxrt_service_if_needed() {
+    if [[ ${DXRT_SERVICE_WAS_ACTIVE} -eq 1 ]]; then
+        if ! command -v systemctl &> /dev/null; then
+            logmsg "--> 'systemctl' not found. Cannot restart dxrt.service."
+            return
+        fi
+        logmsg "-> Restarting previously active dxrt.service..."
+        if sudo systemctl start dxrt.service; then
+            if systemctl is-active --quiet dxrt.service; then
+                logmsg "--> dxrt.service restarted successfully."
+            else
+                logerr "--> dxrt.service failed to become active after start."
+            fi
+        else
+            logerr "--> Failed to start dxrt.service."
+        fi
+    else
+        logmsg "-> dxrt.service was not active before install; not starting."
     fi
 }
 
@@ -290,6 +314,9 @@ function reload_drivers_forcefully() {
     check_module_install "${rt_module_name}"
     
     logmsg "\n*** Driver reload process completed. ***"
+
+    # Attempt to restart service if it was active before.
+    restart_dxrt_service_if_needed
 }
 
 
