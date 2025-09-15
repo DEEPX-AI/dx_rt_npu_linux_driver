@@ -71,10 +71,7 @@ static int dxrt_driver_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id deepx_npu_of_match[] = {
-	{ .compatible = "deepx,npu0" },
-	{ .compatible = "deepx,npu1" },
-	{ .compatible = "deepx,npu2" },
-	{ .compatible = "deepx,npu3" },
+	{ .compatible = "deepx,npu" },
 	{ },
 };
 

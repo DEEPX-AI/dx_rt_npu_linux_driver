@@ -22,10 +22,11 @@
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
+#include <linux/of.h>
 
 #if DEVICE_TYPE==1
 /* L2 cache flush api */
-#include <asm/sbi.h>
+//#include <asm/sbi.h>
 #endif
 
 #include "dxrt_drv.h"
@@ -34,6 +35,10 @@
 #endif
 
 static const u64 dmamask = DMA_BIT_MASK(32);
+
+#if IS_STANDALONE 
+static atomic_t dxdev_refcnt = ATOMIC_INIT(0);
+#endif
 
 static int dxrt_dev_open(struct inode *i, struct file *f)
 {
@@ -46,6 +51,10 @@ static int dxrt_dev_open(struct inode *i, struct file *f)
     {
         dx_sgdma_init(num);
     }
+    else//dx->type==DX_STD
+    {
+        dx->npu->irq_event = 0;// irq init
+    }	
     dx->response.req_id = 0;
     return 0;
 }
@@ -312,13 +321,29 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
 }
 static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
 {
-#if IS_STANDALONE
-    dxrt_npu_deinit(dxdev);
-#endif
+
     device_destroy(drv->dev_class, drv->dev_num + dxdev->id);
     cdev_del(&dxdev->cdev);
     kfree(dxdev);    
 }
+
+#if IS_STANDALONE
+static int dxrt_dev_get_device_id(struct dxrt_driver *drv)
+{
+    int device_id_from_dtsi = 0;   
+    struct platform_device *pdev = drv->pdev;
+    struct device_node *np = pdev->dev.of_node; 
+    const __be32 *prop = of_get_property(np, "device-id", NULL);
+    if (prop==NULL)
+    {
+        pr_err( "%s: failed to find device-id for npu.\n", __func__);
+        return NULL;
+    }
+    device_id_from_dtsi = be32_to_cpup(prop);
+
+    return device_id_from_dtsi;
+}
+#endif
 
 int dxrt_driver_cdev_init(struct dxrt_driver *drv)
 {
@@ -330,20 +355,35 @@ int dxrt_driver_cdev_init(struct dxrt_driver *drv)
     drv->num_devices = NUM_DEVICES;
 #endif
     pr_info("%s: %d devices\n", __func__, drv->num_devices);
-    if ((ret = alloc_chrdev_region(&drv->dev_num, 0, drv->num_devices, MODULE_NAME)) < 0)
+
+#if IS_STANDALONE    
+    if (atomic_inc_return(&dxdev_refcnt) == 1)//Only called during the initial driver creation phase
+#endif    
     {
-        return ret;
+        if ((ret = alloc_chrdev_region(&drv->dev_num, 0, drv->num_devices, MODULE_NAME)) < 0)
+        {
+            return ret;
+        }
+    
+        {
+    #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+            if (IS_ERR(drv->dev_class = class_create(MODULE_NAME)))
+    #else
+            if (IS_ERR(drv->dev_class = class_create(THIS_MODULE, MODULE_NAME)))
+    #endif
+            {
+                unregister_chrdev_region(drv->dev_num, drv->num_devices);
+                return PTR_ERR(drv->dev_class);
+            }
+        }
+        //pr_info("%s: alloc_chrdev & class_create done!\n", __func__);
     }
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
-    if (IS_ERR(drv->dev_class = class_create(MODULE_NAME)))
+
+#if IS_STANDALONE
+	i = dxrt_dev_get_device_id(drv);
 #else
-    if (IS_ERR(drv->dev_class = class_create(THIS_MODULE, MODULE_NAME)))
-#endif
-    {
-        unregister_chrdev_region(drv->dev_num, drv->num_devices);
-        return PTR_ERR(drv->dev_class);
-    }
     for(i=0;i<drv->num_devices;i++)
+#endif	
     {
         drv->devices[i] = create_dxrt_device(i, drv, &dxrt_cdev_fops);
         if(drv->devices[i]==NULL)
@@ -361,7 +401,14 @@ void dxrt_driver_cdev_deinit(struct dxrt_driver *drv)
     dxnpu_t *npu;
     struct task_struct *request_handler;
     pr_debug( "%s\n", __func__);
+#if IS_STANDALONE
+	//i = dxrt_dev_get_device_id(drv);
+    i = atomic_read(&dxdev_refcnt) - 1;//device_id    
+
+    pr_info( "%s: device_id = %d\n", __func__, i);
+#else
     for(i=0;i<drv->num_devices;i++)
+#endif	
     {
         remove_dxrt_device(drv, drv->devices[i]);
         npu = drv->devices[i]->npu;
@@ -375,7 +422,13 @@ void dxrt_driver_cdev_deinit(struct dxrt_driver *drv)
             kthread_stop(request_handler);
         }
     }
-    class_destroy(drv->dev_class);
-    unregister_chrdev_region(drv->dev_num, drv->num_devices);
+
+#if IS_STANDALONE    
+    if (atomic_dec_return(&dxdev_refcnt) == 0)
+#endif    
+    {
+        class_destroy(drv->dev_class);
+        unregister_chrdev_region(drv->dev_num, drv->num_devices);
+    }
     pr_debug( "%s done.\n", __func__);
 }

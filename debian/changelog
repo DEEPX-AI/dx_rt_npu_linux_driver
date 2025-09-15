@@ -1,3 +1,19 @@
+dxrt-driver-dkms (1.7.1-2) unstable; urgency=medium
+
+  * Fix module unloading issues during DKMS package installation and kernel updates
+
+ -- Lee Huseong <hslee@deepx.ai>  Mon, 01 Sep 2025 13:00:00 +0900
+
+dxrt-driver-dkms (1.7.1-1) unstable; urgency=medium
+
+ -- Lee Huseong <hslee@deepx.ai>  Wed, 09 Jul 2025 14:23:03 +0900
+
+dxrt-driver-dkms (1.6.0-1) unstable; urgency=medium
+
+  * Initial release of the DEEPX NPU DKMS driver.
+
+ -- Lee Huseong <hslee@deepx.ai>  Thu, 19 Jun 2025 16:15:03 +0900
+ 
 dxrt-driver (1.0.14) unstable; urgency=medium
 
   * chore: update debian/changelog

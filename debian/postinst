@@ -1,31 +1,145 @@
 #!/bin/sh
 set -e
 
-# 패키지 설치 시 소스 코드를 압축 해제합니다.
-PACKAGER="dxrt-driver"
-SRC_DIR="/usr/share/${PACKAGER}/src"
-MAIN_ZIP_FILE="/usr/share/${PACKAGER}/source.zip"
-KERNEL_DIR="/lib/modules/$(uname -r)/kernel/drivers/misc"
+PACKAGE_NAME="dxrt-driver-dkms"
+DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
+DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
+                                           --show-field Version \
+                                           | head -n 1 \
+                                           | sed 's/[[:space:]]//g') 
 
-# 메인 소스 코드 압축 해제
-rm -rf $SRC_DIR
-mkdir -p "$SRC_DIR"
-unzip -o "$MAIN_ZIP_FILE" -d "$SRC_DIR"
-rm -rf $MAIN_ZIP_FILE
 
-# 빌드
-cd "$SRC_DIR/modules"
-#DEVICE=m1a PCIE=deepx dh build
-./build.sh --device m1a --module deepx
+echo "DEBUG: Final DKMS_MODULE_VERSION is: '${DKMS_MODULE_VERSION}'" >&2
 
-# 드라이버 설치
-mkdir -p "$KERNEL_DIR"
-cp pci_deepx/dx_dma.ko "$KERNEL_DIR"
-cp rt/dxrt_driver.ko "$KERNEL_DIR"
+if [ -z "${DKMS_MODULE_VERSION}" ]; then
+    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog. Using default '0.0.0'." >&2
+    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+fi
 
-modprobe dx_dma || true
-modprobe dxrt_driver || true
+# The postinst script is invoked by dpkg. The $1 variable represents the type of package management event currently being executed.
+# =========================================================================
+# Perform actions based on the package installation type.
+# $1 variable indicates the type of package installation/upgrade/removal.
+# 'configure' is the main stage after installation or upgrade.
+# =========================================================================
 
-depmod -a
+case "$1" in
+    configure)
+        echo "Configuring ${PACKAGE_NAME} DKMS module version ${DKMS_MODULE_VERSION}..."
+
+        # 1. Attempt to unload existing modules (safety measure)
+        # Check if modules are actually loaded before attempting removal
+        # This prevents duplicate removal attempts during package upgrades (prerm already handles removal)
+        echo "Checking and unloading existing modules if needed..."
+        
+        # Check if dxrt systemd service is enabled and stop it if active
+        DXRT_SERVICE_WAS_ENABLED=false
+        if systemctl is-enabled --quiet dxrt 2>/dev/null; then
+            DXRT_SERVICE_WAS_ENABLED=true
+            # Stop the service if it's currently active
+            if systemctl is-active --quiet dxrt 2>/dev/null; then
+                echo "Stopping dxrt systemd service..."
+                systemctl stop dxrt || true
+            fi
+        fi
+        
+        # Only remove modules if they are actually loaded (avoid duplicate removal)
+        if lsmod | grep -q "^dxrt_driver"; then
+            echo "Removing loaded dxrt_driver module..."
+            rmmod -f dxrt_driver || true
+        fi
+        
+        if lsmod | grep -q "^dx_dma"; then
+            echo "Removing loaded dx_dma module..."
+            rmmod -f dx_dma || true
+        fi
+
+        # # 2. Remove legacy-installed .ko files from any location under /lib/modules/<kernel-version>
+        KERNEL_VERSION="$(uname -r)"
+        MODULES_DIR="/lib/modules/${KERNEL_VERSION}"
+        echo "Cleaning legacy-installed modules before DKMS setup..."
+        for module in dxrt_driver.ko dx_dma.ko; do
+            echo "Searching and removing ${module} under ${MODULES_DIR}..."
+            find "$MODULES_DIR" -type f -name "$module" -exec rm -f {} \;
+        done
+
+
+        # 3. Add the module to DKMS
+        # This registers the source code located at /usr/src/${PACKAGE_NAME}-${DKMS_MODULE_VERSION} with DKMS.
+        echo "Adding ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} to DKMS..."
+        if ! dkms add "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+            echo "Error: 'dkms add' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+            exit 1
+        fi
+
+        # 4. Build the DKMS module
+        # This compiles the module against the currently running kernel.
+        echo "Building ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}..."
+        if ! dkms build "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+            echo "Error: 'dkms build' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+            exit 1
+        fi
+
+        # 5. Install the DKMS module
+        # This copies the compiled module to /lib/modules/<kernel_version>/updates/dkms/.
+        # Set environment variable to prevent DKMS hooks from running during package update
+        echo "Installing ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}..."
+        if ! DKMS_PACKAGE_UPDATE=1 dkms install "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+            echo "Error: 'dkms install' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+            exit 1
+        fi
+
+        # 6. Create Modprobe configuration file
+        MODPROBE_CONF="/etc/modprobe.d/dx_dma.conf"
+        echo "Creating modprobe configuration for module load order..."
+        echo "softdep dx_dma pre: dxrt_driver post:" | sudo tee "$MODPROBE_CONF" > /dev/null
+
+        # 7. Install udev rules
+        UDEV_RULE_SCRIPT="/usr/src/${PACKAGE_NAME}-${DKMS_MODULE_VERSION}/modules/install-udev_rule.sh"
+        if [ -x "$UDEV_RULE_SCRIPT" ]; then
+            echo "Installing udev rules using ${UDEV_RULE_SCRIPT}..."
+            "$UDEV_RULE_SCRIPT"
+            udevadm control --reload-rules
+            udevadm trigger
+        else  
+            echo "Warning: Udev rule installation script not found or not executable at ${UDEV_RULE_SCRIPT}. Skipping." >&2
+        fi
+
+        # 8. Update initramfs
+        echo "Updating initramfs..."
+        update-initramfs -u 
+        
+        # 9. Load the modules
+        # Load the installed driver modules into the kernel.
+        echo "Loading modules..."
+        modprobe dx_dma || {
+            echo "Warning: Failed to load dx_dma module. Please check dmesg for errors." >&2
+        }
+        modprobe dxrt_driver || {
+            echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
+        }
+        
+        # 10. Restart dxrt systemd service if it was enabled before
+        if [ "$DXRT_SERVICE_WAS_ENABLED" = "true" ]; then
+            echo "Restarting dxrt systemd service..."
+            systemctl restart dxrt || {
+                echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
+            }
+        fi
+        
+    ;;
+
+    # Handle other package management events.
+    # dkms remove operations are typically handled in the prerm script.
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # No specific actions needed in postinst for these cases.
+    ;;
+
+    *)
+        # Handle unknown arguments for robustness.
+        echo "postinst: Unknown argument '$1'" >&2
+        exit 1
+    ;;
+esac
 
 exit 0

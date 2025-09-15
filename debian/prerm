@@ -1,4 +1,75 @@
 #!/bin/sh
+# prerm script for dxrt-driver-dkms package
 set -e
-modprobe -r dxrt_driver || true
-modprobe -r dx_dma || true
+
+# Define DKMS module information
+# This should match PACKAGE_NAME in dkms.conf and the package name prefix.
+PACKAGE_NAME="dxrt-driver-dkms"
+DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
+DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
+                                           --show-field Version \
+                                           | head -n 1 \
+                                           | sed 's/[[:space:]]//g') 
+
+# Fallback if version extraction fails (optional, for robustness)
+if [ -z "${DKMS_MODULE_VERSION}" ]; then
+    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog during prerm. Using default '0.0.0'." >&2
+    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+fi
+
+# =========================================================================
+# Perform actions based on the package removal type.
+# $1 variable indicates the type of package removal/upgrade.
+# 'remove' is for normal removal, 'upgrade' is for pre-upgrade cleanup.
+# =========================================================================
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        echo "Preparing to remove ${PACKAGE_NAME} DKMS module version ${DKMS_MODULE_VERSION}..."
+
+        # 1. Attempt to unload modules (important before removal)
+        # First check if dxrt systemd service is active and stop it if needed
+        # Always try to unload modules first. This prevents the system from crashing
+        # if the modules are actively in use when files are removed.
+        # '|| true' ensures the script continues even if unload fails (e.g., module not loaded).
+        echo "Attempting to unload modules (if loaded) before removal..."
+        
+        # Check if dxrt systemd service is active and stop it
+        if systemctl is-active --quiet dxrt 2>/dev/null; then
+            echo "Stopping dxrt systemd service..."
+            systemctl stop dxrt || true
+        fi
+        
+        # Force remove modules
+        rmmod -f dxrt_driver || true
+        rmmod -f dx_dma || true
+
+        # 2. Remove the module from DKMS
+        # This unregisters the module from DKMS, uninstalls it from /lib/modules/,
+        # and cleans up DKMS's internal build directories for this module.
+        # '--all' ensures it's removed for all installed kernel versions.
+        echo "Removing ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} from DKMS..."
+        if ! dkms remove "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" --all; then
+            echo "Error: 'dkms remove' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}. Manual cleanup may be required." >&2
+            # Do NOT exit 1 here unless absolutely critical, as failing prerm can leave the package in a bad state.
+            # However, for critical drivers, you might decide to exit.
+        fi
+    ;;
+
+    # Other package management events
+    # 'purge' typically follows 'remove' for configuration file cleanup,
+    # but DKMS module removal is handled by 'dkms remove' in the 'remove' stage.
+    purge)
+        # For 'purge', the 'remove' action would have already handled DKMS cleanup.
+        # No additional DKMS-specific actions are typically needed here.
+        echo "Purge operation for ${PACKAGE_NAME}-dkms. DKMS module already removed."
+    ;;
+
+    *)
+        # Handle unknown arguments for robustness.
+        echo "prerm: Unknown argument '$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0

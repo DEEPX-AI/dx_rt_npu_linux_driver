@@ -209,10 +209,10 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
     pr_debug("%s: %d, %d: %llx, %d\n", __func__, dev->id, dev->type, (uint64_t)msg->data, msg->size);
     info.type = dev->type;
     info.variant = dev->variant;
-    memset(&dev->response, 0, sizeof(dxrt_response_t));
 
     if (dev->type == DX_STD)
     {
+        memset(&dev->response, 0, sizeof(dxrt_response_t));
         {
             dxrt_response_list_t *entry, *tmp;
             spin_lock(&dev->responses_lock);
@@ -231,7 +231,7 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
         pr_debug("%d: %s: [%llx, %llx], %d\n", num, __func__,
             info.mem_addr, info.mem_size,
             info.num_dma_ch);
-        ret = dev->npu->prefare_inference(dev->npu);
+        ret = dev->npu->prepare_inference(dev->npu);
         if (msg->data!=NULL)
         {
             if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
@@ -266,7 +266,10 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg)
             if (dev->msg) {
                 ret = dxrt_msg_general(dev, msg);
                 if (ret<0) return -1;
-                memcpy_fromio(&info, dev->msg->data, sizeof(info));
+                if (copy_from_user(&info, (void __user*)(msg->data), sizeof(info))) {
+                    pr_err("%d: %s failed to copy data from user space.\n", num, __func__);
+                    return -EFAULT;
+                }
                 pr_debug("%d: %s: [%llx, %llx], %d\n", num, __func__,
                     info.mem_addr, info.mem_size,
                     info.num_dma_ch);
@@ -414,13 +417,15 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
             return -EFAULT;
         }
         ch = meminfo.ch;
-        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x)]\n",
+        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x), %llx(%llx)]\n",
             num, ch,
             __func__,
             meminfo.data,
             meminfo.base,
             meminfo.offset,
-            meminfo.size
+            meminfo.size,
+            dev->mem_addr,
+            dev->mem_size
         );
         if (ch>MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
@@ -429,20 +434,38 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg)
         if ( meminfo.base + meminfo.offset < dev->mem_addr ||
             meminfo.base + meminfo.offset + meminfo.size > dev->mem_addr + dev->mem_size )
         {
-            pr_debug("%d: %s: invalid address: %llx + %x (%llx + %llx)\n", num, __func__, 
-                meminfo.base, meminfo.offset, dev->mem_addr, dev->mem_size);
+            pr_err("%d: %s: invalid address: %llx + %x @ %llx, %llx \n",
+                num,
+                __func__,
+                meminfo.base,
+                meminfo.offset,
+                dev->mem_addr,
+                dev->mem_size);
             return -EINVAL;
         }
+#if IS_STANDALONE        
         if (dev->type == DX_STD)
         {
+            pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x), %x]\n",
+                num, ch,
+                __func__,
+                meminfo.data,
+                meminfo.base,
+                meminfo.offset,
+                meminfo.size,
+                dev->npu->dma_buf
+            );
+
             if (copy_from_user(dev->npu->dma_buf + meminfo.offset, (void __user*)meminfo.data, meminfo.size)) {
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);
+            //sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);
+            //caches_clean_inval_pou(meminfo.data + meminfo.offset, meminfo.data + meminfo.offset + meminfo.size);//virtual address
             ret = 0;
         }
         else
+#endif        
         {
             if (meminfo.data) {
                 ssize_t size = dx_sgdma_write((char *)meminfo.data,
@@ -1015,13 +1038,15 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
             return -EFAULT;
         }
         ch = meminfo.ch;
-        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x)]\n",
+        pr_debug( MODULE_NAME "%d:%d %s: [%llx, %llx + %x(%x), %llx(%llx)]\n",
             num, ch,
             __func__,
             meminfo.data,
             meminfo.base,
             meminfo.offset,
-            meminfo.size
+            meminfo.size,
+            dev->mem_addr,
+            dev->mem_size
         );
         if (ch>MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
@@ -1030,7 +1055,13 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
         if ( meminfo.base + meminfo.offset < dev->mem_addr ||
             meminfo.base + meminfo.offset + meminfo.size > dev->mem_addr + dev->mem_size )
         {
-            pr_debug("%d: %s: invalid address: %llx + %x\n", num, __func__, meminfo.base, meminfo.offset);
+            pr_err("%d: %s: invalid address: %llx + %x @ %llx, %llx \n",
+                num,
+                __func__,
+                meminfo.base,
+                meminfo.offset,
+                dev->mem_addr,
+                dev->mem_size);
             return -EINVAL;
         }
         if (dev->type == DX_STD) {
@@ -1095,12 +1126,17 @@ static int dxrt_cpu_cache_flush(struct dxdev* dev, dxrt_message_t* msg)
             pr_debug("%d: %s: invalid address: %llx + %x\n", num, __func__, meminfo.base, meminfo.offset);
             return -EINVAL;
         }
+#if IS_STANDALONE        
         if (dev->type == DX_STD) {
-            sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);
+            //sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);//physical address
+            //caches_clean_inval_pou(meminfo.data + meminfo.offset, meminfo.data + meminfo.offset + meminfo.size);//virtual address
         }
+#endif         
     }
+   
     return 0;
 }
+
 static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg)
 {
     int ret = -1, num = dev->id;
@@ -1133,6 +1169,7 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg)
     }
     return 0;
 }
+
 static int dxrt_get_log(struct dxdev* dev, dxrt_message_t* msg)
 {
     int ret = 0, num = dev->id;
@@ -1147,6 +1184,7 @@ static int dxrt_get_log(struct dxdev* dev, dxrt_message_t* msg)
     }
     return ret;
 }
+
 static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
 {
     int ret, num = dev->id;
@@ -1493,4 +1531,5 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_CUSTOM]               = dxrt_msg_general,
     [DXRT_CMD_START]                = dxrt_msg_general,
     [DXRT_CMD_TERMINATE]            = dxrt_terminate,
+    [DXRT_CMD_PCIE]                 = dxrt_msg_general,
 };
