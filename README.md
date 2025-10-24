@@ -4,7 +4,7 @@ RT AI Accelerator(NPU) linux driver
 ## Download
 This repository contains a submodule.
 ```console
-$ git clone --recurse-submodules git@gh.deepx.ai:deepx/dx_rt_npu_linux_driver.git
+$ git clone --recurse-submodules https://github.com/DEEPX-AI/dx_rt_npu_linux_driver.git
 ```
 ***Update submodules***
 ```console
