@@ -79,11 +79,15 @@ typedef struct {
     uint32_t ltssm;
     uint32_t dma_rd_ch_sts[4];
     uint32_t dma_wr_ch_sts[4];
-    uint32_t reserved_pcie[10];
+    uint32_t reserved_pcie[2];
+    /* Extra Version information */
+    char     rt_driver_version_suffix[16];
+    char     fw_version_suffix[16];
 
     /* DDR information */
     uint32_t ddr_temperature[4];
     uint32_t reserved_ddr[10];
+
 } dx_pcie_dev_err_t;
 
 typedef struct {

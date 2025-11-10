@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
- * DeepX eDMA PCIe driver
- *
- * Author: Taegyun An <atg@deepx.ai>
- */
+* Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+* DeepX eDMA PCIe driver
+*
+* Author: Taegyun An <atg@deepx.ai>
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -14,16 +14,25 @@
 #include <linux/msi.h>
 #include <linux/bitfield.h>
 #include <linux/aer.h>
-
+#include <linux/delay.h>
 #include "dx_edma.h"
 
 #include "dw-edma-v0-core.h"
 #include "dw-edma-core.h"
+#include "dxrt_drv.h"
 #include "dx_cdev.h"
 #include "dx_util.h"
 #include "dx_lib.h"
 #include "dw-edma-thread.h"
 #include "version.h"
+
+#ifdef RPI_DEBUG_BUILD
+#include "rpi-gpio.h"
+#endif
+
+#ifdef RPI_BUILD
+#define EP_IRQ_RPI_SHUTDOWN_OFFSET		    (0x18)
+#endif
 
 #ifdef DX_DEBUG_ENABLE /*DEEPX MODIFIED*/
 	#ifdef pci_dbg
@@ -372,26 +381,21 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	/* Set number of IRQS */
 	dw->dx_ver = pdata->version;
+	pci_err(pdev, "dw->dx_ver: %d\n", dw->dx_ver);
 	set_user_irq_vec_table(dw);
 	total_irqs = vsec_data.dma_irqs + get_nr_user_irqs();
 
 	/* IRQs allocation */
 	pci_dbg(pdev, "Total IRQ number with including npu handler: %d\n", total_irqs);
-	nr_irqs = pci_alloc_irq_vectors(pdev, 1, total_irqs,
-					PCI_IRQ_MSI | PCI_IRQ_MSIX);
+	nr_irqs = pci_alloc_irq_vectors(pdev, 1, total_irqs, PCI_IRQ_MSI);
 	if (nr_irqs < 1) {
-		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%d)\n",
-			nr_irqs);
+		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%d)\n", nr_irqs);
 		return -EPERM;
+	} else if (nr_irqs == 1) {
+		pci_err(pdev, "With only a single interrupt handler, "
+			"the device performance might be slower compared to a multi-interrupt environment\n");
 	}
-	if (nr_irqs == 1) {
-		pci_err(pdev, "Fail to alloc IRQ vector(number of IRQs=%d)\n",
-			nr_irqs);
-		pci_err(pdev, "Deepx's PCIe driver does not currently support Single MSI.\n");
-		pci_err(pdev, "Please check BIOS setting of host.\n");
-		return -ENOTSUPP;
-	}
-	dw->event_irq_idx = total_irqs - vsec_data.dma_irqs - 1;
+	dw->event_irq_idx = get_nr_user_irqs() - 1;
 	pci_dbg(pdev, "Error irq index: %d\n", dw->event_irq_idx);
 
 	/* Check BAR0 size */
@@ -684,6 +688,22 @@ static int dx_dma_pcie_sriov_configure(struct pci_dev *pdev, int num_vfs)
 }
 #endif
 
+static void dx_dma_pcie_shutdown(struct pci_dev *pdev)
+{
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+	if (!chip || !chip->dw) {
+		pci_err(pdev, "Invalid chip data during shutdown\n");
+		return;
+	}
+	#ifdef RPI_BUILD
+	if(chip->dw->dx_ver == 3) {
+		writel(1, ((void*)(chip->dw->dx_msg->notify + EP_IRQ_RPI_SHUTDOWN_OFFSET)));
+	}
+	pci_err(pdev, ">> %s: RPI Shutdown\n", __func__);
+	#endif
+	pci_err(pdev, ">> %s: Standard Shutdown\n", __func__);
+}
+
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
 	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0000), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
 	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
@@ -703,6 +723,7 @@ static struct pci_driver dx_dma_pcie_driver = {
 	.id_table	= dx_dma_pcie_id_table,
 	.probe		= dx_dma_pcie_probe,
 	.remove		= dx_dma_pcie_remove,
+	.shutdown	= dx_dma_pcie_shutdown,
 	.err_handler	= &dx_dma_err_handler,
 #ifdef CONFIG_PM_SLEEP
 	.driver		= {

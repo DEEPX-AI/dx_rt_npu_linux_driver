@@ -16,6 +16,114 @@ BUILD_DEFAULT_CROSS_COMPILE=""
 BUILD_DEFAULT_INSTALL_DIR=""
 BUILD_DEFAULT_DBG=""
 DXRT_SERVICE_WAS_ACTIVE=0
+STOP_TIMEOUT_SEC=${STOP_TIMEOUT_SEC:-1}
+START_TIMEOUT_SEC=${START_TIMEOUT_SEC:-1}
+SERVICE_DEBUG_JOURNAL_LINES=${SERVICE_DEBUG_JOURNAL_LINES:-60}
+
+# Virtual DMA dependency configuration
+# VDMA_CORE_NAME: preferred module name (default virt_dma). Alternate names tried: virt_dma, virt-dma
+# SKIP_VDMA_CHECK=1 can bypass the check (not recommended for production) 
+VDMA_CORE_NAME=${VDMA_CORE_NAME:-virt_dma}
+SKIP_VDMA_CHECK=${SKIP_VDMA_CHECK:-0}
+
+# --- Internal helpers for service control diagnostics ---
+function _dxrt_service_dump_debug() {
+    local phase=$1
+    command -v systemctl &>/dev/null || return 0
+    logerr "[dxrt.service][${phase}] Debug dump begin"
+    systemctl show dxrt.service -p ActiveState -p SubState -p ExecMainCode -p ExecMainStatus -p MainPID 2>&1 | sed 's/^/  /'
+    systemctl status dxrt.service 2>&1 | head -n 25 | sed 's/^/  /'
+    journalctl -u dxrt.service -n ${SERVICE_DEBUG_JOURNAL_LINES} --no-pager 2>&1 | sed 's/^/  /'
+    if command -v ps &>/dev/null; then
+        local mpid
+        mpid=$(systemctl show -p MainPID --value dxrt.service 2>/dev/null || echo 0)
+        if [[ "$mpid" != "0" ]]; then
+            logmsg "  /proc/${mpid} excerpt:"
+            { tr '\0' ' ' < /proc/${mpid}/cmdline 2>/dev/null; echo; } | sed 's/^/    CMD: /'
+            cat /proc/${mpid}/status 2>/dev/null | head -n 15 | sed 's/^/    /'
+        fi
+    fi
+    if command -v lsof &>/dev/null; then
+        lsof -p $(systemctl show -p MainPID --value dxrt.service 2>/dev/null || echo 0) 2>/dev/null | head -n 15 | sed 's/^/  LSOF: /'
+    fi
+    logerr "[dxrt.service][${phase}] Debug dump end"
+}
+
+function _wait_service_state() {
+    local desired=$1   # active|inactive
+    local timeout=$2   # seconds (can be fractional)
+    local interval=0.2
+
+    command -v systemctl &>/dev/null || return 0
+
+    # Convert a (possibly fractional) seconds value to integer milliseconds.
+    _to_ms() {
+        # Avoid external bc; use bash string ops.
+        local val="$1"
+        # If already integer
+        if [[ $val =~ ^[0-9]+$ ]]; then
+            echo "$(( val * 1000 ))"
+            return 0
+        fi
+        # If fractional (e.g. 1.23)
+        if [[ $val =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            local whole=${BASH_REMATCH[1]}
+            local frac=${BASH_REMATCH[2]}
+            # pad / trim frac to 3 digits for ms
+            frac=${frac}000
+            frac=${frac:0:3}
+            echo "$(( whole * 1000 + 10#${frac} ))"
+            return 0
+        fi
+        # Fallback: treat as 0
+        echo 0
+    }
+
+    local timeout_ms=$(_to_ms "${timeout:-0}")
+    local interval_ms=$(_to_ms "$interval")
+    (( timeout_ms <= 0 )) && return 1
+
+    # Monotonic time in ms (prefer /proc/uptime; fallback to date)
+    _now_ms() {
+        if [[ -r /proc/uptime ]]; then
+            # /proc/uptime: "<seconds> <idle>" with seconds possibly fractional
+            local up
+            read -r up _ < /proc/uptime
+            # Reuse _to_ms
+            _to_ms "$up"
+        else
+            # date +%s%3N (not all date versions support %3N). Try nanoseconds then cut.
+            if date +%s%3N >/dev/null 2>&1; then
+                date +%s%3N
+            else
+                # Fallback seconds only *1000
+                echo "$(( $(date +%s) * 1000 ))"
+            fi
+        fi
+    }
+
+    local start_ms=$(_now_ms)
+    local now_ms elapsed_ms
+
+    while :; do
+        if systemctl is-active --quiet dxrt.service; then
+            [[ $desired == "active" ]] && return 0
+        else
+            local st
+            st=$(systemctl show -p ActiveState --value dxrt.service 2>/dev/null || echo unknown)
+            if [[ $desired == "inactive" && ( $st == inactive || $st == failed ) ]]; then
+                return 0
+            fi
+        fi
+
+        now_ms=$(_now_ms)
+        elapsed_ms=$(( now_ms - start_ms ))
+        (( elapsed_ms >= timeout_ms )) && break
+        # Sleep using seconds (interval may be fractional)
+        sleep "$interval"
+    done
+    return 1
+}
 
 SUPPORT_DEVICE=("m1" "v3")
 
@@ -144,6 +252,62 @@ check_module_install() {
     fi
 }
 
+function ensure_virtual_dma_dependency() {
+    [[ "$SKIP_VDMA_CHECK" == "1" ]] && { logmsg "-> Skip virtual DMA check (SKIP_VDMA_CHECK=1)"; return 0; }
+
+    local kcfg="/boot/config-$(uname -r)"
+    local cfg_builtin=0 cfg_mod=0
+    if [[ -f "$kcfg" ]]; then
+        grep -Eq '^CONFIG_DMA_VIRTUAL_CHANNELS=y' "$kcfg" && cfg_builtin=1
+        grep -Eq '^CONFIG_DMA_VIRTUAL_CHANNELS=m' "$kcfg" && cfg_mod=1
+    else
+        logmsg "-> Kernel config file not found ($kcfg). Attempting heuristic detection."
+    fi
+
+    if [[ $cfg_builtin -eq 1 ]]; then
+        logmsg "-> CONFIG_DMA_VIRTUAL_CHANNELS=y (built-in)"
+        return 0
+    fi
+
+    if [[ $cfg_mod -eq 1 ]]; then
+        # Module case: need virt-dma.ko loaded before insmod of our driver modules (since insmod doesn't resolve deps).
+        # Typical module filename is virt-dma.ko but lsmod shows 'virt_dma'. Support both name forms.
+        if lsmod | grep -Eq '^virt_dma\b'; then
+            logmsg "-> virt_dma module already loaded"
+            return 0
+        fi
+        logmsg "-> Loading virt-dma module (CONFIG_DMA_VIRTUAL_CHANNELS=m)"
+        if ! sudo modprobe virt-dma 2>/dev/null; then
+            # Try alternative underscore name
+            if ! sudo modprobe virt_dma 2>/dev/null; then
+                # Last resort: locate file and insmod
+                local vpath
+                vpath=$(find /lib/modules/$(uname -r) -type f -name 'virt-dma.ko' -o -name 'virt_dma.ko' 2>/dev/null | head -n1 || true)
+                if [[ -n "$vpath" ]]; then
+                    if ! sudo insmod "$vpath"; then
+                        logerr "-> Failed to load virt-dma module (path: $vpath)"; exit 1; fi
+                else
+                    logerr "-> Could not find virt-dma.ko (CONFIG_DMA_VIRTUAL_CHANNELS=m). Run 'sudo depmod -A' then retry."; exit 1
+                fi
+            fi
+        fi
+        if lsmod | grep -Eq '^virt_dma\b'; then
+            logmsg "-> virt_dma module loaded"
+            return 0
+        else
+            logerr "-> virt_dma module not visible in lsmod after load attempt"; exit 1
+        fi
+    fi
+
+    # Neither builtin nor modular -> expect bundled source to be compiled into our driver.
+    if [[ -f "pci_deepx/virt-dma.c" ]]; then
+        logmsg "-> CONFIG_DMA_VIRTUAL_CHANNELS unset; using bundled virt-dma.c"
+    else
+        logerr "-> Missing both kernel CONFIG_DMA_VIRTUAL_CHANNELS and bundled pci_deepx/virt-dma.c"
+        exit 1
+    fi
+}
+
 # Checks for and stops the dxrt systemd service if it is running.
 function stop_dxrt_service() {
     logmsg "-> Checking for dxrt.service..."
@@ -155,13 +319,31 @@ function stop_dxrt_service() {
 
     # Use 'systemctl is-active' which is quiet and efficient for checks.
     if systemctl is-active --quiet dxrt.service; then
-        logerr "--> Found active dxrt.service. Stopping it now..."
+        logmsg "--> dxrt.service active. Attempting stop..."
         DXRT_SERVICE_WAS_ACTIVE=1
+        local pre_pid
+        pre_pid=$(systemctl show -p MainPID --value dxrt.service 2>/dev/null || echo 0)
+
         if ! sudo systemctl stop dxrt.service; then
-            logerr "--> FAILED to stop dxrt.service. Manual intervention may be required."
+            logerr "--> systemctl stop command failed immediately."
+            _dxrt_service_dump_debug stop_fail_cmd
             exit 1
+        fi
+        if ! _wait_service_state inactive ${STOP_TIMEOUT_SEC}; then
+            logerr "--> Service did not reach inactive within ${STOP_TIMEOUT_SEC}s"
+            _dxrt_service_dump_debug stop_timeout
+            # last resort: force kill
+            if [[ -n "$pre_pid" && "$pre_pid" != "0" ]]; then
+                logerr "--> Forcing kill -9 on old PID ${pre_pid}"
+                sudo kill -9 "$pre_pid" 2>/dev/null || true
+                sleep 1
+                if systemctl is-active --quiet dxrt.service; then
+                    logerr "--> Still active after forced kill. Aborting."
+                    exit 1
+                fi
+            fi
         else
-            logmsg "--> Service dxrt.service stopped successfully."
+            logmsg "--> Service dxrt.service now inactive."
         fi
     else
         logmsg "--> Service dxrt.service is not active."
@@ -176,15 +358,27 @@ function restart_dxrt_service_if_needed() {
             return
         fi
         logmsg "-> Restarting previously active dxrt.service..."
-        if sudo systemctl start dxrt.service; then
-            if systemctl is-active --quiet dxrt.service; then
-                logmsg "--> dxrt.service restarted successfully."
-            else
-                logerr "--> dxrt.service failed to become active after start."
-            fi
-        else
-            logerr "--> Failed to start dxrt.service."
+        systemctl reset-failed dxrt.service 2>/dev/null || true
+        local start_rc=0
+        if ! sudo systemctl start dxrt.service; then
+            start_rc=$?
+            logerr "--> systemctl start returned failure (rc=${start_rc})"
+            _dxrt_service_dump_debug start_fail_cmd
+            return
         fi
+        if ! _wait_service_state active ${START_TIMEOUT_SEC}; then
+            logerr "--> dxrt.service failed to become active within ${START_TIMEOUT_SEC}s"
+            _dxrt_service_dump_debug start_timeout
+            return
+        fi
+        # Stabilization: ensure it doesn't exit immediately after appearing active
+        sleep 0.5
+        if ! systemctl is-active --quiet dxrt.service; then
+            logerr "--> dxrt.service became inactive shortly after start"
+            _dxrt_service_dump_debug start_unstable
+            return
+        fi
+        logmsg "--> dxrt.service restarted successfully (active and stable)."
     else
         logmsg "-> dxrt.service was not active before install; not starting."
     fi
@@ -271,6 +465,9 @@ uninstall_dx_rt_npu_linux_driver_via_dkms() {
 function reload_drivers_forcefully() {
     logmsg "\n*** Preparing to forcefully reload drivers ***"
 
+    # Ensure virtual DMA dependency early (before stopping service / unloading modules)
+    ensure_virtual_dma_dependency
+
     # 1. Find the module names from their directories
     local pcie_module_ko rt_module_ko
     pcie_module_ko=$(check_module_file "${SUPPORT_PCIE_MODULE[${_module}]}")
@@ -315,7 +512,7 @@ function reload_drivers_forcefully() {
     
     logmsg "\n*** Driver reload process completed. ***"
 
-    # Attempt to restart service if it was active before.
+    # 6. Attempt to restart service if it was active before.
     restart_dxrt_service_if_needed
 }
 
@@ -469,4 +666,3 @@ if [[ ${_command} == "install" ]]; then
         reload_drivers_forcefully
     fi
 fi
-

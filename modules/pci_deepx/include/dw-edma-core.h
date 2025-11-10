@@ -35,6 +35,11 @@ enum dw_edma_dir {
 	EDMA_DIR_READ
 };
 
+enum dw_edma_engine {
+	EDMA_ENG_DIS = 0,
+	EDMA_ENG_EN
+};
+
 enum dx_edma_map_format {
 	DX_DMA_MF_EDMA_LEGACY = 0x0,
 	DX_DMA_MF_EDMA_UNROLL = 0x1,
