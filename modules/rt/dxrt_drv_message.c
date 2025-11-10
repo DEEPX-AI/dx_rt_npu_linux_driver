@@ -1052,7 +1052,7 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg)
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
             return -EINVAL;
         }
-        if ( meminfo.base + meminfo.offset < dev->mem_addr ||
+        if ( meminfo.base + meminfo.offset < dev->mem_addr - 0x100000 ||
             meminfo.base + meminfo.offset + meminfo.size > dev->mem_addr + dev->mem_size )
         {
             pr_err("%d: %s: invalid address: %llx + %x @ %llx, %llx \n",
@@ -1220,7 +1220,7 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg)
             mutex_lock(&dev->msg_lock);
             dxrt_msg_to_dev(dev, msg);
             dx_pcie_notify_msg_to_device(num);
-            ret = dxrt_polling_ack(dev, 1000);
+            ret = dxrt_polling_ack(dev, 250);
             if (ret==0) {
                 ret = *((int*)dev_msg->data);
             }
@@ -1397,13 +1397,14 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg)
 
     spin_lock_irqsave(&dev->error_lock, flags);
     if (dev_event.event_type == DXRT_EVENT_ERROR) {
-        dev_event.dx_rt_err.rt_driver_version   = DXRT_MOD_VERSION_NUMBER;
-        dev_event.dx_rt_err.pcie_driver_version = info.driver_version;
-        dev_event.dx_rt_err.bus                 = info.bus;
-        dev_event.dx_rt_err.dev                 = info.dev;
-        dev_event.dx_rt_err.func                = info.func;
-        dev_event.dx_rt_err.speed               = info.speed;
-        dev_event.dx_rt_err.width               = info.width;
+        dev_event.dx_rt_err.rt_driver_version          = DXRT_MOD_VERSION_NUMBER;
+        strscpy(dev_event.dx_rt_err.rt_driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
+        dev_event.dx_rt_err.pcie_driver_version        = info.driver_version;
+        dev_event.dx_rt_err.bus                        = info.bus;
+        dev_event.dx_rt_err.dev                        = info.dev;
+        dev_event.dx_rt_err.func                       = info.func;
+        dev_event.dx_rt_err.speed                      = info.speed;
+        dev_event.dx_rt_err.width                      = info.width;
     }
     spin_unlock_irqrestore(&dev->error_lock, flags);
 
@@ -1455,6 +1456,17 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg)
                 }
             } else {
                 pr_err("CMD(%d) is not supported for device type(%d)\n", msg->cmd, dev->type);
+            }
+            break;
+        case DRVINFO_CMD_GET_RT_INFO_V2:
+            if (msg->data!=NULL) {
+                struct dxrt_drv_info_v2 info;
+                info.driver_version = DXRT_MOD_VERSION_NUMBER;
+                strscpy(info.driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(info.driver_version_suffix));
+                if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
+                    pr_err("%d: %s cmd:%d failed.\n", num, __func__, msg->sub_cmd);
+                    ret = -EFAULT;
+                }
             }
             break;
     default:

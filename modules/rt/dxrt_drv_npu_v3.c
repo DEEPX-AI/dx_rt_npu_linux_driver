@@ -11,7 +11,7 @@
 
 inline void npu_reg_write(volatile void __iomem *base, uint32_t addr, uint32_t val)
 {
-    pr_debug("write: %x, %x\n", addr, val);
+    //pr_debug("write: %x, %x\n", addr, val);
     iowrite32(val, base + addr);
 }
 inline void npu_reg_write_mask(volatile void __iomem *base, uint32_t addr, uint32_t val, uint32_t mask, uint32_t bit_offset)
@@ -19,18 +19,18 @@ inline void npu_reg_write_mask(volatile void __iomem *base, uint32_t addr, uint3
     uint32_t read_val = ioread32(base + addr);
     read_val &= ~mask;
     read_val |= (val << bit_offset) & mask;
-    pr_debug("write_mask: %x, %x\n", addr, read_val);
+    //pr_debug("write_mask: %x, %x\n", addr, read_val);
     iowrite32(read_val, base + addr);
 }
 inline uint32_t npu_reg_read(volatile void __iomem *base, uint32_t addr)
 {
-    pr_debug("read: %x\n", addr);
+    //pr_debug("read: %x\n", addr);
     return ioread32(base + addr);
 }
 inline uint32_t npu_reg_read_mask(volatile void __iomem *base, uint32_t addr, uint32_t mask, uint32_t bit_offset)
 {
     uint32_t read_val = ioread32(base + addr);
-    pr_debug("read_mask: %x, %x, %x\n", addr, mask, bit_offset);
+    //pr_debug("read_mask: %x, %x, %x\n", addr, mask, bit_offset);
     return (read_val & mask) >> bit_offset;
 }
 static void dx_v3_npu_sys_enable(dxnpu_t *npu)
@@ -112,6 +112,7 @@ static irqreturn_t npu_irq_handler(int irq, void *data)
 
     // get response
     response->req_id = READ_SYSTEM_SWREG0(reg);
+    WRITE_SYSTEM_SWREG0(reg, 0xFFFFFFFF); // clear req_id
     // response.status = 0; // TODO
 
     // set npu state to idle

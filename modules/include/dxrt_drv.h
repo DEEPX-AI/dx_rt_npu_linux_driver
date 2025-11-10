@@ -198,6 +198,11 @@ typedef struct _dxrt_response_t {
     uint32_t  ddr_rd_bw;
 } dxrt_response_t;
 
+/* TODO: 
+    args for 'to' in copy_to_user & copy_from_user function type is different
+    Therefore, we need to define two structure for dxrt_message_t
+    This will fix 'redundant type casting' problem.
+*/
 typedef struct
 {
     int32_t     cmd;
@@ -263,6 +268,7 @@ typedef enum {
 typedef enum {
     DRVINFO_CMD_GET_RT_INFO     = 0,
     DRVINFO_CMD_GET_PCIE_INFO   = 1,
+    DRVINFO_CMD_GET_RT_INFO_V2   = 2,
 } dxrt_drvinfo_sub_cmd_t;
 
 /* CMD : DXRT_CMD_UPDATE_FIRMWARE */

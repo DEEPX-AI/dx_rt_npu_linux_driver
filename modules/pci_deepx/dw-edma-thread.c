@@ -51,19 +51,6 @@ static void dw_edma_callback(void *arg)
 	info->dma_done.done = true;
 	wake_up_interruptible(info->dma_done.wait);
 }
-#if 1
-static bool dw_edma_check_desc_table_set(struct dw_edma_info *info, ssize_t host_addr, ssize_t ep_addr, ssize_t size)
-{
-	bool ret = true;
-	if ((info->host_buf_addr == host_addr) &&
-		(info->ep_buf_addr == ep_addr) &&
-		(info->size == size) &&
-		(size < 174756*1024)) { /* TODO - remove hard fixed condition*/
-		ret = false;
-	}
-	return ret;
-}
-#endif
 
 static int dw_edma_sg_process(struct dw_edma_info *info,
 				    struct dma_chan *chan)
@@ -91,6 +78,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #ifdef DMA_PERF_MEASURE
 	ktime_t dma_trans_t;
 #endif
+	long ret;
 
 	dbg_tfr("[%s] Start!!\n", __func__);
 
@@ -147,11 +135,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sconf.src_addr = cb->ep_addr;
 		/* CPU memory */
 		sconf.dst_addr = sg_dma_address(sg);
-#ifdef SRAM_DESC_TABLE
 		dw_chan->set_desc = true;
-#else
-		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.dst_addr, sconf.src_addr, cb->len);
-#endif
 	} else {
 		/* DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE */
 		dbg_tfr("%s: DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE\n",
@@ -167,11 +151,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		/* Endpoint memory */
 		sconf.dst_addr = cb->ep_addr;
 		// sconf.dst_addr = dt_region->paddr;
-#ifdef SRAM_DESC_TABLE
 		dw_chan->set_desc = true;
-#else
-		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.src_addr, sconf.dst_addr, cb->len);
-#endif
 	}
 	if (sgt->nents == 1) {
 		cb->is_llm = false;
@@ -228,7 +208,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sched_set_fifo(current);
 #endif
 
-	wait_event_interruptible_timeout(info->done_wait,
+	ret = wait_event_interruptible_timeout(info->done_wait,
 		done->done,
 		msecs_to_jiffies(timeout));
 
@@ -246,7 +226,15 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
-	if (!done->done) {
+	if (ret == -ERESTARTSYS) {
+		dbg_tfr("%s: transfer interrupted by signal\n", dma_chan_name(chan));
+		if (dmaengine_terminate_all(chan) != 0) {
+			dev_err(dev, "%s: dmaengine_terminate_all fail\n", dma_chan_name(chan));
+			cb->result = -EIO;
+		} else {
+			cb->result = 0;
+		}
+	} else if (!done->done) {
 		f_tm_cnt++;
 		dmaengine_terminate_all(chan);
 		cb->result = -ETIMEDOUT;

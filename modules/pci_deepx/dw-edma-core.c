@@ -34,38 +34,28 @@
 	#endif
 #endif
 
-typedef struct {
-	uint32_t status;
-	uint32_t npu0_irq_cnt;
-	uint32_t npu1_irq_cnt;
-	uint32_t npu2_irq_cnt;
-	uint32_t reserved[8];
-	uint32_t err_irq_cnt;
-} dx_pcie_irq_t;
-
-typedef struct {
-	uint32_t irq_count;
-	uint32_t prev;
-} dx_pcie_host_irq_t;
-
-static dx_pcie_host_irq_t dx_pcie_irq[USER_IRQ_NUMS];
-
-/* User IRQ Vector Table */
-static irqreturn_t dw_edma_user_irq_npu(int irq, void *data);
-static irqreturn_t dw_edma_user_events(int irq, void *data);
-
-typedef struct user_irq_v_table_t
-{
+/* ---------------- User IRQ vector table (placed early for dx_sw_intr_init) --- */
+typedef struct user_irq_v_table_t {
 	irq_handler_t handler;
 	char          name[40];
-	int           irq_pos;  /* Position of host irq table */
-	int           event_id; /* Max ID is defined in EDMA_EVENT_NUM_MAX */
-	int           dma_ch_n; /* the number of dma channel */
-	uint32_t      bit;      /* bit position */
+	int           irq_pos;   /* Position in host IRQ table */
+	int           event_id;  /* Max ID defined by EDMA_EVENT_NUM_MAX */
+	int           dma_ch_n;  /* DMA channel number */
+	uint32_t      bit;       /* Bit position mask */
 } user_irq_v_table_t;
 
-static user_irq_v_table_t *user_irq_vec_table;
-/* DX-M1 */
+static user_irq_v_table_t *user_irq_vec_table; /* selected at runtime */
+/* Cached active events derived from vector table (host-only state) */
+static u32 dx_sw_active_mask;       /* bit i set when event i is valid */
+static int dx_sw_active_count;      /* number of active events */
+
+
+static irqreturn_t dw_edma_user_irq_npu(int irq, void *data);
+static irqreturn_t dw_edma_user_events(int irq, void *data);
+static irqreturn_t user_irq_service(int irq, struct dx_dma_user_irq *user_irq);
+static irqreturn_t user_irq_events(struct dx_edma_irq *dw_irq, struct dx_dma_user_irq *user_irq);
+
+
 static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
 	/* handler / name / irq_pos / event_id / dma_ch_n / bit */
 	{dw_edma_user_irq_npu, "npu0_d", 0, 0, 0, BIT(0)},
@@ -73,6 +63,268 @@ static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
 	{dw_edma_user_irq_npu, "npu2_d", 2, 2, 2, BIT(2)},
 	{dw_edma_user_events , "events", 3, 3, 0, BIT(3)},
 };
+
+// #define DX_SW_IRQ_DEBUG
+
+/* ---------------- Software-only interrupt block (no HW register logic) -------- */
+/* Endpoint writes set_off (bit mask). Host latches into status_raw_off and clears
+ * bits after servicing via simple RMW. enable mask gates service. */
+struct dx_sw_irq_block {
+	uint32_t version;                          /* optional version id */
+	uint32_t enable;                           /* mask bits (Host writes) */
+	uint32_t set_off[USER_IRQ_NUMS];           /* per-event set bits (EP writes 1, host clears to 0) */
+	uint32_t status_raw_off;                   /* latched pending bitfield (mirror aggregate) */
+	uint32_t event_irq_cnt[USER_IRQ_NUMS];     /* EP-side event counters */
+	uint32_t event_handled_cnt[USER_IRQ_NUMS]; /* Host-side handled counters */
+};
+
+static inline struct dx_sw_irq_block __iomem *dx_sw_irq(struct dw_edma *dw)
+{
+	return (struct dx_sw_irq_block __iomem *)dw->dx_msg->irq_status; /* shared SRAM */
+}
+
+/* Debug helper to dump interrupt block state */
+static void dx_sw_irq_dump_state(struct dw_edma *dw, const char *context)
+{
+	struct dx_sw_irq_block __iomem *blk = dx_sw_irq(dw);
+	int i;
+	ktime_t start, end;
+	u32 enable, raw;
+	s64 read_time_ns;
+
+	if (!blk)
+		return;
+
+	start = ktime_get();
+	enable = ioread32(&blk->enable);
+	raw = ioread32(&blk->status_raw_off);
+	end = ktime_get();
+	read_time_ns = ktime_to_ns(ktime_sub(end, start));
+
+	dbg_irq("DUMP[%s]: enable=0x%08x raw=0x%08x (read_time=%lldns)\n",
+		context, enable, raw, read_time_ns);
+	/* Print only active & asserted or delta-interesting events */
+	{
+		u32 setv, epc, hpc;
+		for (i = 0; i < 16; i++) {
+			if (!(dx_sw_active_mask & BIT(i)))
+				continue; /* not registered */
+			setv = ioread32(&blk->set_off[i]);
+			if (!setv)
+				continue; /* quiet */
+			epc = ioread32(&blk->event_irq_cnt[i]);
+			hpc = ioread32(&blk->event_handled_cnt[i]);
+			dbg_irq("  EV%02d: set=%u EP_CNT=%u HOST_HANDLED=%u (delta=%d)\n", i, setv, epc, hpc, (int)(epc - hpc));
+		}
+	}
+}
+
+/* Latch EP set bits into raw status (do NOT clear set_off here; per-bit clear after handling) */
+static u32 dx_sw_irq_latch_and_clear(struct dx_sw_irq_block __iomem *blk)
+{
+	/* Aggregate per-event set_off[i] into bitfield */
+	int i;
+	u32 set_bits = 0;
+	for (i = 0; i < 16; i++) {
+		if (!(dx_sw_active_mask & BIT(i)))
+			continue;
+		if (ioread32(&blk->set_off[i]))
+			set_bits |= BIT(i);
+	}
+	if (set_bits) {
+		u32 raw_before = ioread32(&blk->status_raw_off);
+		iowrite32(raw_before | set_bits, &blk->status_raw_off);
+	}
+	return set_bits;
+}
+
+/* Get pending interrupt mask */
+static u32 dx_sw_irq_get_pending(struct dx_sw_irq_block __iomem *blk, u32 enable_mask)
+{
+	return ioread32(&blk->status_raw_off) & enable_mask;
+}
+
+/* Increment host-side handled counter for specific interrupt */
+static void dx_sw_irq_increment_handled_counter(struct dx_sw_irq_block __iomem *blk, int ev_id)
+{
+	u32 cnt = ioread32(&blk->event_handled_cnt[ev_id]);
+	iowrite32(cnt + 1, &blk->event_handled_cnt[ev_id]);
+}
+
+/* Process pending interrupts and call handlers */
+static u32 dx_sw_irq_process_pending(struct dw_edma *dw, struct dx_edma_irq *dw_irq,
+                                     int irq, u32 pending_mask, struct dx_sw_irq_block __iomem *blk)
+{
+	u32 handled_mask = 0;
+	u8 event_id;
+	int i;
+
+	dbg_irq("Processing pending=0x%x\n", pending_mask);
+	for (i = 0; i < USER_IRQ_NUMS; i++) {
+		if (!(dx_sw_active_mask & BIT(i)))
+			continue;
+		if (!(pending_mask & BIT(i)))
+			continue;
+			
+		if (!user_irq_vec_table || !user_irq_vec_table[i].handler) {
+			break;
+		}
+
+		event_id = user_irq_vec_table[i].event_id;
+		if (event_id < dw->event_irq_idx) {
+			user_irq_service(irq, &dw_irq->user_irqs[event_id]);
+		} else {
+			user_irq_events(dw_irq, &dw_irq->user_irqs[event_id]);
+		}
+		dx_sw_irq_increment_handled_counter(blk, i);
+
+		handled_mask |= BIT(i);
+	}
+
+	return handled_mask;
+}
+
+/* Clear handled interrupt bits with batch operation */
+static void dx_sw_irq_clear_handled_bits(struct dw_edma *dw, struct dx_sw_irq_block __iomem *blk, u32 handled_mask)
+{
+	int i;
+	u32 raw_before, raw_after;
+	if (!handled_mask)
+		return;
+	/* Clear status_raw_off bits */
+	raw_before = ioread32(&blk->status_raw_off);
+	raw_after = raw_before & ~handled_mask;
+	iowrite32(raw_after, &blk->status_raw_off);
+	/* Clear individual per-event set_off[i] */
+	for (i = 0; i < 16; i++) {
+		if (!(handled_mask & BIT(i)))
+			continue;
+		if (!(dx_sw_active_mask & BIT(i)))
+			continue;
+		if (handled_mask & BIT(i))
+			iowrite32(0, &blk->set_off[i]);
+	}
+	dbg_irq("Cleared handled: raw(0x%x->0x%x) mask=0x%x\n", raw_before, raw_after, handled_mask);
+}
+
+/* Main software interrupt handler */
+static irqreturn_t dx_sw_irq_handler(struct dw_edma *dw, struct dx_edma_irq *dw_irq, int irq)
+{
+	struct dx_sw_irq_block __iomem *blk = dx_sw_irq(dw);
+	u32 pending_mask, handled_mask = 0;
+	u32 enable_mask, set_reg;
+	u32 set_count, pending_count;
+
+	enable_mask = ioread32(&blk->enable);
+	if (!enable_mask) {
+		pr_warn("SWIRQ[%s] enable=0, skipping\n", dw->name);
+		return IRQ_NONE;
+	}
+
+	/* Debug: Initial state before processing */
+	dx_sw_irq_dump_state(dw, "IRQ_START");
+
+	/* Latch set bits into raw and clear set bits */
+	set_reg = dx_sw_irq_latch_and_clear(blk);
+	set_count = hweight32(set_reg);  /* Count number of set bits from EP */
+
+	if (set_reg)
+		dbg_irq("Latched set bits=0x%x (EP_generated=%u)\n", set_reg, set_count);
+
+	/* Get pending interrupts */
+	pending_mask = dx_sw_irq_get_pending(blk, enable_mask);
+	pending_count = hweight32(pending_mask);  /* Count number of pending bits to process */
+
+	if (!pending_mask) {
+		dx_sw_irq_dump_state(dw, "IRQ_NO_PENDING");
+		return IRQ_NONE;
+	}
+
+	/* Log multiple interrupt coalescing case */
+	if (pending_count > 1)
+		dbg_irq("COALESCED: Processing %u events (pending=0x%x)\n", pending_count, pending_mask);
+
+	/* Process pending interrupts */
+	handled_mask = dx_sw_irq_process_pending(dw, dw_irq, irq, pending_mask, blk);
+
+	/* Clear handled bits with batch operation */
+	dx_sw_irq_clear_handled_bits(dw, blk, handled_mask);
+
+#ifdef DX_SW_IRQ_DEBUG
+	/* Log processing summary & per-event delta only when debug enabled */
+	if (handled_mask) {
+		u32 handled_count = hweight32(handled_mask);
+		dbg_irq("SUMMARY: EP_gen=%u HOST_pending=%u HOST_handled=%u (set=0x%x pend=0x%x h=0x%x)\n",
+			   set_count, pending_count, handled_count, set_reg, pending_mask, handled_mask);
+		for (int i = 0; i < USER_IRQ_NUMS; i++) {
+			if (!(handled_mask & BIT(i)))
+				continue;
+			if (!(dx_sw_active_mask & BIT(i)))
+				continue;
+			dbg_irq("  EV%02d CNT: EP=%u HOST=%u DIFF=%d\n", i,
+				ioread32(&blk->event_irq_cnt[i]),
+				ioread32(&blk->event_handled_cnt[i]),
+				(int)(ioread32(&blk->event_irq_cnt[i]) - ioread32(&blk->event_handled_cnt[i])));
+		}
+	}
+#endif
+	
+	/* Debug: Final state after processing */
+	dx_sw_irq_dump_state(dw, "IRQ_END");
+	
+	return handled_mask ? IRQ_HANDLED : IRQ_NONE;
+}
+
+static void dx_sw_intr_init(struct dw_edma *dw)
+{
+	int i; 
+	u32 enable = 0;
+	int active = 0;
+
+	if (dw->nr_irqs != 1) {
+		return;
+	}
+
+	/* Ensure vector table is available */
+	if (!user_irq_vec_table) {
+		pr_info("SWIRQ[%s] vector table not set, calling set_user_irq_vec_table\n", dw->name);
+		set_user_irq_vec_table(dw);
+		if (!user_irq_vec_table) {
+			pr_err("SWIRQ[%s] user_irq_vec_table setup failed\n", dw->name);
+			return;
+		}
+	}
+
+	pr_info("SWIRQ[%s] checking handlers in vector table...\n", dw->name);
+	
+	/* Build enable mask from valid handlers */
+	for (i = 0; i < USER_IRQ_NUMS; i++) {
+		if (!user_irq_vec_table[i].handler) {
+			pr_info("SWIRQ[%s] handler[%d] = NULL, stopping enumeration\n", dw->name, i);
+			break;
+		}
+		enable |= user_irq_vec_table[i].bit;
+		active++;
+		pr_info("SWIRQ[%s] handler[%d] = %p (%s), bit=0x%x, enable=0x%x\n", 
+			dw->name, i, user_irq_vec_table[i].handler, user_irq_vec_table[i].name, 
+			user_irq_vec_table[i].bit, enable);
+	}
+
+	/* Must have valid handlers for proper operation */
+	if (enable == 0) {
+		pr_err("SWIRQ[%s] no valid handlers found - INITIALIZATION FAILED\n", dw->name);
+		return;
+	}
+
+	/* Initialize the shared interrupt block */
+	memset_io(dx_sw_irq(dw), 0, sizeof(struct dx_sw_irq_block));
+	iowrite32(enable, &dx_sw_irq(dw)->enable);
+	dx_sw_active_mask = enable;
+	dx_sw_active_count = active;
+	pr_info("SWIRQ[%s] active events=%d mask=0x%x\n", dw->name, dx_sw_active_count, dx_sw_active_mask);
+	pr_info("SWIRQ[%s] initialized successfully, enable=0x%x\n", dw->name, enable);
+}
+
 
 static inline int get_irq_to_dma_num(int irq_n)
 {
@@ -411,10 +663,13 @@ static int dw_edma_device_resume(struct dma_chan *dchan)
 
 static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 {
+	struct virt_dma_chan *vc = to_virt_chan(dchan);
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(dchan);
+	unsigned long flags;
+	LIST_HEAD(head);
 	int err = 0;
 
-	dbg_core("[%s] start!!\n", __func__);
+	dbg_core("[%s] start for channel %s!!\n", __func__, dma_chan_name(dchan));
 
 	if (!chan->configured) {
 		/* Do nothing */
@@ -433,7 +688,24 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 	} else if (chan->request > EDMA_REQ_PAUSE) {
 		err = -EPERM;
 	} else {
-		chan->request = EDMA_REQ_STOP;
+		int ret = dw_edma_v0_core_ch_halt(chan);
+		if (ret) {
+			dbg_core("Failed to halt channel %d, forcing software cleanup.\n", chan->id);
+			err = ret;
+		}
+
+		spin_lock_irqsave(&vc->lock, flags);
+		list_splice_tail_init(&vc->desc_issued, &head);
+		spin_unlock_irqrestore(&vc->lock, flags);
+
+		if (!list_empty(&head)) {
+			dbg_core("Cleaning up stale DMA descriptors for channel %d\n", chan->id);
+			vchan_dma_desc_free_list(vc, &head);
+		}
+		chan->status = EDMA_ST_IDLE;
+		chan->configured = false;
+
+		dbg_core("Channel %d successfully terminated and cleaned.\n", chan->id);
 	}
 
 	return err;
@@ -749,7 +1021,7 @@ static irqreturn_t user_irq_service(int irq, struct dx_dma_user_irq *user_irq)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t user_irq_errors(struct dx_edma_irq *dw_irq, struct dx_dma_user_irq *user_irq)
+static irqreturn_t user_irq_events(struct dx_edma_irq *dw_irq, struct dx_dma_user_irq *user_irq)
 {
 	unsigned long flags;
 
@@ -859,8 +1131,10 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 	val = dw_edma_v0_core_status_done_int(dw, write ?
 							  EDMA_DIR_WRITE :
 							  EDMA_DIR_READ);
-	dbg_irq("[%d][%s] Done interrupt status:0x%lx\n",
-		irq, write ? "WRITE" : "READ", val);
+	if (val) {
+		dbg_irq("[%d][%s] Done interrupt status:0x%lx\n",
+			irq, write ? "WRITE" : "READ", val);
+	}
 
 	val &= mask;
 #ifdef DMA_PERF_MEASURE
@@ -887,8 +1161,10 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 	val = dw_edma_v0_core_status_abort_int(dw, write ?
 							   EDMA_DIR_WRITE :
 							   EDMA_DIR_READ);
-	dbg_irq("[%d][%s] Abort interrupt status:0x%lx\n",
-		irq, write ? "WRITE" : "READ", val);
+	if (val) {
+		dbg_irq("[%d][%s] Abort interrupt status:0x%lx\n",
+			irq, write ? "WRITE" : "READ", val);
+	}
 
 	val &= mask;
 	for_each_set_bit(pos, &val, total) {
@@ -911,53 +1187,31 @@ static inline irqreturn_t dw_edma_interrupt_read(int irq, void *data)
 	return dw_edma_interrupt(irq, data, false);
 }
 
-static u32 dx_pcie_get_irq_data(struct dw_edma *dw)
+/* ---------------------------------------------- */
+/* Single MSI (nr_irqs == 1) unified ISR handling */
+/* ---------------------------------------------- */
+static irqreturn_t dw_edma_single_msi_interrupt(int irq, void *data)
 {
-#if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
-	dx_pcie_irq_t *irq_status = dw->dx_msg->irq_status;
-    return irq_status->status;
-#else
-	return -1U;
-#endif	
-}
+    struct dx_edma_irq *dw_irq = data;
+    struct dw_edma *dw = dw_irq->dw;
+    irqreturn_t ret = IRQ_NONE;
+    irqreturn_t r;
 
-/* Check Logic for user interrupt reading message ram region */
-static int user_irq_check(int irq, void *data)
-{
-	struct dx_edma_irq *dw_irq = data;
-	struct dw_edma *dw = dw_irq->dw;
-	int ret = 0;
-	u32 msi_d;
-	u32 i;
+    r = dw_edma_interrupt_write(irq, data);
+    if (r == IRQ_HANDLED)
+        ret = IRQ_HANDLED;
 
-	msi_d = dx_pcie_get_irq_data(dw);
-	if (msi_d != 0xFFFFFFFF) {
-		for(i = 0; i < USER_IRQ_NUMS; i++) {
-			u32 temp = (msi_d & user_irq_vec_table[i].bit);
-			u8 event_id = user_irq_vec_table[i].event_id;
-			if (user_irq_vec_table[i].handler == NULL) break;
-			dbg_irq("[%s] : %d -> %d \n", 
-				user_irq_vec_table[i].name,
-				dx_pcie_irq[i].prev,
-				temp);
-			if (dx_pcie_irq[i].prev != temp) {
-				dx_pcie_irq[i].prev = temp;
-				dx_pcie_irq[i].irq_count++;
-				dbg_irq("user irq is called [Event ID:%d, cnt:%d]\n", event_id, dx_pcie_irq[i].irq_count);
-				if (event_id < dw->event_irq_idx) { /* TODO */
-					user_irq_service(irq, &dw_irq->user_irqs[event_id]);
-				} else {
-					user_irq_errors(dw_irq, &dw_irq->user_irqs[event_id]);
-				}
-				ret = 1;
-				break;
-			}
-		}
-	} else {
-		pr_err("[%s] msi_data errors\n", __func__);
-	}
+    r = dw_edma_interrupt_read(irq, data);
+    if (r == IRQ_HANDLED)
+        ret = IRQ_HANDLED;
 
-	return ret;
+    if (dw->nr_irqs == 1) {
+        r = dx_sw_irq_handler(dw, dw_irq, irq);
+        if (r == IRQ_HANDLED)
+            ret = IRQ_HANDLED;
+    }
+
+    return ret;
 }
 
 static irqreturn_t dw_edma_user_irq_npu(int irq, void *data)
@@ -981,16 +1235,7 @@ static irqreturn_t dw_edma_user_events(int irq, void *data)
 	dbg_irq("[%d][%s] called!! data:%p, name:%s, msi:0x%x\n",
 		irq, __func__, data, user_irq->name, dw_irq->msi.address_lo);
 
-	user_irq_errors(dw_irq, user_irq);
-	return IRQ_HANDLED;
-}
-
-/* edma + npu interrupts */
-static irqreturn_t dw_edma_npu_interrupt(int irq, void *data)
-{
-	dw_edma_interrupt(irq, data, true);
-	dw_edma_interrupt(irq, data, false);
-	user_irq_check(irq, data);
+	user_irq_events(dw_irq, user_irq);
 	return IRQ_HANDLED;
 }
 
@@ -1212,8 +1457,8 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 	if (dw->nr_irqs == 1) {
 		/* Common IRQ shared among all channels */
 		irq = dw->ops->irq_vector(dev, 0);
-		err = request_irq(irq, dw_edma_npu_interrupt,
-				  IRQF_SHARED, dw->name, &dw->irq[0]);
+		err = request_irq(irq, dw_edma_single_msi_interrupt,
+			  IRQF_SHARED, dw->name, &dw->irq[0]);
 		if (err) {
 			dw->nr_irqs = 0;
 			return err;
@@ -1385,6 +1630,9 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 		dev_err(dev, "message init error\n");
 	}
 #endif
+	/* Initialize software-only interrupt block */
+	dx_sw_intr_init(dw);
+
 	/* Turn debugfs on */
 	dw_edma_v0_core_debugfs_on(chip);
 
