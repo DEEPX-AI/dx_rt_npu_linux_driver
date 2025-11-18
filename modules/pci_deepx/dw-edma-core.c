@@ -442,7 +442,7 @@ static struct dw_edma_burst *dw_edma_alloc_burst(struct dw_edma_chunk *chunk)
 {
 	struct dw_edma_burst *burst;
 
-	burst = kzalloc(sizeof(*burst), GFP_NOWAIT);
+	burst = kzalloc(sizeof(*burst), GFP_KERNEL);
 	if (unlikely(!burst)) {
 		pr_err("burst kernel memory alloc fail!\n");
 		return NULL;
@@ -468,7 +468,7 @@ static struct dw_edma_chunk *dw_edma_alloc_chunk(struct dw_edma_desc *desc)
 	struct dw_edma *dw = chan->chip->dw;
 	struct dw_edma_chunk *chunk;
 
-	chunk = kzalloc(sizeof(*chunk), GFP_NOWAIT);
+	chunk = kzalloc(sizeof(*chunk), GFP_KERNEL);
 	if (unlikely(!chunk)) {
 		pr_err("chunk kernel memory alloc fail!\n");
 		return NULL;
@@ -515,7 +515,7 @@ static struct dw_edma_desc *dw_edma_alloc_desc(struct dw_edma_chan *chan)
 {
 	struct dw_edma_desc *desc;
 
-	desc = kzalloc(sizeof(*desc), GFP_NOWAIT);
+	desc = kzalloc(sizeof(*desc), GFP_KERNEL);
 	if (unlikely(!desc)) {
 		pr_err("description kernel memory alloc fail!\n");
 		return NULL;
