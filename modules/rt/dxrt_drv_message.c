@@ -985,7 +985,7 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg)
                 pr_debug("%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }  
-            pr_info("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
+            pr_debug("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
             mask = dx_pcie_interrupt_wakeup(num, ch);
         }
         // spin_lock_irqsave(&dev->error_lock, flags);
