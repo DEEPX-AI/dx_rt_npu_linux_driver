@@ -48,10 +48,13 @@ jobs:
       # - name: Fetch Staging Branch
       #   run: git fetch origin staging
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python for Amazon Linux
+        uses: kishaningithub/setup-python-amazon-linux@v1 # Use the Amazon Linux specific action
         with:
-          python-version: '3.11'
+          python-version: '3.11' # Specify your desired Python version
+
+      - name: Display Python version
+        run: python -c "import sys; print(sys.version)"
 
       - name: Get Last Staging Commit Message
         id: get_staging_message
