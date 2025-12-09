@@ -23,12 +23,23 @@ else ifeq ($(BUILD_DEFAULT_DBG), all)
 ccflags-y += -DDX_DEBUG_ENABLE
 ccflags-y += -DDX_DEBUG_FS
 ccflags-y += -DDUMP_DESC_TABLE
+ifneq ($(CONFIG_RPI_BUILD),)
+ccflags-y += -DRPI_DEBUG_BUILD=1
+endif
+endif
+
+ifneq ($(CONFIG_RPI_BUILD),)
+ccflags-y += -DRPI_BUILD=1
 endif
 
 dx_dma-y := dw-edma-pcie.o dw-edma-core.o dw-edma-v0-core.o \
 		dw-edma-v0-debugfs.o dw-edma-thread.o dx_util.o \
 		dx_cdev.o dx_sgdma_cdev.o dx_cdev_ctrl.o \
-		dx_cdev_events.o dx_sgdma.o
+		dx_cdev_events.o dx_sgdma.o 
+
+ifneq ($(filter -DRPI_DEBUG_BUILD=1,$(ccflags-y)),)
+ccflags-y += -I $(src)/utils/rpi
+endif
 
 ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
 dx_dma-y += dx_message.o

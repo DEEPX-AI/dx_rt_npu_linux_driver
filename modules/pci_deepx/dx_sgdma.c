@@ -427,7 +427,7 @@ ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch,
 	if(type == USER_SPACE_BUF) {
 		ret = dx_sgdma_read_user(dw, (char __user *)src, dest, count, dma_ch);
 	} else if (type == KERNEL_SPACE_BUF) {
-		/*TODO*/
+		pr_err("currently not support kernel space buffer\n");
 	} else {
 		pr_err("undefined type[%d]\n", type);
 	}

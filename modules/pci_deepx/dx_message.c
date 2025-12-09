@@ -18,15 +18,6 @@
 #include "dx_message.h"
 #include "dx_cdev_ctrl.h"
 
-#define MSGRAM_MSG_OFFSET_V2       (0x0000) /* Base address of message */
-#define MSGRAM_REQUEST_OFFSET_V2   (0x1000)
-#define MSGRAM_RESPONSE0_OFFSET_V2 (0x2000)
-#define MSGRAM_RESPONSE1_OFFSET_V2 (0x3000)
-#define MSGRAM_LOG_OFFSET_V2       (0x4000)
-#define MSGRAM_DEBUG_OFFSET_V2     (0x8000)
-#define MSGRAM_ERROR_OFFSET_V2     (0x9000)
-#define MSGRAM_IRQ_OFFSET_V2       (0xA000)
-
 #define MSGRAM_MSG_OFFSET_V3       (0x7000) /* Base address of message */
 #define MSGRAM_REQUEST0_OFFSET_V3  (0x1000)
 #define MSGRAM_REQUEST1_OFFSET_V3  (0x1A00)
@@ -41,6 +32,7 @@
 #define MSGRAM_IRQ_OFFSET_V3       (0x8200)
 #define MSGRAM_END_REGION_V3       (0x8F00)
 #define MSGRAM_DL_OFFSET_V3        (0x8FC0)
+
 typedef struct _message_ram_table {
 	uint32_t base_offs;
 	uint32_t req0_offs;
@@ -272,6 +264,7 @@ Return value:
   -1      : device is not supported this api
   -EINVAL : priority fault
 */
+// #define EP_IRQ_RPI_SHUTDOWN_OFFSET		(0x18)
 #define EP_IRQ_NORMAL_QUE0_LOCK_OFFSET		(0x1C)
 #define EP_IRQ_NORMAL_QUE0_UNLOCK_OFFSET	(0x24)
 #define EP_IRQ_NORMAL_QUE1_LOCK_OFFSET		(0x28)
@@ -326,16 +319,7 @@ EXPORT_SYMBOL_GPL(dx_pcie_notify_req_to_device);
 static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 {
 	int ret = 0;
-	if (dw->dx_ver == 2) {
-		ep_ram_info.base_offs	= MSGRAM_MSG_OFFSET_V2;
-		ep_ram_info.req0_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST_OFFSET_V2;
-		ep_ram_info.resp0_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE0_OFFSET_V2;
-		ep_ram_info.resp1_offs	= ep_ram_info.base_offs + MSGRAM_RESPONSE1_OFFSET_V2;
-		ep_ram_info.log_offs	= ep_ram_info.base_offs + MSGRAM_LOG_OFFSET_V2;
-		ep_ram_info.debug_offs	= ep_ram_info.base_offs + MSGRAM_DEBUG_OFFSET_V2;
-		ep_ram_info.event_offs	= ep_ram_info.base_offs + MSGRAM_ERROR_OFFSET_V2;
-		ep_ram_info.irq_offs	= ep_ram_info.base_offs + MSGRAM_IRQ_OFFSET_V2;
-	} else if (dw->dx_ver == 3) {
+	if (dw->dx_ver == 3) {
 		ep_ram_info.base_offs	= MSGRAM_MSG_OFFSET_V3;
 		ep_ram_info.req0_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST0_OFFSET_V3;
 		ep_ram_info.req1_offs	= ep_ram_info.base_offs + MSGRAM_REQUEST1_OFFSET_V3;
@@ -384,6 +368,10 @@ int dx_pcie_message_init(int dev_id)
 	spin_lock_init(&dx_msg->responses_lock[1]);
 	spin_lock_init(&dx_msg->responses_lock[2]);
 	spin_lock_init(&dx_msg->event_lock);
+
+	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[0]+0x100));
+	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[1]+0x100));
+	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[2]+0x100));
 
 	/* IRQ Status Clear */
 	if (dw->nr_irqs == 1) {

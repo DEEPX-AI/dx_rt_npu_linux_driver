@@ -16,6 +16,7 @@
 void dw_edma_v0_core_off(struct dw_edma *chan);
 u16 dw_edma_v0_core_ch_count(struct dw_edma *chan, enum dw_edma_dir dir);
 enum dma_status dw_edma_v0_core_ch_status(struct dw_edma_chan *chan);
+int dw_edma_v0_core_ch_halt(struct dw_edma_chan *chan);
 void dw_edma_v0_core_clear_done_int(struct dw_edma_chan *chan);
 void dw_edma_v0_core_clear_abort_int(struct dw_edma_chan *chan);
 u32 dw_edma_v0_core_status_done_int(struct dw_edma *chan, enum dw_edma_dir dir);

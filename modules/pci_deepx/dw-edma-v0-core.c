@@ -17,6 +17,18 @@
 #include "dx_lib.h"
 #include "dx_util.h"
 
+/* Minimal anomaly diagnostics (avoid verbose normal path logging) */
+#ifndef EDMA_ANOMALY_DIAG
+#define EDMA_ANOMALY_DIAG 1
+#endif
+
+#if EDMA_ANOMALY_DIAG
+#define edma_anom_warn(fmt, ...) \
+	printk_ratelimited(KERN_WARNING pr_fmt("%s:%d: " fmt), __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define edma_anom_warn(fmt, ...) do { } while (0)
+#endif
+
 enum dw_edma_control {
 	DW_EDMA_V0_CB					= BIT(0),
 	DW_EDMA_V0_TCB					= BIT(1),
@@ -300,6 +312,53 @@ enum dma_status dw_edma_v0_core_ch_status(struct dw_edma_chan *chan)
 	}
 }
 
+#define EDMA_ENGINE_HALT_TIMEOUT_US 	(10000) // 10ms
+int dw_edma_v0_core_ch_halt(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+	unsigned long timeout_us;
+	int ret = 0;
+	u32 ch_status = 1;
+
+	dbg_core("Channel %s is stuck. Starting global flush sequence.\n",
+		 dma_chan_name(&chan->vc.chan));
+
+	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_DIS);
+	timeout_us = EDMA_ENGINE_HALT_TIMEOUT_US;
+	while (timeout_us > 0) {
+		ch_status = GET_RW_32(dw, chan->dir, engine_en);
+		if (ch_status == EDMA_ENG_DIS) {
+			dbg_core("[%s] Channel %s %s\n",
+			 __func__, dma_chan_name(&chan->vc.chan), 
+			 ch_status ? "enabled" : "disabled");
+			goto cleanup;
+		}
+		usleep_range(10, 20);
+		timeout_us -= 10;
+	}
+
+	dev_err(chan->vc.chan.device->dev, "FATAL: Channel %s did not stop even after engine disable!\n",
+		dma_chan_name(&chan->vc.chan));
+	ret = -ETIMEDOUT;
+	goto re_enable_engine;
+
+cleanup:
+	ch_status = GET_RW_32(dw, chan->dir, engine_en);
+	dbg_core("[%s] Clearing residual status.\n",
+		 __func__, dma_chan_name(&chan->vc.chan));
+	dw_edma_v0_core_clear_done_int(chan);
+	dw_edma_v0_core_clear_abort_int(chan);
+
+re_enable_engine:
+	SET_RW_32(dw, chan->dir, engine_en, 1);
+	dbg_core("[%s] Channel %s %s\n",
+		__func__, dma_chan_name(&chan->vc.chan), 
+		GET_RW_32(dw, chan->dir, engine_en) ? "enabled" : "disabled");
+
+	return ret;
+}
+
+
 void dw_edma_v0_core_clear_done_int(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
@@ -413,6 +472,76 @@ static void dw_edma_v0_gen_llp(struct dw_edma_v0_llp __iomem *llp,
 	#endif /* DUMP_DESC_TABLE */
 }
 
+static void dw_edma_v0_core_wait_channel_idle(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+	uint32_t ch_control;
+	unsigned long start_jiffies;
+	unsigned long timeout_jiffies;
+	int retry_count;
+	bool status_changed;
+	unsigned long elapsed_jiffies;
+	unsigned int elapsed_msecs;
+	u32 int_status, done_status, abort_status;
+
+	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+	if ((ch_control & (BIT(5) | BIT(6))) == BIT(5)) {
+		dbg_tfr("Channel %d is busy[%llx, %llx]\n", chan->id,
+			GET_CH_32(dw, chan->dir, chan->id, sar.lsb) |
+			((u64)GET_CH_32(dw, chan->dir, chan->id, sar.msb) << 32),
+			GET_CH_32(dw, chan->dir, chan->id, dar.lsb) |
+			((u64)GET_CH_32(dw, chan->dir, chan->id, dar.msb) << 32));
+
+		/* Start monitoring busy channel for status change */
+		start_jiffies = jiffies;
+		timeout_jiffies = start_jiffies + usecs_to_jiffies(5000); /* 5s timeout (5000 us) */
+		retry_count = 0;
+		status_changed = false;
+
+		/* Poll until status changes to "11" (both bits set) or timeout */
+		while (time_before(jiffies, timeout_jiffies)) {
+			retry_count++;
+			ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+
+			if ((ch_control & (BIT(5) | BIT(6))) == (BIT(5) | BIT(6))) {
+				status_changed = true;
+				break;
+			}
+			/* Don't burn CPU - yield and wait a bit */
+			if (retry_count % 20 == 0)
+				cond_resched();
+			udelay(10);
+		}
+
+		/* Report results in microseconds */
+		{
+			unsigned int elapsed_usecs;
+			elapsed_jiffies = jiffies - start_jiffies;
+			elapsed_usecs = jiffies_to_usecs(elapsed_jiffies);
+
+			if (status_changed) {
+				dbg_tfr("CH%d status changed to 0x%x after %u ms (%d retries)\n", 
+						chan->id, ch_control, elapsed_msecs, retry_count);
+			} else {
+				pr_warn("CH%d status still busy (0x%x) after %u ms (%d retries)\n", 
+						chan->id, ch_control, elapsed_msecs, retry_count);
+
+				/* Check interrupt status to see if it was triggered */
+				int_status = GET_RW_32(dw, chan->dir, int_status);
+				done_status = FIELD_GET(EDMA_V0_DONE_INT_MASK, int_status);
+				abort_status = FIELD_GET(EDMA_V0_ABORT_INT_MASK, int_status);
+				
+				pr_warn("CH%d interrupt status: done=0x%lx abort=0x%lx\n",
+						chan->id, (unsigned long)(done_status & BIT(chan->id)), 
+						(unsigned long)(abort_status & BIT(chan->id)));
+				/* Force channel reset as a recovery measure */
+				pr_warn("Forcing CH%d reset due to stuck status\n", chan->id);
+				SET_CH_32(dw, chan->dir, chan->id, ch_control1, 0x0);
+			}
+		}
+	}
+}
+
 static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, int dma_n, int ch_n)
 {
 	struct dw_edma_burst *child, *curr, *next, *ptr;
@@ -420,8 +549,20 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 	struct dw_edma_v0_llp __iomem *llp;
 	u32 i = 0;
 	int j = 0;
+	int orig_bursts;
+	u32 last_ctrl = 0;
+	bool last_ctrl_checked = false;
+
+	if (unlikely(!chunk->ll_region.vaddr)) {
+		pr_err("[edma] ch%d dev%d dma%d NULL ll_region.vaddr\n", chunk->chan->id, dev_n, dma_n);
+	}
+	if (unlikely(!chunk->burst || list_empty(&chunk->burst->list))) {
+		pr_err("[edma] ch%d dev%d dma%d empty burst list\n", chunk->chan->id, dev_n, dma_n);
+	}
 
 	dx_pcie_start_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
+
+	orig_bursts = chunk->bursts_alloc;
 
 	ptr = list_first_entry(&chunk->burst->list, struct dw_edma_burst, list);
 	list_for_each_entry_safe(curr, next,&chunk->burst->list, list) {
@@ -446,14 +587,31 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 
 	lli = chunk->ll_region.vaddr;
 	j = chunk->bursts_alloc;
+	if (unlikely(j <= 0)) {
+		pr_err("[edma] ch%d merge produced zero bursts (orig=%d)\n", chunk->chan->id, orig_bursts);
+	}
+
 	list_for_each_entry(child, &chunk->burst->list, list) {
 		j--;
 		dw_edma_v0_gen_lli(lli, chunk, child, ch_n, i, j);
+		if (j == 0) { /* last element just written */
+			/* Read back control field to ensure LIE/RIE bits present for completion interrupt */
+			last_ctrl = readl(&lli[i].control);
+			last_ctrl_checked = true;
+		}
 		i++;
 	}
 
 	llp = (void __iomem *)&lli[i];
 	dw_edma_v0_gen_llp(llp, chunk);
+
+	if (last_ctrl_checked) {
+		if (!(last_ctrl & (DW_EDMA_V0_LIE | DW_EDMA_V0_RIE)))
+			pr_err("[edma] ch%d last desc missing LIE/RIE ctrl=0x%x desc_cnt=%u\n", chunk->chan->id, last_ctrl, i);
+	}
+	if (i == 0)
+		pr_err("[edma] ch%d no descriptors written (orig=%d)\n", chunk->chan->id, orig_bursts);
+
 	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
 }
 
@@ -462,28 +620,10 @@ void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_des
 	struct dw_edma_chan *chan = chunk->chan;
 	struct dw_edma *dw = chan->chip->dw;
 	u32 tmp;
-	// u32 lie_sts;
 
-	if (set_desc) {
-		dbg_tfr("Description table settings are needed(%s), dir:%s\n",
-			dma_chan_name(&chan->vc.chan), 
-			(chan->dir == EDMA_DIR_WRITE) ? "DMA_W":"DMA_R");
-		if (is_llm)
-			dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
-	}
-	/* Notify lie status to firmware - will be modifed */
-	{
-		// if ((chunk->chan->dir == EDMA_DIR_READ) && (chan->en_lie)) {
-		// 	lie_sts = GET_NPU0_SW(dw, chan->id);
-		// 	if ((lie_sts == DX_LIE_STS_IDLE) || (lie_sts == DX_LIE_STS_RUNN)) {
-		// 		if (chunk->bursts_alloc == chunk->chan->ll_max)
-		// 			SET_NPU0_SW(dw, chan->id, DX_LIE_STS_RUNN);
-		// 		else
-		// 			SET_NPU0_SW(dw, chan->id, DX_LIE_STS_DONE);
-		// 	} else {
-		// 		pr_err("[ERR] Lie status is not considered (%d)", lie_sts);
-		// 	}
-		// }
+	dw_edma_v0_core_wait_channel_idle(chan);
+	if (is_llm) {
+		dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
 	}
 
 	if (first) {

@@ -1,4 +1,16 @@
 # RELEASE_NOTES
+## v1.8.0 / 2025-09-12
+
+### 1. Changed
+- Support version suffix
+- Allow to access model profiling region (npu_dma_addr - 0x100000)
+
+### 2. Fixed
+
+### 3. Added
+- Support single MSI probe
+- Support safe link-up on RaspberryPI5
+
 ## v1.7.1 / 2025-07-16
 ### 1. Changed
 ### 2. Fixed

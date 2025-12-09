@@ -41,6 +41,9 @@ MODULE_PARM_DESC(timeout, "Transfer timeout in msec");
 
 static struct dw_edma_info test_info[MAX_DEV_NUM][EDMA_MAX_WR_CH][EDMA_CH_END];
 
+/* Global mutex to prevent concurrent channel allocation */
+static DEFINE_MUTEX(dma_allocation_mutex);
+
 static void dw_edma_callback(void *arg)
 {
 	struct dw_edma_info *info = arg;
@@ -51,19 +54,6 @@ static void dw_edma_callback(void *arg)
 	info->dma_done.done = true;
 	wake_up_interruptible(info->dma_done.wait);
 }
-#if 1
-static bool dw_edma_check_desc_table_set(struct dw_edma_info *info, ssize_t host_addr, ssize_t ep_addr, ssize_t size)
-{
-	bool ret = true;
-	if ((info->host_buf_addr == host_addr) &&
-		(info->ep_buf_addr == ep_addr) &&
-		(info->size == size) &&
-		(size < 174756*1024)) { /* TODO - remove hard fixed condition*/
-		ret = false;
-	}
-	return ret;
-}
-#endif
 
 static int dw_edma_sg_process(struct dw_edma_info *info,
 				    struct dma_chan *chan)
@@ -91,6 +81,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #ifdef DMA_PERF_MEASURE
 	ktime_t dma_trans_t;
 #endif
+	long ret;
 
 	dbg_tfr("[%s] Start!!\n", __func__);
 
@@ -147,11 +138,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sconf.src_addr = cb->ep_addr;
 		/* CPU memory */
 		sconf.dst_addr = sg_dma_address(sg);
-#ifdef SRAM_DESC_TABLE
 		dw_chan->set_desc = true;
-#else
-		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.dst_addr, sconf.src_addr, cb->len);
-#endif
 	} else {
 		/* DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE */
 		dbg_tfr("%s: DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE\n",
@@ -167,11 +154,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		/* Endpoint memory */
 		sconf.dst_addr = cb->ep_addr;
 		// sconf.dst_addr = dt_region->paddr;
-#ifdef SRAM_DESC_TABLE
 		dw_chan->set_desc = true;
-#else
-		dw_chan->set_desc = dw_edma_check_desc_table_set(info, sconf.src_addr, sconf.dst_addr, cb->len);
-#endif
 	}
 	if (sgt->nents == 1) {
 		cb->is_llm = false;
@@ -228,7 +211,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sched_set_fifo(current);
 #endif
 
-	wait_event_interruptible_timeout(info->done_wait,
+	ret = wait_event_interruptible_timeout(info->done_wait,
 		done->done,
 		msecs_to_jiffies(timeout));
 
@@ -246,7 +229,15 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
-	if (!done->done) {
+	if (ret == -ERESTARTSYS) {
+		dbg_tfr("%s: transfer interrupted by signal\n", dma_chan_name(chan));
+		if (dmaengine_terminate_all(chan) != 0) {
+			dev_err(dev, "%s: dmaengine_terminate_all fail\n", dma_chan_name(chan));
+			cb->result = -EIO;
+		} else {
+			cb->result = 0;
+		}
+	} else if (!done->done) {
 		f_tm_cnt++;
 		dmaengine_terminate_all(chan);
 		cb->result = -ETIMEDOUT;
@@ -288,57 +279,92 @@ err_alloc_descs:
 	return cb->result; // Return 0 on success, negative error code on failure
 }
 
-static bool dw_edma_ch_filter(struct dma_chan *chan, void *filter)
+/* Optimized channel lookup with device ID pre-check */
+static bool dw_edma_ch_filter_optimized(struct dma_chan *chan, void *filter_data)
 {
-	dbg_tfr("Fitler for DMA Channel ID:%d(filter:%s, name:%s)\n",
-		chan->device->dev_id, (char *)filter, dma_chan_name(chan));
-	if (strcmp(dma_chan_name(chan), filter))
+	struct {
+		int expected_dev_id;
+		int expected_npu_id;
+		char expected_name[32];
+	} *filter_info = filter_data;
+
+	/* Quick device ID check first */
+	if (chan->device->dev_id != filter_info->expected_dev_id) {
 		return false;
-	return true;
+	}
+
+	/* Then name comparison */
+	if (strcmp(dma_chan_name(chan), filter_info->expected_name) == 0) {
+		dbg_tfr("DMA channel match found: %s (dev_id: %d)\n", 
+			dma_chan_name(chan), chan->device->dev_id);
+		return true;
+	}
+	return false;
 }
 
 int dw_edma_dma_allocation(int dma_ch_id, int npu_id, struct dma_chan **_chan)
 {
 	dma_cap_mask_t mask;
-	char filter[20];
+	struct {
+		int expected_dev_id;
+		int expected_npu_id;
+		char expected_name[32];
+	} filter_info;
+	int ret = 0;
 
 #ifndef CONFIG_CMA_SIZE_MBYTES
 	dbg_tfr("CMA not present/activated! Contiguous Memory may fail to be allocated\n");
 #endif
+	/* Validate NPU ID range - only 0~3 are supported */
+	if (npu_id >= 4) {
+		pr_err("Invalid NPU ID: %d (only 0~3 supported)\n", npu_id);
+		return -EINVAL;
+	}
 
-	dma_cap_zero(mask);
-	dma_cap_set(DMA_SLAVE, mask);      /*Scatter Gather Mode*/
-	dma_cap_set(DMA_CYCLIC, mask);     /*Cyclic Mode*/
-	dma_cap_set(DMA_PRIVATE, mask);
-	dma_cap_set(DMA_INTERLEAVE, mask);
+	/* Protect concurrent allocation attempts with mutex */
+	mutex_lock(&dma_allocation_mutex);
 
 	/* Search dma channel */
-	dbg_tfr("chan pointer : 0x%p\n", (*_chan));
+	dbg_tfr("[DMA_ALLOC] dma%dchan%d allocation request\n", dma_ch_id, npu_id);
+
 	if (!(*_chan)) {
-		snprintf(filter, sizeof(filter),
+		dma_cap_zero(mask);
+		dma_cap_set(DMA_SLAVE, mask);      /*Scatter Gather Mode*/
+		dma_cap_set(DMA_CYCLIC, mask);     /*Cyclic Mode*/
+		dma_cap_set(DMA_PRIVATE, mask);
+		dma_cap_set(DMA_INTERLEAVE, mask);
+
+		/* Try optimized filter first */
+		filter_info.expected_dev_id = dma_ch_id;
+		filter_info.expected_npu_id = npu_id;
+		snprintf(filter_info.expected_name, sizeof(filter_info.expected_name),
 			EDMA_CHANNEL_NAME, dma_ch_id, npu_id);
-		(*_chan) = dma_request_channel(mask, dw_edma_ch_filter,
-					filter);
-		if (!(*_chan)) {
-			return -ENODEV;
+
+		(*_chan) = dma_request_channel(mask, dw_edma_ch_filter_optimized,
+					&filter_info);
+		if (*_chan) {
+			dbg_tfr("[DMA_ALLOC] SUCCESS: dma%dchan%d allocated\n", dma_ch_id, npu_id);
+		} else {
+			pr_err("[DMA_ALLOC] FAILED: dma%dchan%d not found\n", dma_ch_id, npu_id);
+			ret = -ENODEV;
 		}
-		dbg_tfr("[DMA] Request dma channel!! (chan:%p, id:%d, name:%s)\n",
-				(*_chan), (*_chan)->device->dev_id, dma_chan_name((*_chan)));
-	} else {
-		dbg_tfr("[DMA] Dma channel is already allocated (chan:%p, name:%s)\n",
-			(*_chan), dma_chan_name((*_chan)));
 	}
-	return 0;
+
+	mutex_unlock(&dma_allocation_mutex);
+	return ret;
 }
 
 void dw_edma_dma_deallocation(struct dma_chan **_chan)
 {
+	mutex_lock(&dma_allocation_mutex);
+
 	if ((*_chan) != NULL && (*_chan)->client_count > 0) {
-		dbg_tfr("[DMA] Release dma channel!! (chan:%p, name:%s, ref_c:%d)\n",
-			(*_chan), dma_chan_name((*_chan)), (*_chan)->client_count);
 		dma_release_channel((*_chan));
 		(*_chan) = NULL;
+		dbg_tfr("DMA channel released\n");
 	}
+
+	mutex_unlock(&dma_allocation_mutex);
 }
 
 int dw_edma_run(struct dx_dma_io_cb * cb, struct dma_chan *dma_ch, int dev_n, int ch)
