@@ -25,6 +25,41 @@
 #define EDMA_V0_CH_ODD_MSI_DATA_MASK			GENMASK(31, 16)
 #define EDMA_V0_CH_EVEN_MSI_DATA_MASK			GENMASK(15, 0)
 
+#define DMA_POLL_TIMEOUT_US		1000000  /* 1s */
+
+typedef union _DMA_CH_CONTROL1_OFF_t
+{
+    unsigned int U;  /* Register-Access */
+    struct {                  /* Register-Bitfields-Access */
+        unsigned int CB:1;
+        unsigned int TCB:1;
+        unsigned int LLP:1;
+        unsigned int LIE:1;
+        unsigned int RIE:1;
+        unsigned int CS:2;
+        unsigned int DMA_RESERVED0_7:1;
+        unsigned int CCS:1;
+        unsigned int LLE:1;
+        unsigned int DMA_RESERVED1_10:2;
+        unsigned int DMA_FUNC_NUM:5;
+        unsigned int DMA_ELEMENT_PREFETCH:5;
+        unsigned int DMA_MEM_TYPE:1;
+        unsigned int DMA_NS_DST:1;
+        unsigned int DMA_NS_SRC:1;
+        unsigned int DMA_RO:1;
+        unsigned int DMA_RESERVED5_26:1;
+        unsigned int DMA_TC:3;
+        unsigned int DMA_AT:2;
+    };
+} DMA_CH_CONTROL1_OFF_t;
+
+typedef enum _DmaState {
+    DMA_RSVRD = 0,
+    DMA_RUN = 1,
+    DMA_ERR = 2,
+    DMA_STOP = 3
+} DmaState;
+
 struct dw_edma_v0_ch_regs {
 	u32 ch_control1;				/* 0x0000 */
 	u32 ch_control2;				/* 0x0004 */

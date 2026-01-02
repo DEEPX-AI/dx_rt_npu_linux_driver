@@ -19,6 +19,10 @@ else ifeq ($(BUILD_DEFAULT_DBG), debugfs)
 ccflags-y += -DDX_DEBUG_FS
 else ifeq ($(BUILD_DEFAULT_DBG), dump_desc)
 ccflags-y += -DDUMP_DESC_TABLE
+else ifeq ($(BUILD_DEFAULT_DBG), test)
+ccflags-y += -DDMA_PERF_MEASURE
+ccflags-y += -DDX_DEBUG_FS
+ccflags-y += -DDX_DMA_TEST
 else ifeq ($(BUILD_DEFAULT_DBG), all)
 ccflags-y += -DDX_DEBUG_ENABLE
 ccflags-y += -DDX_DEBUG_FS
