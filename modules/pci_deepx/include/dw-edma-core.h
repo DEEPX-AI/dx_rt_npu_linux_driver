@@ -72,15 +72,15 @@ enum dw_iatu_inb_usage {
 	IATU_INB_MAX       = 4
 };
 
+enum dw_edma_ch_id {
+	EDMA_CH_ID_0 = 0,
+	EDMA_CH_ID_1,
+	EDMA_CH_ID_2,
+	EDMA_CH_ID_3,
+};
+
 struct dw_edma_chan;
 struct dw_edma_chunk;
-
-struct dw_edma_burst {
-	struct list_head		list;
-	u64				sar;
-	u64				dar;
-	u32				sz;
-};
 
 struct dx_edma_region {
 	phys_addr_t			paddr;
@@ -105,6 +105,14 @@ struct dx_user_region {
 	u32					bar_num;
 };
 
+struct dw_edma_burst {
+	struct list_head		list;
+	u64				sar;
+	u64				dar;
+	u32				sz;
+	bool			from_pool;
+};
+
 struct dw_edma_chunk {
 	struct list_head		list;
 	struct dw_edma_chan		*chan;
@@ -113,6 +121,9 @@ struct dw_edma_chunk {
 	u32						bursts_alloc;
 	u8						cb;
 	struct dx_edma_region	ll_region;	/* Linked list */
+	struct dx_edma_region	host_region;	/* Host memory for Linked list */
+	bool					from_pool;
+	bool					is_buddy;
 };
 
 struct dw_edma_desc {
@@ -124,7 +135,19 @@ struct dw_edma_desc {
 
 	u32						alloc_sz;
 	u32						xfer_sz;
+	bool					from_pool;
 };
+
+/*
+ * Global Shared Memory Pool Configuration
+ * - DESC:  Max concurrent transfers across all channels
+ * - CHUNK: Total pre-allocated DMA buffers (8 * 1MB = 8MB CMA)
+ * - BURST: Total pre-allocated burst structures (~8MB data transfer capacity)
+ */
+#define EDMA_GLOBAL_DESC_POOL_SIZE		2
+#define EDMA_GLOBAL_CHUNK_POOL_SIZE		8
+#define EDMA_GLOBAL_BURST_POOL_SIZE		(43689 * 8)
+#define EDMA_CHUNK_SIZE					(1024 * 1024) /* 1MB */
 
 struct dw_edma_chan {
 	struct virt_dma_chan	vc;
@@ -170,6 +193,11 @@ struct dx_edma_irq {
 	struct dx_dma_user_irq	user_irqs[USER_IRQ_NUMS];	/* user IRQ management for one interrupt */
 };
 
+struct dma_chan_lock {
+	spinlock_t ch_lock;
+	bool       ch_in_use;
+};
+
 struct dx_edma_core_ops {
 	int	(*irq_vector)(struct device *dev, unsigned int nr);
 };
@@ -194,6 +222,21 @@ struct dw_edma {
 	struct dx_edma_region		dt_region_wr[EDMA_MAX_WR_CH]; /* not used */
 	struct dx_edma_region		dt_region_rd[EDMA_MAX_RD_CH]; /* not used */
 
+	/* Global Shared Memory Pools */
+	struct dw_edma_desc		*desc_pool;
+	int						*desc_free_list;
+	int						desc_free_cnt;
+
+	struct dw_edma_chunk	*chunk_pool;
+	int						*chunk_free_list;
+	int						chunk_free_cnt;
+
+	struct dw_edma_burst	*burst_pool;
+	int						*burst_free_list;
+	int						burst_free_cnt;
+
+	spinlock_t				pool_lock; /* Protects all global pools */
+
 	u16							dx_ver;			/* DXNN Version */
 	u16							user_bar_cnt;
 	struct dx_user_region		npu_region[USER_NUM_MAX];
@@ -216,7 +259,9 @@ struct dw_edma {
 	int							rd_dma_id;	/* host - read  : DMA_WR */
 	int							wr_dma_id;	/* host - write : DMA_RD */
 	struct dma_chan 			*rd_dma_chan[EDMA_MAX_RD_CH];	/* DMA_READ */
+	struct dma_chan_lock        rd_dma_chan_locks[EDMA_MAX_RD_CH];
 	struct dma_chan 			*wr_dma_chan[EDMA_MAX_WR_CH];	/* DMA_WRITE */
+	struct dma_chan_lock        wr_dma_chan_locks[EDMA_MAX_WR_CH];
 	bool 						init_completed;
 	int 						ref_count;	/* external module reference count */
 
@@ -275,6 +320,7 @@ struct dw_edma_chan *dchan2dw_edma_chan(struct dma_chan *dchan)
 	return vc2dw_edma_chan(to_virt_chan(dchan));
 }
 
+void dw_edma_free_single_burst(struct dw_edma_chan *chan, struct dw_edma_burst *burst);
 int dx_dma_probe(struct dw_edma_chip *chip);
 int dx_dma_remove(struct dw_edma_chip *chip);
 

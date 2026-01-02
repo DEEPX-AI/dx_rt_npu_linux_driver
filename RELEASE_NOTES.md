@@ -1,4 +1,15 @@
 # RELEASE_NOTES
+## v2.0.0 / 2025-12-23
+
+### 1. Changed
+- Optimized PCIe DMA performance by reducing jobs that are dependent to CPU.
+- Should be used above DX-RT SDK v3.2.1 for stability
+- [V3] add req-id initialization
+
+### 2. Fixed
+
+### 3. Added
+
 ## v1.8.0 / 2025-09-12
 
 ### 1. Changed

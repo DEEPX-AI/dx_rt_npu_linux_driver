@@ -344,7 +344,7 @@ int dw_edma_v0_core_ch_halt(struct dw_edma_chan *chan)
 
 cleanup:
 	ch_status = GET_RW_32(dw, chan->dir, engine_en);
-	dbg_core("[%s] Clearing residual status.\n",
+	dbg_core("[%s][%s] Clearing residual status.\n",
 		 __func__, dma_chan_name(&chan->vc.chan));
 	dw_edma_v0_core_clear_done_int(chan);
 	dw_edma_v0_core_clear_abort_int(chan);
@@ -421,10 +421,10 @@ static void dw_edma_v0_gen_lli(struct dw_edma_v0_lli __iomem *lli,
 	#endif /* CONFIG_64BIT */
 
 	#ifdef DUMP_DESC_TABLE
-	if ((idx < 5) || (remain < 5)) {
-		pr_err("%s,[DESC_#%u CH:%d] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%08x, dar:0x%x%08x, Off:0x%x\n",
+	if ((idx < 1) || (remain < 3)) {
+		pr_err("[%s][%d][LLI_%u] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, size:0x%x, sar:0x%x%08x, dar:0x%x%08x, Off:0x%x\n",
 			(ch_n == EDMA_DIR_WRITE) ? "W" : "R", 
-			idx, chunk->chan->id,
+			chunk->chan->id, idx,
 			(control & DW_EDMA_V0_CB)  ? 1:0,
 			(control & DW_EDMA_V0_TCB) ? 1:0,
 			(control & DW_EDMA_V0_LLP) ? 1:0,
@@ -459,7 +459,7 @@ static void dw_edma_v0_gen_llp(struct dw_edma_v0_llp __iomem *llp,
 	#endif /* CONFIG_64BIT */
 
 	#ifdef DUMP_DESC_TABLE
-		pr_err("[DESC_LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%x\n",
+		pr_err("[LLP] CB:%d,TCB:%d,LLP:%d,LIE:%d,RIE:%d,CCS:%d,LLE:%d, ll_region:0x%x%08x\n",
 			(control & DW_EDMA_V0_CB)  ? 1:0,
 			(control & DW_EDMA_V0_TCB) ? 1:0,
 			(control & DW_EDMA_V0_LLP) ? 1:0,
@@ -542,6 +542,28 @@ static void dw_edma_v0_core_wait_channel_idle(struct dw_edma_chan *chan)
 	}
 }
 
+static int wait_for_dma_channel_idle(struct dw_edma *dw, int channel, bool is_write)
+{
+	enum dw_edma_dir dir = is_write ? EDMA_DIR_READ : EDMA_DIR_WRITE;
+	DMA_CH_CONTROL1_OFF_t ctrl1;
+	int timeout = DMA_POLL_TIMEOUT_US;
+	int elapsed = 0;
+
+	while (elapsed < timeout) {
+		ctrl1.U = GET_CH_32(dw, dir, channel, ch_control1);
+		
+		/* CS (Channel Status): DMA_ERR or DMA_STOP means idle */
+		if (ctrl1.CS == DMA_ERR || ctrl1.CS == DMA_STOP)
+			return 0;
+
+		elapsed++;
+	}
+
+	pr_err("Channel %d (%s) not idle after %dms (CS=%d)\n",
+	       channel, is_write ? "R" : "W", DMA_POLL_TIMEOUT_US, ctrl1.CS);
+	return -ETIMEDOUT;
+}
+
 static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, int dma_n, int ch_n)
 {
 	struct dw_edma_burst *child, *curr, *next, *ptr;
@@ -560,7 +582,7 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		pr_err("[edma] ch%d dev%d dma%d empty burst list\n", chunk->chan->id, dev_n, dma_n);
 	}
 
-	dx_pcie_start_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
+	dx_pcie_start_profile(PCIE_DESC_GEN_T, 0, dev_n, dma_n, ch_n);
 
 	orig_bursts = chunk->bursts_alloc;
 
@@ -578,14 +600,14 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 		if(contd) {
 			ptr->sz += curr->sz;
 			list_del(&curr->list);
-			kfree(curr);
+			dw_edma_free_single_burst(chunk->chan, curr);
 			chunk->bursts_alloc--;
 		} else {
 			ptr = curr;
 		}
 	}
 
-	lli = chunk->ll_region.vaddr;
+	lli = chunk->host_region.vaddr;
 	j = chunk->bursts_alloc;
 	if (unlikely(j <= 0)) {
 		pr_err("[edma] ch%d merge produced zero bursts (orig=%d)\n", chunk->chan->id, orig_bursts);
@@ -612,116 +634,281 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk, int dev_n, 
 	if (i == 0)
 		pr_err("[edma] ch%d no descriptors written (orig=%d)\n", chunk->chan->id, orig_bursts);
 
-	dx_pcie_end_profile(PCIE_DESC_SEND_T, 0, dev_n, dma_n, ch_n);
+	dx_pcie_end_profile(PCIE_DESC_GEN_T, 0, dev_n, dma_n, ch_n);
+}
+
+static void dw_edma_v0_xfer_llm(struct dw_edma_chunk *chunk)
+{
+	struct dw_edma_chan *chan = chunk->chan;
+	struct dw_edma *dw = chan->chip->dw;
+	u32 tmp;
+	u32 ch_control1;
+
+	tmp = GET_RW_32(dw, chan->dir, int_mask);
+	tmp &= ~FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id));
+	tmp &= ~FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id));
+	SET_RW_32(dw, chan->dir, int_mask, tmp);
+	
+	/* Channel control */
+	ch_control1 = DW_EDMA_V0_LLE;
+	if (chunk->cb)
+		ch_control1 |= DW_EDMA_V0_CCS;
+
+	SET_CH_32(dw, chan->dir, chan->id, ch_control1, ch_control1);
+	/* Linked list */
+	SET_CH_32(dw, chan->dir, chan->id, llp.lsb,
+		lower_32_bits(chunk->ll_region.paddr));
+	SET_CH_32(dw, chan->dir, chan->id, llp.msb,
+		upper_32_bits(chunk->ll_region.paddr));
+
+	dbg_tfr("[LLM:%s] dir:%d llp:0x%x%08x sar:0x%x%08x, dar:0x%x%08x\n",
+		dma_chan_name(&chan->vc.chan), chan->dir,
+		GET_CH_32(dw, chan->dir, chan->id, llp.msb),
+		GET_CH_32(dw, chan->dir, chan->id, llp.lsb),
+		GET_CH_32(dw, chan->dir, chan->id, sar.msb),
+		GET_CH_32(dw, chan->dir, chan->id, sar.lsb),
+		GET_CH_32(dw, chan->dir, chan->id, dar.msb),
+		GET_CH_32(dw, chan->dir, chan->id, dar.lsb));
+	
+	/* Doorbell */
+	SET_RW_32(dw, chan->dir, doorbell,
+		FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, chan->id));
+}
+
+static int dx_dma_polling_wait(struct dw_edma *dw, int channel, enum dw_edma_dir dir)
+{
+	DMA_CH_CONTROL1_OFF_t ctrl1;
+	u32 xfer_size;
+	int elapsed = 0;
+	int max_wait = DMA_POLL_TIMEOUT_US;
+
+	while (elapsed < max_wait) {
+		ctrl1.U = GET_CH_32(dw, dir, channel, ch_control1);
+		xfer_size = GET_CH_32(dw, dir, channel, transfer_size);
+
+		if (ctrl1.CS == DMA_STOP && xfer_size == 0) {
+			dbg_tfr("[%s][%d] Done (%d us)\n",
+				(dir == EDMA_DIR_WRITE) ? "W" : "R", channel, elapsed);
+			return 0;
+		}
+
+		if (ctrl1.CS == DMA_ERR && xfer_size != 0) {
+			dbg_tfr("[%s][%d] Error: CS=%d, size=%u\n",
+				(dir == EDMA_DIR_WRITE) ? "W" : "R", channel, ctrl1.CS, xfer_size);
+			return -EIO;
+		}
+
+		elapsed++;
+	}
+
+	pr_err("[%s][%d] CS=%d size=%u Timeout (%d ms) \n",
+		(dir == EDMA_DIR_WRITE) ? "W" : "R", channel, ctrl1.CS, xfer_size, max_wait);
+	return -ETIMEDOUT;
+}
+
+static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
+{
+	struct dw_edma_chan *chan = chunk->chan;
+	struct dw_edma *dw = chan->chip->dw;
+	DMA_CH_CONTROL1_OFF_t ctrl1;
+	int ret = 0;
+	int channel = -1;
+	unsigned long flags;
+	bool use_dedicated = false;
+	struct dma_chan_lock *target_lock = NULL;
+
+    /* Round-Robin Toggle for Load Balancing */
+    static atomic_t rr_toggle = ATOMIC_INIT(0);
+    int first_ch, second_ch;
+
+    /* Try Channel 3 first */
+    if (chan->dir == EDMA_DIR_WRITE) {
+        /* Toggle priority: Odd->(3,2), Even->(2,3) */
+        if (atomic_inc_return(&rr_toggle) & 1) {
+            first_ch = EDMA_CH_ID_3;
+            second_ch = EDMA_CH_ID_2;
+        } else {
+            first_ch = EDMA_CH_ID_2;
+            second_ch = EDMA_CH_ID_3;
+        }
+
+        while (!use_dedicated) {
+            target_lock = &dw->rd_dma_chan_locks[first_ch];
+            if (!target_lock->ch_in_use && spin_trylock_irqsave(&target_lock->ch_lock, flags)) {
+                target_lock->ch_in_use = true;
+                use_dedicated = true;
+                channel = first_ch;
+                spin_unlock_irqrestore(&target_lock->ch_lock, flags);
+                break;
+            }
+            target_lock = &dw->rd_dma_chan_locks[second_ch];
+            if (!target_lock->ch_in_use && spin_trylock_irqsave(&target_lock->ch_lock, flags)) {
+                target_lock->ch_in_use = true;
+                use_dedicated = true;
+                channel = second_ch;
+                spin_unlock_irqrestore(&target_lock->ch_lock, flags);
+                break;
+            }
+        }
+    }
+
+	if (!use_dedicated) {
+		ret = wait_for_dma_channel_idle(dw, chan->id, EDMA_DIR_READ);
+		if (ret != 0) {
+			pr_err("[R][%d] Channel not idle\n", chan->id);
+			return ret;
+		}
+		channel = chan->id;
+	}
+
+	ctrl1.U = 0;
+	SET_CH_32(dw, EDMA_DIR_READ, channel, ch_control1, ctrl1.U);
+	SET_CH_32(dw, EDMA_DIR_READ, channel, ch_control2, 0);
+	
+	SET_CH_32(dw, EDMA_DIR_READ, channel, transfer_size,
+			(chunk->bursts_alloc + 1) * EDMA_LL_SZ);
+
+	SET_CH_32(dw, EDMA_DIR_READ, channel, sar.lsb,
+			lower_32_bits(chunk->host_region.paddr));
+	SET_CH_32(dw, EDMA_DIR_READ, channel, sar.msb,
+			upper_32_bits(chunk->host_region.paddr));
+	SET_CH_32(dw, EDMA_DIR_READ, channel, dar.lsb,
+			lower_32_bits(chunk->ll_region.paddr));
+	SET_CH_32(dw, EDMA_DIR_READ, channel, dar.msb,
+			upper_32_bits(chunk->ll_region.paddr));
+	
+	dbg_tfr(">> [R][%d] > [%s][%d]", channel,
+			(chan->dir== EDMA_DIR_WRITE) ? "W" : "R", chan->id);
+	dbg_tfr("[NON-LLM:%d] sz:0x%x sar:0x%x%08x dar:0x%x%08x\n",
+		channel,
+		(chunk->bursts_alloc + 1) * EDMA_LL_SZ,
+		GET_CH_32(dw, EDMA_DIR_READ, channel, sar.msb),
+		GET_CH_32(dw, EDMA_DIR_READ, channel, sar.lsb),
+		GET_CH_32(dw, EDMA_DIR_READ, channel, dar.msb),
+		GET_CH_32(dw, EDMA_DIR_READ, channel, dar.lsb));
+
+	SET_RW_32(dw, EDMA_DIR_READ, doorbell,
+		FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, channel));
+
+	ret = dx_dma_polling_wait(dw, channel, EDMA_DIR_READ);
+	if (ret) {
+		pr_err("[R][%d] LLM desc xfer fail\n", channel);
+	}
+
+	if (use_dedicated) {
+		target_lock = &dw->rd_dma_chan_locks[channel];
+		spin_lock_irqsave(&target_lock->ch_lock, flags);
+		target_lock->ch_in_use = false;
+		spin_unlock_irqrestore(&target_lock->ch_lock, flags);
+	}
+
+	return ret;
+}
+
+static void dw_edma_v0_xfer_llm_not(struct dw_edma_chunk *chunk)
+{
+	struct dw_edma_chan *chan = chunk->chan;
+	struct dw_edma *dw = chan->chip->dw;
+	struct list_head *f = chunk->burst->list.next;
+	struct dw_edma_burst *child = list_entry(f, struct dw_edma_burst, list);
+	/* Channel control & size */
+	SET_CH_32(dw, chan->dir, chan->id, ch_control1,
+		(DW_EDMA_V0_RIE | DW_EDMA_V0_LIE));
+	SET_CH_32(dw, chan->dir, chan->id, transfer_size, child->sz);
+	/* SAR */
+	SET_CH_32(dw, chan->dir, chan->id, sar.lsb, lower_32_bits(child->sar));
+	SET_CH_32(dw, chan->dir, chan->id, sar.msb, upper_32_bits(child->sar));
+	/* DAR */
+	SET_CH_32(dw, chan->dir, chan->id, dar.lsb, lower_32_bits(child->dar));
+	SET_CH_32(dw, chan->dir, chan->id, dar.msb, upper_32_bits(child->dar));
+
+	dbg_tfr("[NON-LLM:%s] sz:0x%x dir:%d sar:0x%x%08x dar:0x%x%08x\n",
+		dma_chan_name(&chan->vc.chan), child->sz, chan->dir,
+		GET_CH_32(dw, chan->dir, chan->id, sar.msb),
+		GET_CH_32(dw, chan->dir, chan->id, sar.lsb),
+		GET_CH_32(dw, chan->dir, chan->id, dar.msb),
+		GET_CH_32(dw, chan->dir, chan->id, dar.lsb));
+
+	/* Doorbell */
+	SET_RW_32(dw, chan->dir, doorbell,
+		  FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, chan->id));
+}
+
+void dw_edma_v0_core_engine_disable(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch0_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch0_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch1_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch1_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch2_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch2_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch3_pwr_en, EDMA_ENG_DIS);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch3_pwr_en, EDMA_ENG_DIS);
+	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_DIS);
+
+	dbg_tfr("DMA engines disabled (Status: 0x%x)\n", GET_RW_32(dw, chan->dir, engine_en));
+}
+
+void dw_edma_v0_core_engine_enable(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+
+	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch0_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch0_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch1_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch1_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch2_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch2_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch3_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch3_pwr_en, EDMA_ENG_EN);
+
+	dbg_tfr("DMA engines enabled (Status: 0x%x)\n", GET_RW_32(dw, chan->dir, engine_en));
 }
 
 void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_desc, bool is_llm)
 {
 	struct dw_edma_chan *chan = chunk->chan;
 	struct dw_edma *dw = chan->chip->dw;
+	int ret;
 	u32 tmp;
 
-	dw_edma_v0_core_wait_channel_idle(chan);
-	if (is_llm) {
-		dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
-	}
-
 	if (first) {
-		/* Enable engine */
-		SET_RW_32(dw, chan->dir, engine_en, BIT(0));
-		if (dw->mf == DX_DMA_MF_HDMA_COMPAT) {
-			switch (chan->id) {
-			case 0:
-				SET_RW_COMPAT(dw, chan->dir, ch0_pwr_en,
-					      BIT(0));
-				break;
-			case 1:
-				SET_RW_COMPAT(dw, chan->dir, ch1_pwr_en,
-					      BIT(0));
-				break;
-			case 2:
-				SET_RW_COMPAT(dw, chan->dir, ch2_pwr_en,
-					      BIT(0));
-				break;
-			case 3:
-				SET_RW_COMPAT(dw, chan->dir, ch3_pwr_en,
-					      BIT(0));
-				break;
-			case 4:
-				SET_RW_COMPAT(dw, chan->dir, ch4_pwr_en,
-					      BIT(0));
-				break;
-			case 5:
-				SET_RW_COMPAT(dw, chan->dir, ch5_pwr_en,
-					      BIT(0));
-				break;
-			case 6:
-				SET_RW_COMPAT(dw, chan->dir, ch6_pwr_en,
-					      BIT(0));
-				break;
-			case 7:
-				SET_RW_COMPAT(dw, chan->dir, ch7_pwr_en,
-					      BIT(0));
-				break;
-			}
-		}
 		/* Interrupt unmask - done, abort */
 		tmp = GET_RW_32(dw, chan->dir, int_mask);
 		tmp &= ~FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id));
 		tmp &= ~FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id));
 		SET_RW_32(dw, chan->dir, int_mask, tmp);
-		if (is_llm) {
-			/* Linked list error */
-			tmp = GET_RW_32(dw, chan->dir, linked_list_err_en);
-			tmp |= FIELD_PREP(EDMA_V0_LINKED_LIST_ERR_MASK, BIT(chan->id));
-			SET_RW_32(dw, chan->dir, linked_list_err_en, tmp);
-			/* Channel control */
-			SET_CH_32(dw, chan->dir, chan->id, ch_control1,
-				(DW_EDMA_V0_CCS | DW_EDMA_V0_LLE));
-			/* Linked list */
-			SET_CH_32(dw, chan->dir, chan->id, llp.lsb,
-				lower_32_bits(chunk->ll_region.paddr));
-			SET_CH_32(dw, chan->dir, chan->id, llp.msb,
-				upper_32_bits(chunk->ll_region.paddr));
+	}
 
-			dbg_tfr("[DMA_REG_SET] dir:%d, id:%d, llp:0x%x_%x, ll_region:0x%x_%x",
-				chan->dir, chan->id,
-				GET_CH_32(dw, chan->dir, chan->id, llp.msb),
-				GET_CH_32(dw, chan->dir, chan->id, llp.lsb),
-				upper_32_bits(chunk->ll_region.paddr),
-				lower_32_bits(chunk->ll_region.paddr));
-		} else {
-			struct list_head *f = chunk->burst->list.next;
-			struct dw_edma_burst *child = list_entry(f, struct dw_edma_burst, list);
-			/* Channel control & size */
-			SET_CH_32(dw, chan->dir, chan->id, ch_control1,
-				(DW_EDMA_V0_RIE | DW_EDMA_V0_LIE));
-			SET_CH_32(dw, chan->dir, chan->id, transfer_size, child->sz);
-			/* SAR */
-			SET_CH_32(dw, chan->dir, chan->id, sar.lsb, lower_32_bits(child->sar));
-			SET_CH_32(dw, chan->dir, chan->id, sar.msb, upper_32_bits(child->sar));
-			/* DAR */
-			SET_CH_32(dw, chan->dir, chan->id, dar.lsb, lower_32_bits(child->dar));
-			SET_CH_32(dw, chan->dir, chan->id, dar.msb, upper_32_bits(child->dar));
-
-			dbg_tfr("[NON-LLM:%d] size:0x%x, sar:0x%x%08x, dar:0x%x%08x\n",
-				chunk->chan->id,
-				child->sz,
-				upper_32_bits(child->sar), lower_32_bits(child->sar),
-				upper_32_bits(child->dar), lower_32_bits(child->dar));
+	dw_edma_v0_core_wait_channel_idle(chan);
+	if (is_llm) {
+		dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
+		
+		/* Sync for device if using Buddy Allocator (Streaming DMA) */
+		if (chunk->is_buddy) {
+			dma_sync_single_for_device(chan->chip->dev,
+						   chunk->host_region.paddr,
+						   chunk->host_region.sz,
+						   DMA_TO_DEVICE);
 		}
+		ret = dw_edma_v0_core_xfer_llm_desc(chunk);
+		if (ret == 0) {
+			dw_edma_v0_xfer_llm(chunk);
+		} else {
+			pr_err(">> LLM descriptor transfer failed, aborting\n");
+		}
+	} else {
+		dw_edma_v0_xfer_llm_not(chunk);
 	}
 
 	/* Check Channel status */
 	dbg_tfr("%s, ch:%d, status:0x%x\n",
-		(chan->dir == EDMA_DIR_WRITE) ? "W":"R",
+		(chan->dir == EDMA_DIR_WRITE) ? "W" : "R",
 		chunk->chan->id,
 		GET_CH_32(dw, chan->dir, chan->id, ch_control1));
-
-	/* Doorbell */
-	SET_RW_32(dw, chan->dir, doorbell,
-		  FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, chan->id));
-	dbg_tfr("Start Door Bell(%s)\n", dma_chan_name(&chan->vc.chan));
 }
 
 int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
