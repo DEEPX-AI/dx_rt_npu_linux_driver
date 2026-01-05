@@ -136,6 +136,10 @@ struct dw_edma_desc {
 	u32						alloc_sz;
 	u32						xfer_sz;
 	bool					from_pool;
+	
+	/* Deferred cleanup for non-pool chunks */
+	struct list_head		pending_free_chunks;
+	struct work_struct		cleanup_work;
 };
 
 /*
@@ -144,7 +148,7 @@ struct dw_edma_desc {
  * - CHUNK: Total pre-allocated DMA buffers (8 * 1MB = 8MB CMA)
  * - BURST: Total pre-allocated burst structures (~8MB data transfer capacity)
  */
-#define EDMA_GLOBAL_DESC_POOL_SIZE		2
+#define EDMA_GLOBAL_DESC_POOL_SIZE		4
 #define EDMA_GLOBAL_CHUNK_POOL_SIZE		8
 #define EDMA_GLOBAL_BURST_POOL_SIZE		(43689 * 8)
 #define EDMA_CHUNK_SIZE					(1024 * 1024) /* 1MB */
@@ -244,6 +248,7 @@ struct dw_edma {
 	u64							dma_desc_base_addr;
 	u64							dma_desc_size;
 	u32							dma_desc_bar_num;
+	bool						pm_runtime_managed;
 
 	struct dx_edma_region		iatu_region;
 	struct dx_iatu_inbound		iatu_inb[IATU_INB_MAX];

@@ -120,17 +120,26 @@ static int dxrt_copy_resp_to_user_acc(struct dxdev* dev, dxrt_message_t *msg, dx
 static int dxrt_polling_ack(struct dxdev *dev, int ms)
 {
     int fail_cnt = 0, ret = 0;
-    while(true) {
-        mdelay(ms);
+    int sleep_ms = max(ms, 1);
+
+    while (true) {
+        if (dev->msg->ack == 1)
+            break;
+
         if (++fail_cnt > ACK_POLLING_THRESHOLD) {
-            pr_err( MODULE_NAME "%s: timeout.\n", __func__);
+            pr_err(MODULE_NAME "%s: timeout.\n", __func__);
             ret = -ETIMEDOUT;
             break;
         }
-        if (dev->msg->ack == 1) {
-            break;
-        }
+
+        /* Yield CPU time while waiting for firmware ack to avoid soft lockups. */
+        if (sleep_ms >= 20)
+            msleep(sleep_ms);
+        else
+            usleep_range(sleep_ms * 1000, sleep_ms * 1000 + 500);
+        cond_resched();
     }
+
     return ret;
 }
 
