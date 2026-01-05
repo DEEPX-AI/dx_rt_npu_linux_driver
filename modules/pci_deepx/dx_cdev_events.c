@@ -230,7 +230,7 @@ unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 		wake_up_interruptible(&(event_irq->events_wq));
 	}
 	spin_unlock_irqrestore(&(event_irq->events_lock), flags);
-	pr_info("%s:%d wake-up : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
+	dbg_irq("%s:%d wake-up : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
 
 	return 0;
 }

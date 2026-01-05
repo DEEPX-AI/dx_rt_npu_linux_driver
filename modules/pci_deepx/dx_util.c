@@ -356,9 +356,9 @@ inline void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n,
 	dx_pcie_profiler_t *p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
 	/* If the size is changed then clear the profiler datas only for data bandwidth */
 	// if (p->size == 0) p->size = size;
-	if ( (type == PCIE_TOTAL_TIME_T) && (p->size != size) ) {
-		clear_pcie_profile_info(1, type, dev_n, dma_n, ch_n);
-	}
+	// if ( (type == PCIE_TOTAL_TIME_T) && (p->size != size) ) {
+	// 	clear_pcie_profile_info(1, type, dev_n, dma_n, ch_n);
+	// }
 	p->in_use = 1;
 	get_start_time(&p->pref_t);
 }
@@ -502,6 +502,7 @@ struct dw_edma *dx_dev_list_get(int dev_id)
 
 	return dw;
 }
+EXPORT_SYMBOL_GPL(dx_dev_list_get);
 
 void dx_dev_list_remove(struct dw_edma *dw)
 {

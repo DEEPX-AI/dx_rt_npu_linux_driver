@@ -445,7 +445,13 @@ void dx_sgdma_init(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	int i;
-	if ((dw) && (dw->ref_count == 0)) {
+
+	if (!dw) {
+		pr_err("[ERR] not found deepx pcie struct for dev_id %d\n", dev_id);
+		return;
+	}
+
+	if (dw->ref_count == 0) {
 		for (i=0; i<dw->rd_ch_cnt; i++) {
 			dw_edma_dma_allocation(dw->rd_dma_id, i, &dw->wr_dma_chan[i]);
 		}

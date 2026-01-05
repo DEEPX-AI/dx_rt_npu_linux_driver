@@ -1,4 +1,13 @@
 # RELEASE_NOTES
+## v2.1.0 / 2026-01-05
+
+### 1. Changed
+- Add sleep/resched in dxrt_polling_ack to avoid soft lockups during slow ACKs
+
+### 2. Fixed
+
+### 3. Added
+
 ## v2.0.0 / 2025-12-23
 
 ### 1. Changed

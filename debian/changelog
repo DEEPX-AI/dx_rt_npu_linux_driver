@@ -1,3 +1,11 @@
+dxrt-driver-dkms (2.0.1-2) unstable; urgency=medium
+
+  * Add sleep/resched in dxrt_polling_ack to avoid soft lockups during slow ACKs
+  * Optimized PCIe DMA performance by reducing jobs that are dependent to CPU.
+  * Should be used above DX-RT SDK v3.2.1 for stability
+
+ -- An Taegyun <atg@deepx.ai>  Fri, 02 JAN 2026 09:00:00 +0900
+
 dxrt-driver-dkms (1.8.0-2) unstable; urgency=medium
 
  -- Lee Huseong <hslee@deepx.ai>  Fri, 28 Nov 2025 09:00:00 +0900

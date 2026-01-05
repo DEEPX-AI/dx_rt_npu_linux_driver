@@ -19,6 +19,7 @@ DXRT_SERVICE_WAS_ACTIVE=0
 STOP_TIMEOUT_SEC=${STOP_TIMEOUT_SEC:-1}
 START_TIMEOUT_SEC=${START_TIMEOUT_SEC:-1}
 SERVICE_DEBUG_JOURNAL_LINES=${SERVICE_DEBUG_JOURNAL_LINES:-60}
+RELOAD_AFTER_INSTALL=1
 
 # Virtual DMA dependency configuration
 # VDMA_CORE_NAME: preferred module name (default virt_dma). Alternate names tried: virt_dma, virt-dma
@@ -142,6 +143,7 @@ declare -A PCIE_MODPROBE_CONF=(
 MOD_MODPROBE_DEP="/lib/modules/$(uname -r)/modules.dep"
 MOD_MODPROBE_CONF="/etc/modprobe.d"
 MOD_INSTALL_DIR="/lib/modules/$(uname -r)/extra"
+MOD_UPDATES_DIR="/lib/modules/$(uname -r)/updates"
 
 function logerr() { echo -e "\033[1;31m$*\033[0m"; }
 function logmsg() { echo -e "\033[0;33m$*\033[0m"; }
@@ -168,6 +170,7 @@ function build_usage() {
     echo -e "\t-j, --jops     [jobs]        set build jobs"
     echo -e "\t-f, --debug    [debug]       set debug feature [debugfs | log | all]"
     echo -e "\t-v, --verbose                build verbose (V=1)"
+    echo -e "\t    --skip-reload             install without running reload_drivers_forcefully"
     echo -e "\t-h, --help                   show this help"
     echo ""
 }
@@ -198,6 +201,7 @@ function parse_args() {
         -j | --jops)     _jops="-j${2}"; shift 2 ;;
         -v | --verbose)  _verbose="V=1"; shift ;;
         -f | --debug)    _debug="${2}"; shift 2 ;;
+        --skip-reload)   RELOAD_AFTER_INSTALL=0; shift ;;
         -h | --help)
             build_usage
             exit 0
@@ -591,6 +595,9 @@ function print_args() {
     if [[ -n ${_debug} ]]; then
         logmsg "- DEBUG           : ${_debug}"
     fi
+    if [[ ${RELOAD_AFTER_INSTALL} -eq 0 ]]; then
+        logmsg "- RELOAD          : skipped (--skip-reload)"
+    fi
 }
 
 parse_args "${@}"
@@ -599,13 +606,27 @@ print_args
 
 # uninstall modules in host PC
 if [[ ${_command} == "uninstall" ]]; then
-    logmsg "\n *** Remove : ${MOD_INSTALL_DIR} ***"
     mods=(${SUPPORT_PCIE_MODULE[*]} "rt")
-    for i in ${mods[*]}; do
-        mod=$(basename ${i})
-        [[ ! -d "${MOD_INSTALL_DIR}/${mod}" ]] && continue
-        logmsg " $ sudo rm -rf ${MOD_INSTALL_DIR}/${mod}"
-        sudo rm -rf "${MOD_INSTALL_DIR}/${mod}"
+    install_dirs=(${MOD_INSTALL_DIR} ${MOD_UPDATES_DIR})
+
+    for base_dir in "${install_dirs[@]}"; do
+        [[ -d "${base_dir}" ]] || continue
+        logmsg "\n *** Remove : ${base_dir} ***"
+        for i in ${mods[*]}; do
+            mod=$(basename ${i})
+            target_dir="${base_dir}/${mod}"
+            target_file="${base_dir}/${mod}.ko"
+
+            if [[ -d "${target_dir}" ]]; then
+                logmsg " $ sudo rm -rf ${target_dir}"
+                sudo rm -rf "${target_dir}"
+            fi
+
+            if [[ -f "${target_file}" ]]; then
+                logmsg " $ sudo rm -f ${target_file}"
+                sudo rm -f "${target_file}"
+            fi
+        done
     done
 
     logmsg "\n *** Remove : ${MOD_MODPROBE_CONF} ***"
@@ -663,6 +684,10 @@ if [[ ${_command} == "install" ]]; then
 
     # Only perform reload for local builds (not cross-compiling)
     if [[ -z ${_compiler} ]]; then
-        reload_drivers_forcefully
+        if [[ ${RELOAD_AFTER_INSTALL} -eq 1 ]]; then
+            reload_drivers_forcefully
+        else
+            logmsg "-> Skipping reload_drivers_forcefully (requested)"
+        fi
     fi
 fi
