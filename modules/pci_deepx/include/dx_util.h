@@ -19,14 +19,25 @@
 #define PCIE_GET_BW(size, time)     ((size*1000*1000*1000)/(time*1024*1024))
 
 typedef enum dx_pcie_perf_t {
-    PCIE_DESC_SEND_T                = 0, /* description table sending time to device using PCIe*/
-    PCIE_SG_TABLE_ALLOC_T           ,
-    PCIE_USER_PG_TO_PHY_MAPPING_T   ,
-    PCIE_KERNEL_EXEC_T              , /* the total execution time on kernel space */
-    PCIE_THREAD_RUN_T               , /* dma thread running time */
-    PCIE_INT_CB_CALL_T              , /* interrupt ~ callback */
-    PCIE_CB_TO_WAKE_T               , /* callback ~ dma thread wake-up */
-    PCIE_DATA_BW_T                  , /* PCIe bandwidth (doorbell ~ interrupt) */
+    /* 1. SW Preparation */
+    PCIE_SG_ALLOC_T                 = 0, /* [KERN] SG Table Allocation */
+    PCIE_USER_MAP_T                 ,    /* [U->K] User Page Pinning (get_user_pages) */
+    PCIE_DMA_MAP_T                  ,    /* [KERN] IOMMU Mapping (dma_map_sg) */
+    PCIE_DMA_PREP_T                 ,    /* [KERN] DMA Prep (prep_slave_sg) */
+    PCIE_DESC_GEN_T                 ,    /* [KERN] Descriptor Generation (write_chunk) */
+
+    /* 2. HW Execution */
+    PCIE_DMA_XFER_T                 ,    /* [HW]   Pure DMA Transfer (Doorbell ~ ISR) */
+
+    /* 3. Completion */
+    PCIE_ISR_EXEC_T                 ,    /* [ISR]  ISR Execution Time */
+    PCIE_WAKEUP_LATENCY_T           ,    /* [K->U] Wakeup Latency (Callback ~ Thread Resume) */
+    PCIE_POST_PROCESS_T             ,    /* [KERN] Post Processing (Unmap, etc) */
+
+    /* 4. Total Scopes */
+    PCIE_KERNEL_DMA_TOTAL_T         ,    /* [ALL]  dw_edma_sg_process Total */
+    PCIE_TOTAL_TIME_T               ,    /* [ALL]  ioctl Total */
+
     PCIE_PERF_MAX_T                 ,
 } dx_pcie_perf_t;
 typedef struct dx_pcie_profiler_t {

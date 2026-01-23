@@ -48,9 +48,9 @@ static void dw_edma_callback(void *arg)
 {
 	struct dw_edma_info *info = arg;
 	dbg_tfr("[%s]\n", __func__);
-	dx_pcie_end_profile(PCIE_INT_CB_CALL_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
+	dx_pcie_end_profile(PCIE_ISR_EXEC_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
-	dx_pcie_start_profile(PCIE_CB_TO_WAKE_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
+	dx_pcie_start_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	info->dma_done.done = true;
 	wake_up_interruptible(info->dma_done.wait);
 }
@@ -125,6 +125,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	 *  - flags
 	 *  - source and destination addresses
 	 */
+	dx_pcie_start_profile(PCIE_DMA_MAP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	if (direction == DMA_DEV_TO_MEM) {
 		/* DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE */
 		dbg_tfr("%s: DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE\n",
@@ -156,6 +157,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		// sconf.dst_addr = dt_region->paddr;
 		dw_chan->set_desc = true;
 	}
+	dx_pcie_end_profile(PCIE_DMA_MAP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	if (sgt->nents == 1) {
 		cb->is_llm = false;
 	}
@@ -174,6 +176,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	 *  - provide scatter-gather list
 	 *  - configure to trigger an interrupt after the transfer
 	 */
+	dx_pcie_start_profile(PCIE_DMA_PREP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	txdesc = dmaengine_prep_slave_sg(chan, sgt->sgl, sgt->nents,
 					 direction,
 					 DMA_PREP_INTERRUPT);
@@ -194,6 +197,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		f_sbt_cnt++;
 		goto err_stats;
 	}
+	dx_pcie_end_profile(PCIE_DMA_PREP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
 #ifdef DMA_PERF_MEASURE
 	/* send pointer to measure a performace */
@@ -201,9 +205,9 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #endif
 
 	/* Start DMA transfer - trigger a doorbell of dma */
+	dx_pcie_start_profile(PCIE_DMA_XFER_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	dma_async_issue_pending(chan);
 
-	dx_pcie_start_profile(PCIE_DATA_BW_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
 	/* Thread waits here for transfer completion or exists by timeout */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
@@ -219,13 +223,13 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	if (policy == SCHED_NORMAL)
 		sched_set_normal(current, nice);
 #endif
-	dx_pcie_end_profile(PCIE_CB_TO_WAKE_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
+	dx_pcie_end_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
-#ifdef DMA_PERF_MEASURE
-	dev_err(dev, "[PERF] DMA Transer Elapsed Time(%s) @ %lld ns\n",
-		(direction == DMA_DEV_TO_MEM) ? "WRITE" : "READ",
-		get_elapsed_time_ns(dma_trans_t));
-#endif
+// #ifdef DMA_PERF_MEASURE
+// 	dev_err(dev, "[PERF] DMA Transer Elapsed Time(%s) @ %lld ns\n",
+// 		(direction == DMA_DEV_TO_MEM) ? "WRITE" : "READ",
+// 		get_elapsed_time_ns(dma_trans_t));
+// #endif
 
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
@@ -262,6 +266,7 @@ err_stats:
 	}
 
 	/* Unmap scatter gatter mapping */
+	dx_pcie_start_profile(PCIE_POST_PROCESS_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	if (sgt->nents > 0) {
 		if (direction == DMA_DEV_TO_MEM) {
 			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_FROM_DEVICE);
@@ -269,6 +274,7 @@ err_stats:
 			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_TO_DEVICE);
 		}
 	}
+	dx_pcie_end_profile(PCIE_POST_PROCESS_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
 	/* TODO - need a recovery code in case of dma errors. */
 
@@ -379,9 +385,9 @@ int dw_edma_run(struct dx_dma_io_cb * cb, struct dma_chan *dma_ch, int dev_n, in
 	} else {
 		dbg_tfr("DMA is Ready to tranfser datas (dev#%d, npu#%d, ch:%d)\n", dev_n, cb->npu_id, ch);
 		info->cb = cb;
-		dx_pcie_start_profile(PCIE_THREAD_RUN_T, 0, info->dev_n, info->cb->npu_id, info->cb->write);
+		dx_pcie_start_profile(PCIE_KERNEL_DMA_TOTAL_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 		ret = dw_edma_sg_process(info, dma_ch);
-		dx_pcie_end_profile(PCIE_THREAD_RUN_T, 0, info->dev_n, info->cb->npu_id, info->cb->write);
+		dx_pcie_end_profile(PCIE_KERNEL_DMA_TOTAL_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
 	}
 	mutex_unlock(&info->lock);

@@ -42,32 +42,38 @@ const char* get_pcie_type_string(int type)
 	const char* type_str;
 	switch (type)
 	{
-		case PCIE_DESC_SEND_T:
-			type_str = "PCIE_DESC_SEND_T";
+		case PCIE_SG_ALLOC_T:
+			type_str = "SG Alloc";
 			break;
-		case PCIE_SG_TABLE_ALLOC_T:
-			type_str = "PCIE_SG_TABLE_ALLOC_T";
+		case PCIE_USER_MAP_T:
+			type_str = "User Pinning";
 			break;
-		case PCIE_USER_PG_TO_PHY_MAPPING_T:
-			type_str = "PCIE_USER_PG_TO_PHY_MAPPING_T";
+		case PCIE_DMA_MAP_T:
+			type_str = "DMA Mapping";
 			break;
-		case PCIE_KERNEL_EXEC_T:
-			type_str = "PCIE_KERNEL_EXEC_T";
+		case PCIE_DMA_PREP_T:
+			type_str = "DMA Prep";
 			break;
-		case PCIE_THREAD_RUN_T:
-			type_str = "PCIE_THREAD_RUN_T";
+		case PCIE_DESC_GEN_T:
+			type_str = "Desc Gen";
 			break;
-		case PCIE_DATA_BW_T:
-			type_str = "PCIE_DATA_BW_T";
+		case PCIE_DMA_XFER_T:
+			type_str = "DMA Transfer";
 			break;
-		case PCIE_INT_CB_CALL_T:
-			type_str = "PCIE_INT_CB_CALL_T";
+		case PCIE_ISR_EXEC_T:
+			type_str = "ISR Exec";
 			break;
-		case PCIE_CB_TO_WAKE_T:
-			type_str = "PCIE_CB_TO_WAKE_T";
+		case PCIE_WAKEUP_LATENCY_T:
+			type_str = "Wakeup Latency";
 			break;
-		case PCIE_PERF_MAX_T:
-			type_str = "PCIE_PERF_MAX_T";
+		case PCIE_POST_PROCESS_T:
+			type_str = "Post Process";
+			break;
+		case PCIE_KERNEL_DMA_TOTAL_T:
+			type_str = "Kernel DMA Total";
+			break;
+		case PCIE_TOTAL_TIME_T:
+			type_str = "Total Latency";
 			break;
 		default:
 			type_str = "unknown";
@@ -76,59 +82,241 @@ const char* get_pcie_type_string(int type)
 	return type_str;
 }
 
+const char* get_pcie_ctx_string(int type)
+{
+	const char* ctx_str;
+	switch (type)
+	{
+		case PCIE_SG_ALLOC_T:
+		case PCIE_DMA_MAP_T:
+		case PCIE_DMA_PREP_T:
+		case PCIE_DESC_GEN_T:
+		case PCIE_POST_PROCESS_T:
+			ctx_str = "[KERN]";
+			break;
+		case PCIE_USER_MAP_T:
+			ctx_str = "[U->K]";
+			break;
+		case PCIE_DMA_XFER_T:
+			ctx_str = "[HW]";
+			break;
+		case PCIE_ISR_EXEC_T:
+			ctx_str = "[ISR]";
+			break;
+		case PCIE_WAKEUP_LATENCY_T:
+			ctx_str = "[K->U]";
+			break;
+		case PCIE_KERNEL_DMA_TOTAL_T:
+		case PCIE_TOTAL_TIME_T:
+			ctx_str = "[ALL]";
+			break;
+		default:
+			ctx_str = "[UNK]";
+			break;
+	}
+	return ctx_str;
+}
+
 #define DX_DBG_PRT_MAX_BUFFER_SIZE	40960
 #define DX_BUF_SIZE_CHECKER(offset) do {\
 	if (offset > DX_DBG_PRT_MAX_BUFFER_SIZE*0.9) goto show_exit;\
 } while(0);
 static char dx_buff[DX_DBG_PRT_MAX_BUFFER_SIZE];
+
+static void sprint_time(char *buf, uint64_t ns)
+{
+	if (ns < 1000) { /* < 1us : ns */
+		sprintf(buf, "%5lluns", ns);
+	} else if (ns < 1000000) { /* < 1ms : us */
+		sprintf(buf, "%5lluus", ns / 1000);
+	} else if (ns < 1000000000) { /* < 1s : ms */
+		/* 1.2ms, 12.3ms, 123.4ms */
+		uint64_t ms = ns / 1000000;
+		uint64_t rem = ns % 1000000;
+		sprintf(buf, "%3llu.%01llums", ms, rem / 100000);
+	} else { /* >= 1s : s */
+		/* 1.2s, 12.3s */
+		uint64_t s = ns / 1000000000;
+		uint64_t rem = ns % 1000000000;
+		sprintf(buf, "%3llu.%01llus ", s, rem / 100000000);
+	}
+}
+
+static void sprint_size(char *buf, uint64_t size)
+{
+	if (size < 1024) {
+		sprintf(buf, "%llu B", size);
+	} else if (size < 1024*1024) {
+		sprintf(buf, "%llu.%llu KB", size >> 10, (size & 1023) * 10 / 1024);
+	} else if (size < 1024*1024*1024) {
+		sprintf(buf, "%llu.%llu MB", size >> 20, (size & 0xFFFFF) * 10 / (1024*1024));
+	} else {
+		sprintf(buf, "%llu.%llu GB", size >> 30, (size & 0x3FFFFFFF) * 10 / (1024*1024*1024));
+	}
+}
+
 char *show_pcie_profile(void)
 {
-	int dev = 0, dma = 0, ch = 0, type = 0;
-	uint64_t size;
+	int dev = 0, dma = 0, ch = 0, i;
 	int offset = 0;
 	char *ret;
+	static int active_devs[128];
+	static int active_dmas[128];
+	static int active_chs[128];
+	int active_count = 0;
+	uint64_t total_count = 0;
+	uint64_t total_bw = 0;
+	uint64_t total_time_sum = 0;
+	dx_pcie_profiler_t *p;
+	uint64_t sw_prep, hw_exec, compl, total, bw;
+	char t_sw[16], t_hw[16], t_compl[16], t_total[16], t_size[16], t_total_sum[16];
 
 	memset(dx_buff, 0x00, sizeof(dx_buff));
+
+	/* 1. Collect Active Channels */
 	for (dev = 0; dev < 16; dev++) {
 		for (dma = 0; dma < 4; dma++) {
 			for (ch = 0; ch < 2; ch++) {
-				if (g_pcie_prof[dev][dma][ch][PCIE_DATA_BW_T].in_use == 0) {
-					continue;
+				if (g_pcie_prof[dev][dma][ch][PCIE_DMA_XFER_T].in_use) {
+					active_devs[active_count] = dev;
+					active_dmas[active_count] = dma;
+					active_chs[active_count] = ch;
+					active_count++;
+					if (active_count >= 128) break;
 				}
-				// DX_BUF_SIZE_CHECKER(offset);
-				offset += sprintf(dx_buff+offset, "DEV:DMA:CH (%d / %d / %d)(%s) - size:%llu\n",
-					dev, dma, ch,
-					ch==0 ? "W":"R",
-					g_pcie_prof[dev][dma][ch][PCIE_DATA_BW_T].size);
-				for (type = 0; type < PCIE_PERF_MAX_T; type++) {
-						// DX_BUF_SIZE_CHECKER(offset);
-						offset += sprintf(dx_buff+offset, "%-30s(%20lluns/%20lluns/%20lluns), count:%llu\n",
-							get_pcie_type_string(type),
-							g_pcie_prof[dev][dma][ch][type].perf_min_t,
-							g_pcie_prof[dev][dma][ch][type].perf_avg_t,
-							g_pcie_prof[dev][dma][ch][type].perf_max_t,
-							g_pcie_prof[dev][dma][ch][type].count);
-						if (type == PCIE_DATA_BW_T) {
-							size = g_pcie_prof[dev][dma][ch][type].size;
-							// DX_BUF_SIZE_CHECKER(offset);
-							offset += sprintf(dx_buff+offset, "%-30s(%19lluMHz/%19lluMHz/%19lluMHz), count:%llu\n",
-								get_pcie_type_string(type),
-								PCIE_GET_BW(size, g_pcie_prof[dev][dma][ch][type].perf_max_t),
-								PCIE_GET_BW(size, g_pcie_prof[dev][dma][ch][type].perf_avg_t),
-								PCIE_GET_BW(size, g_pcie_prof[dev][dma][ch][type].perf_min_t),
-								g_pcie_prof[dev][dma][ch][type].count);
-						}
-				}
-				offset += sprintf(dx_buff+offset, "-------------------\n");
 			}
 		}
 	}
-// show_exit:
+
+	if (active_count == 0) {
+		offset += sprintf(dx_buff+offset, "No active profiling data found.\n");
+		goto show_exit;
+	}
+
+	/* 2. Summary View */
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n");
+	offset += sprintf(dx_buff+offset, " CH ID    | Dir | Count | Size       | SW Prep  | HW Exec  | Compl.   | Total    | Bandwidth\n");
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n");
+
+	for (i = 0; i < active_count; i++) {
+		dev = active_devs[i];
+		dma = active_dmas[i];
+		ch = active_chs[i];
+		p = g_pcie_prof[dev][dma][ch];
+		
+		sw_prep = p[PCIE_SG_ALLOC_T].perf_avg_t + p[PCIE_USER_MAP_T].perf_avg_t + 
+						   p[PCIE_DMA_MAP_T].perf_avg_t + p[PCIE_DMA_PREP_T].perf_avg_t + 
+						   p[PCIE_DESC_GEN_T].perf_avg_t;
+		hw_exec = p[PCIE_DMA_XFER_T].perf_avg_t;
+		compl = p[PCIE_ISR_EXEC_T].perf_avg_t + p[PCIE_WAKEUP_LATENCY_T].perf_avg_t + 
+						 p[PCIE_POST_PROCESS_T].perf_avg_t;
+		total = p[PCIE_TOTAL_TIME_T].perf_avg_t;
+		bw = (hw_exec > 0) ? PCIE_GET_BW(p[PCIE_DMA_XFER_T].size, hw_exec) : 0;
+
+		sprint_time(t_sw, sw_prep);
+		sprint_time(t_hw, hw_exec);
+		sprint_time(t_compl, compl);
+		sprint_time(t_total, total);
+		sprint_size(t_size, p[PCIE_DMA_XFER_T].size);
+
+		offset += sprintf(dx_buff+offset, " %d:%d:%d    | %s  | %5llu | %-10s | %-8s | %-8s | %-8s | %-8s | %llu MB/s\n",
+			dev, dma, ch, ch==0?"WR":"RD",
+			p[PCIE_DMA_XFER_T].count, t_size,
+			t_sw, t_hw, t_compl, t_total, bw);
+		
+		total_count += p[PCIE_DMA_XFER_T].count;
+		total_bw += bw;
+		total_time_sum += total;
+	}
+	
+	sprint_time(t_total_sum, total_time_sum);
+
+	offset += sprintf(dx_buff+offset, "----------------------------------------------------------------------------------------------------------------\n");
+	offset += sprintf(dx_buff+offset, " TOTAL    |     |       |            |          |          |          | %-8s |          \n",
+		t_total_sum);
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n\n");
+
+	/* 3. Pivot View */
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n");
+	offset += sprintf(dx_buff+offset, " Metric           |");
+	for (i = 0; i < active_count; i++) {
+		offset += sprintf(dx_buff+offset, " %d:%d:%d(%s)|", 
+			active_devs[i], active_dmas[i], active_chs[i], active_chs[i]==0?"W":"R");
+	}
+	offset += sprintf(dx_buff+offset, "\n");
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n");
+
+	// Helper macro for rows
+	#define PRINT_PIVOT_ROW(title, type_idx) \
+		offset += sprintf(dx_buff+offset, " %-16s |", title); \
+		for (i = 0; i < active_count; i++) { \
+			char t_buf[16]; \
+			sprint_time(t_buf, g_pcie_prof[active_devs[i]][active_dmas[i]][active_chs[i]][type_idx].perf_avg_t); \
+			offset += sprintf(dx_buff+offset, " %-9s|", t_buf); \
+		} \
+		offset += sprintf(dx_buff+offset, "\n");
+
+	// Size Row
+	offset += sprintf(dx_buff+offset, " %-16s |", "Size");
+	for (i = 0; i < active_count; i++) {
+		char t_buf[16];
+		sprint_size(t_buf, g_pcie_prof[active_devs[i]][active_dmas[i]][active_chs[i]][PCIE_DMA_XFER_T].size);
+		offset += sprintf(dx_buff+offset, " %-9s|", t_buf);
+	}
+	offset += sprintf(dx_buff+offset, "\n");
+
+	// Count Row
+	offset += sprintf(dx_buff+offset, " %-16s |", "Count");
+	for (i = 0; i < active_count; i++) {
+		offset += sprintf(dx_buff+offset, " %-9llu|", g_pcie_prof[active_devs[i]][active_dmas[i]][active_chs[i]][PCIE_DMA_XFER_T].count);
+	}
+	offset += sprintf(dx_buff+offset, "\n");
+	
+	offset += sprintf(dx_buff+offset, "------------------+");
+	for(i=0; i<active_count; i++) offset += sprintf(dx_buff+offset, "----------+");
+	offset += sprintf(dx_buff+offset, "\n");
+
+	PRINT_PIVOT_ROW("SG Alloc", PCIE_SG_ALLOC_T);
+	PRINT_PIVOT_ROW("User Pinning", PCIE_USER_MAP_T);
+	PRINT_PIVOT_ROW("DMA Mapping", PCIE_DMA_MAP_T);
+	PRINT_PIVOT_ROW("DMA Prep", PCIE_DMA_PREP_T);
+	PRINT_PIVOT_ROW("Desc Gen", PCIE_DESC_GEN_T);
+	
+	offset += sprintf(dx_buff+offset, "------------------+");
+	for(i=0; i<active_count; i++) offset += sprintf(dx_buff+offset, "----------+");
+	offset += sprintf(dx_buff+offset, "\n");
+
+	PRINT_PIVOT_ROW("DMA Transfer", PCIE_DMA_XFER_T);
+
+	offset += sprintf(dx_buff+offset, "------------------+");
+	for(i=0; i<active_count; i++) offset += sprintf(dx_buff+offset, "----------+");
+	offset += sprintf(dx_buff+offset, "\n");
+
+	PRINT_PIVOT_ROW("ISR Exec", PCIE_ISR_EXEC_T);
+	PRINT_PIVOT_ROW("Wakeup Latency", PCIE_WAKEUP_LATENCY_T);
+	PRINT_PIVOT_ROW("Post Process", PCIE_POST_PROCESS_T);
+
+	offset += sprintf(dx_buff+offset, "==================+");
+	for(i=0; i<active_count; i++) offset += sprintf(dx_buff+offset, "==========+");
+	offset += sprintf(dx_buff+offset, "\n");
+
+	PRINT_PIVOT_ROW("Total", PCIE_TOTAL_TIME_T);
+
+	// Bandwidth Row
+	offset += sprintf(dx_buff+offset, " %-16s |", "Bandwidth");
+	for (i = 0; i < active_count; i++) {
+		dx_pcie_profiler_t *p = g_pcie_prof[active_devs[i]][active_dmas[i]][active_chs[i]];
+		uint64_t bw = (p[PCIE_DMA_XFER_T].perf_avg_t > 0) ? PCIE_GET_BW(p[PCIE_DMA_XFER_T].size, p[PCIE_DMA_XFER_T].perf_avg_t) : 0;
+		offset += sprintf(dx_buff+offset, " %4llu MB/s|", bw);
+	}
+	offset += sprintf(dx_buff+offset, "\n");
+	offset += sprintf(dx_buff+offset, "================================================================================================================\n");
+
+show_exit:
 	if (offset > DX_DBG_PRT_MAX_BUFFER_SIZE) {
 		pr_err("Please check buffer size (%d/%d)\n", offset, DX_DBG_PRT_MAX_BUFFER_SIZE);
 		ret = NULL;
 	} else {
-		// pr_err("%s", dx_buff);
 		ret = dx_buff;
 	}
 	return ret;
@@ -140,9 +328,14 @@ void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int 
 	int dev, dma, ch, type;
 
 	if (partial) {
-		memset(&g_pcie_prof[dev_n][dma_n][ch_n][0], 0x00, sizeof(dx_pcie_profiler_t)*PCIE_PERF_MAX_T);
 		for (type = 0; type < PCIE_PERF_MAX_T; type++) {
-			g_pcie_prof[dev_n][dma_n][ch_n][type].perf_min_t = 0xFFFFFFFF;
+			dx_pcie_profiler_t *p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
+			p->perf_max_t = 0;
+			p->perf_min_t = 0xFFFFFFFF;
+			p->perf_avg_t = 0;
+			p->perf_sum_t = 0;
+			p->count = 0;
+			/* Do NOT clear pref_t, in_use, or size here to preserve active contexts */
 		}
 	} else {
 		memset(g_pcie_prof, 0, sizeof(g_pcie_prof));
@@ -163,9 +356,9 @@ inline void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n,
 	dx_pcie_profiler_t *p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
 	/* If the size is changed then clear the profiler datas only for data bandwidth */
 	// if (p->size == 0) p->size = size;
-	if ( (type == PCIE_KERNEL_EXEC_T) && (p->size != size) ) {
-		clear_pcie_profile_info(1, type, dev_n, dma_n, ch_n);
-	}
+	// if ( (type == PCIE_TOTAL_TIME_T) && (p->size != size) ) {
+	// 	clear_pcie_profile_info(1, type, dev_n, dma_n, ch_n);
+	// }
 	p->in_use = 1;
 	get_start_time(&p->pref_t);
 }
@@ -309,6 +502,7 @@ struct dw_edma *dx_dev_list_get(int dev_id)
 
 	return dw;
 }
+EXPORT_SYMBOL_GPL(dx_dev_list_get);
 
 void dx_dev_list_remove(struct dw_edma *dw)
 {

@@ -16,6 +16,8 @@
 #include <linux/irq.h>
 #include <linux/dma-mapping.h>
 #include <linux/pci.h>
+#include <linux/vmalloc.h>
+#include <linux/workqueue.h>
 
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
@@ -26,6 +28,7 @@
 #include "dx_util.h"
 #include "dw-edma-thread.h"
 #include "dx_message.h"
+#include "dw-edma-mem.h"
 
 #ifdef DX_DEBUG_ENABLE /*DEEPX MODIFIED*/
 	#ifdef dev_vdbg
@@ -438,139 +441,9 @@ struct dw_edma_desc *vd2dw_edma_desc(struct virt_dma_desc *vd)
 	return container_of(vd, struct dw_edma_desc, vd);
 }
 
-static struct dw_edma_burst *dw_edma_alloc_burst(struct dw_edma_chunk *chunk)
-{
-	struct dw_edma_burst *burst;
 
-	burst = kzalloc(sizeof(*burst), GFP_KERNEL);
-	if (unlikely(!burst)) {
-		pr_err("burst kernel memory alloc fail!\n");
-		return NULL;
-	}
 
-	INIT_LIST_HEAD(&burst->list);
-	if (chunk->burst) {
-		/* Create and add new element into the linked list */
-		chunk->bursts_alloc++;
-		list_add_tail(&burst->list, &chunk->burst->list);
-	} else {
-		/* List head */
-		chunk->bursts_alloc = 0;
-		chunk->burst = burst;
-	}
 
-	return burst;
-}
-
-static struct dw_edma_chunk *dw_edma_alloc_chunk(struct dw_edma_desc *desc)
-{
-	struct dw_edma_chan *chan = desc->chan;
-	struct dw_edma *dw = chan->chip->dw;
-	struct dw_edma_chunk *chunk;
-
-	chunk = kzalloc(sizeof(*chunk), GFP_KERNEL);
-	if (unlikely(!chunk)) {
-		pr_err("chunk kernel memory alloc fail!\n");
-		return NULL;
-	}
-
-	INIT_LIST_HEAD(&chunk->list);
-	chunk->chan = chan;
-	/* Toggling change bit (CB) in each chunk, this is a mechanism to
-	 * inform the eDMA HW block that this is a new linked list ready
-	 * to be consumed.
-	 *  - Odd chunks originate CB equal to 0
-	 *  - Even chunks originate CB equal to 1
-	 */
-	chunk->cb = !(desc->chunks_alloc % 2);
-	if (chan->dir == EDMA_DIR_WRITE) {
-		chunk->ll_region.paddr = dw->ll_region_wr[chan->id].paddr;
-		chunk->ll_region.vaddr = dw->ll_region_wr[chan->id].vaddr;
-	} else {
-		chunk->ll_region.paddr = dw->ll_region_rd[chan->id].paddr;
-		chunk->ll_region.vaddr = dw->ll_region_rd[chan->id].vaddr;
-	}
-
-	if (desc->chunk) {
-		/* Create and add new element into the linked list */
-		if (!dw_edma_alloc_burst(chunk)) {
-			pr_err("burst alloc fail!!\n");
-			kfree(chunk);
-			return NULL;
-		}
-		desc->chunks_alloc++;
-		list_add_tail(&chunk->list, &desc->chunk->list);
-	} else {
-		/* List head */
-		chunk->burst = NULL;
-		desc->chunks_alloc = 0;
-		desc->chunk = chunk;
-	}
-	dbg_tfr("[DMA_CH] List is created (ch num:%d)\n", desc->chunks_alloc);
-
-	return chunk;
-}
-
-static struct dw_edma_desc *dw_edma_alloc_desc(struct dw_edma_chan *chan)
-{
-	struct dw_edma_desc *desc;
-
-	desc = kzalloc(sizeof(*desc), GFP_KERNEL);
-	if (unlikely(!desc)) {
-		pr_err("description kernel memory alloc fail!\n");
-		return NULL;
-	}
-
-	desc->chan = chan;
-	if (!dw_edma_alloc_chunk(desc)) {
-		kfree(desc);
-		return NULL;
-	}
-
-	return desc;
-}
-
-static void dw_edma_free_burst(struct dw_edma_chunk *chunk)
-{
-	struct dw_edma_burst *child, *_next;
-
-	/* Remove all the list elements */
-	list_for_each_entry_safe(child, _next, &chunk->burst->list, list) {
-		list_del(&child->list);
-		kfree(child);
-		chunk->bursts_alloc--;
-	}
-
-	/* Remove the list head */
-	kfree(child);
-	chunk->burst = NULL;
-}
-
-static void dw_edma_free_chunk(struct dw_edma_desc *desc)
-{
-	struct dw_edma_chunk *child, *_next;
-
-	if (!desc->chunk)
-		return;
-
-	/* Remove all the list elements */
-	list_for_each_entry_safe(child, _next, &desc->chunk->list, list) {
-		dw_edma_free_burst(child);
-		list_del(&child->list);
-		kfree(child);
-		desc->chunks_alloc--;
-	}
-
-	/* Remove the list head */
-	kfree(child);
-	desc->chunk = NULL;
-}
-
-static void dw_edma_free_desc(struct dw_edma_desc *desc)
-{
-	dw_edma_free_chunk(desc);
-	kfree(desc);
-}
 
 static void vchan_free_desc(struct virt_dma_desc *vdesc)
 {
@@ -599,16 +472,25 @@ static void dw_edma_start_transfer(struct dw_edma_chan *chan)
 	child = list_first_entry_or_null(&desc->chunk->list,
 					 struct dw_edma_chunk, list);
 	if (!child) {
-		dev_err(chan->chip->dev, "child is null\n");
+		/* 
+		 * If the list is empty, it means the descriptor is already consumed 
+		 * or in an invalid state. Instead of erroring out and hanging the channel,
+		 * complete the descriptor and reset status to IDLE.
+		 */
+		dev_warn(chan->chip->dev, "Child is null (chunks_alloc:%d). Forcing completion.\n", desc->chunks_alloc);
+		list_del(&vd->node);
+		vchan_cookie_complete(vd);
+		chan->status = EDMA_ST_IDLE;
 		return;
 	}
 
 	dw_edma_v0_core_start(child, !desc->xfer_sz, chan->set_desc, chan->is_llm);
-	desc->xfer_sz += child->ll_region.sz;
-	dw_edma_free_burst(child);
-	list_del(&child->list);
-	kfree(child);
-	desc->chunks_alloc--;
+	
+	/* 
+	 * Do NOT free the chunk here. 
+	 * The chunk must remain valid while the DMA is running.
+	 * It will be freed in dw_edma_done_interrupt() after completion.
+	 */
 }
 
 static int dw_edma_device_config(struct dma_chan *dchan,
@@ -727,8 +609,7 @@ static void dw_edma_device_issue_pending(struct dma_chan *dchan)
 	spin_unlock_irqrestore(&chan->vc.lock, flags);
 }
 
-static enum dma_status
-dw_edma_device_tx_status(struct dma_chan *dchan, dma_cookie_t cookie,
+static enum dma_status dw_edma_device_tx_status(struct dma_chan *dchan, dma_cookie_t cookie,
 			 struct dma_tx_state *txstate)
 {
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(dchan);
@@ -763,8 +644,8 @@ ret_residue:
 
 	return ret;
 }
-static struct dma_async_tx_descriptor *
-dw_edma_device_transfer(struct dw_edma_transfer *xfer)
+
+static struct dma_async_tx_descriptor *dw_edma_device_transfer(struct dw_edma_transfer *xfer)
 {
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(xfer->dchan);
 	enum dma_transfer_direction dir = xfer->direction;
@@ -936,8 +817,7 @@ err_alloc:
 	return NULL;
 }
 
-static struct dma_async_tx_descriptor *
-dw_edma_device_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
+static struct dma_async_tx_descriptor *dw_edma_device_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 			     unsigned int len,
 			     enum dma_transfer_direction direction,
 			     unsigned long flags, void *context)
@@ -955,8 +835,7 @@ dw_edma_device_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 	return dw_edma_device_transfer(&xfer);
 }
 
-static struct dma_async_tx_descriptor *
-dw_edma_device_prep_dma_cyclic(struct dma_chan *dchan, dma_addr_t paddr,
+static struct dma_async_tx_descriptor *dw_edma_device_prep_dma_cyclic(struct dma_chan *dchan, dma_addr_t paddr,
 			       size_t len, size_t count,
 			       enum dma_transfer_direction direction,
 			       unsigned long flags)
@@ -974,8 +853,7 @@ dw_edma_device_prep_dma_cyclic(struct dma_chan *dchan, dma_addr_t paddr,
 	return dw_edma_device_transfer(&xfer);
 }
 
-static struct dma_async_tx_descriptor *
-dw_edma_device_prep_interleaved_dma(struct dma_chan *dchan,
+static struct dma_async_tx_descriptor *dw_edma_device_prep_interleaved_dma(struct dma_chan *dchan,
 				    struct dma_interleaved_template *ilt,
 				    unsigned long flags)
 {
@@ -1038,10 +916,11 @@ static irqreturn_t user_irq_events(struct dx_edma_irq *dw_irq, struct dx_dma_use
 	return IRQ_HANDLED;
 }
 
-static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
+void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 {
 	struct dw_edma_desc *desc;
 	struct virt_dma_desc *vd;
+	struct dw_edma_chunk *child;
 	unsigned long flags;
 	dbg_core("[%s] start!!\n", __func__);
 
@@ -1050,13 +929,46 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 	spin_lock_irqsave(&chan->vc.lock, flags);
 	vd = vchan_next_desc(&chan->vc);
 	if (vd) {
+		desc = vd2dw_edma_desc(vd);
+		
+		/* 
+		 * The first chunk in the list is the one that just completed.
+		 * We can now safely free it.
+		 */
+		child = list_first_entry_or_null(&desc->chunk->list,
+						 struct dw_edma_chunk, list);
+		if (child) {
+			desc->xfer_sz += child->ll_region.sz;
+			dw_edma_free_burst(child);
+			
+			if (child->from_pool) {
+				struct dw_edma *dw = chan->chip->dw;
+				unsigned long pool_flags;
+				
+				list_del(&child->list);
+				spin_lock_irqsave(&dw->pool_lock, pool_flags);
+				dw->chunk_free_list[dw->chunk_free_cnt++] = (child - dw->chunk_pool);
+				spin_unlock_irqrestore(&dw->pool_lock, pool_flags);
+				dev_vdbg(chan->chip->dev, "[MEM][CHUNK][POOL] Free: idx=%ld addr=%p buf_paddr=%pad buf_vaddr=%p\n", (child - dw->chunk_pool), child, &child->host_region.paddr, child->host_region.vaddr);
+			} else {
+				/* Non-pool chunk: Move to descriptor's pending free list
+				 * Will be freed by work after all chunks complete */
+				list_del(&child->list);
+				list_add_tail(&child->list, &desc->pending_free_chunks);
+			}
+			desc->chunks_alloc--;
+		}
+
 		switch (chan->request) {
 		case EDMA_REQ_NONE:
-			desc = vd2dw_edma_desc(vd);
 			if (desc->chunks_alloc) {
 				chan->status = EDMA_ST_BUSY;
 				dw_edma_start_transfer(chan);
 			} else {
+				/* All chunks transferred - schedule cleanup work NOW */
+				if (!list_empty(&desc->pending_free_chunks))
+					schedule_work(&desc->cleanup_work);
+				
 				list_del(&vd->node);
 				vchan_cookie_complete(vd);
 				chan->status = EDMA_ST_IDLE;
@@ -1064,6 +976,10 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 			break;
 
 		case EDMA_REQ_STOP:
+			/* Also schedule cleanup on stop */
+			if (!list_empty(&desc->pending_free_chunks))
+				schedule_work(&desc->cleanup_work);
+			
 			list_del(&vd->node);
 			vchan_cookie_complete(vd);
 			chan->request = EDMA_REQ_NONE;
@@ -1143,8 +1059,8 @@ static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 			info = dw_irq->data[pos][!write];
 			if (info) {
 				dbg_irq("(pointer : %p, pos:%ld, write:%d, size :%lu)\n", info, pos, info->cb->write, info->cb->len);
-				dx_pcie_end_profile(PCIE_DATA_BW_T, info->cb->len, info->dev_n, pos, info->cb->write);
-				dx_pcie_start_profile(PCIE_INT_CB_CALL_T, info->cb->len, info->dev_n, pos, info->cb->write);
+				dx_pcie_end_profile(PCIE_DMA_XFER_T, info->cb->len, info->dev_n, pos, info->cb->write);
+				dx_pcie_start_profile(PCIE_ISR_EXEC_T, info->cb->len, info->dev_n, pos, info->cb->write);
 			} else {
 				dbg_irq("Null pointer error!(pointer : %p, pos:%ld, write:%d)\n", info, pos, write);
 			}
@@ -1529,7 +1445,7 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 					if (dw->irq[i].msi.data != msi_data) {
 						pr_info("Msi data is replaced(%d, cached:%d)\n", msi_data, dw->irq[i].msi.data);
 						dw->irq[i].msi.data = msi_data;
-					}
+																				}
 				}
 			} else {
 				break;
@@ -1570,6 +1486,14 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 	}
 
 	raw_spin_lock_init(&dw->lock);
+	for(i = 0; i < EDMA_MAX_WR_CH; i++) {
+		spin_lock_init(&dw->wr_dma_chan_locks[i].ch_lock);
+		dw->wr_dma_chan_locks[i].ch_in_use = false;
+	}
+	for(i = 0; i < EDMA_MAX_RD_CH; i++) {
+		spin_lock_init(&dw->rd_dma_chan_locks[i].ch_lock);
+		dw->rd_dma_chan_locks[i].ch_in_use = false;
+	}
 
 	/* Set iATU */
 	dw->pdev = to_pci_dev(dev);
@@ -1598,6 +1522,10 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 	if (!dw->chan)
 		return -ENOMEM;
 
+	/* Initialize Global Memory Pools */
+	if (dw_edma_mem_init(dw))
+		return -ENOMEM;
+
 	// snprintf(dw->name, sizeof(dw->name), "dx-dma_%d", chip->id);
 	snprintf(dw->name, sizeof(dw->name), "dx-dma_%d", dw->idx);
 
@@ -1620,7 +1548,13 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 		goto err_irq_free;
 
 	/* Power management */
-	pm_runtime_enable(dev);
+	if (!pm_runtime_enabled(dev)) {
+		pm_runtime_enable(dev);
+		dw->pm_runtime_managed = true;
+	} else {
+		dw->pm_runtime_managed = false;
+	}
+	dw_edma_v0_core_engine_enable(dw->chan);
 
 	/* Set up data user IRQ data strutures */
 	dx_user_irq_init(dw);
@@ -1647,6 +1581,7 @@ err_irq_free:
 	return err;
 }
 
+
 int dx_dma_remove(struct dw_edma_chip *chip)
 {
 	struct dw_edma_chan *chan, *_chan;
@@ -1656,28 +1591,37 @@ int dx_dma_remove(struct dw_edma_chip *chip)
 
 	/* Disable eDMA */
 	dw_edma_v0_core_off(dw);
+	
+	/* Free Global Memory Pools */
+	dw_edma_mem_deinit(dw);
 
 	/* Free irqs */
 	for (i = (dw->nr_irqs - 1); i >= 0; i--)
 		free_irq(dw->ops->irq_vector(dev, i), &dw->irq[i]);
 
 	/* Power management */
-	pm_runtime_disable(dev);
+	if (dw->pm_runtime_managed)
+		pm_runtime_disable(dev);
+	dw_edma_v0_core_engine_disable(dw->chan);
 
 	/* Deregister eDMA device */
-	dma_async_device_unregister(&dw->wr_edma);
 	list_for_each_entry_safe(chan, _chan, &dw->wr_edma.channels,
 				 vc.chan.device_node) {
+		dw_edma_device_terminate_all(&chan->vc.chan);
 		tasklet_kill(&chan->vc.task);
+		device_unregister(dchan2dev(&chan->vc.chan));
 		list_del(&chan->vc.chan.device_node);
 	}
+	dma_async_device_unregister(&dw->wr_edma);
 
-	dma_async_device_unregister(&dw->rd_edma);
 	list_for_each_entry_safe(chan, _chan, &dw->rd_edma.channels,
 				 vc.chan.device_node) {
+		dw_edma_device_terminate_all(&chan->vc.chan);
 		tasklet_kill(&chan->vc.task);
+		device_unregister(dchan2dev(&chan->vc.chan));
 		list_del(&chan->vc.chan.device_node);
 	}
+	dma_async_device_unregister(&dw->rd_edma);
 
 	/* Turn debugfs off */
 	dw_edma_v0_core_debugfs_off(chip);

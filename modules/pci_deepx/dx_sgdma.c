@@ -79,12 +79,12 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 	if (pages_nr == 0)
 		return -EINVAL;
 
-	dx_pcie_start_profile(PCIE_SG_TABLE_ALLOC_T, 0, dev_n, dma_n, write);
+	dx_pcie_start_profile(PCIE_SG_ALLOC_T, 0, dev_n, dma_n, write);
 	if (sg_alloc_table(sgt, pages_nr, GFP_KERNEL)) {
 		pr_err("sgl OOM.\n");
 		return -ENOMEM;
 	}
-	dx_pcie_end_profile(PCIE_SG_TABLE_ALLOC_T, 0, dev_n, dma_n, write);
+	dx_pcie_end_profile(PCIE_SG_ALLOC_T, 0, dev_n, dma_n, write);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
 	cb->pages = kvmalloc_array(pages_nr, sizeof(struct page *), GFP_KERNEL);
@@ -96,7 +96,7 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	dx_pcie_start_profile(PCIE_USER_PG_TO_PHY_MAPPING_T, 0, dev_n, dma_n, write);
+	dx_pcie_start_profile(PCIE_USER_MAP_T, 0, dev_n, dma_n, write);
 
 	/* get physical pages from user pages */
 	rv = get_user_pages_fast((unsigned long)buf, pages_nr, 1/* write */,
@@ -142,7 +142,7 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 		// pr_info("SG#%d Address:0x%llx, Page:%x, nbytes:%x\n",
 		// 	i, sg_dma_address(sg), sg->page_link, nbytes);
 	}
-	dx_pcie_end_profile(PCIE_USER_PG_TO_PHY_MAPPING_T, 0, dev_n, dma_n, write);
+	dx_pcie_end_profile(PCIE_USER_MAP_T, 0, dev_n, dma_n, write);
 
 	if (len) {
 		pr_err("Invalid user buffer length. Cannot map to sgl\n");
@@ -165,7 +165,7 @@ ssize_t dx_sgdma_write_user(struct dw_edma *dw, char __user *buf, u64 pos, size_
 	size_t ret;
 	int rv;
 
-	dx_pcie_start_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
 
 	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
 		dw->idx, buf, (u64)count, pos, npu_id);
@@ -206,7 +206,7 @@ ssize_t dx_sgdma_write_user(struct dw_edma *dw, char __user *buf, u64 pos, size_
 		ret = rv;
 	}
 
-	dx_pcie_end_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+	dx_pcie_end_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
 	return ret;
 }
 
@@ -237,7 +237,7 @@ ssize_t dx_sgdma_write_kernel(struct dw_edma *dw, char *buf, u64 pos, dma_addr_t
 	size_t ret;
 	int rv;
 
-	dx_pcie_start_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
 
 	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
 		dw->idx, buf, (u64)count, pos, npu_id);
@@ -276,7 +276,7 @@ ssize_t dx_sgdma_write_kernel(struct dw_edma *dw, char *buf, u64 pos, dma_addr_t
 		ret = rv;
 	}
 
-	dx_pcie_end_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 1);
+	dx_pcie_end_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
 	return ret;
 }
 
@@ -287,7 +287,7 @@ ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t
 	size_t ret;
 	int rv;
 
-	dx_pcie_start_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 0);
+	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 0);
 
 	dbg_sg("[R] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
 		dw->idx, ubuf, (u64)count, pos, npu_id);
@@ -324,7 +324,7 @@ ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t
 		ret = rv;
 	}
 
-	dx_pcie_end_profile(PCIE_KERNEL_EXEC_T, count, dw->idx, npu_id, 0);
+	dx_pcie_end_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 0);
 	return ret;
 }
 #if 0
@@ -445,7 +445,13 @@ void dx_sgdma_init(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	int i;
-	if ((dw) && (dw->ref_count == 0)) {
+
+	if (!dw) {
+		pr_err("[ERR] not found deepx pcie struct for dev_id %d\n", dev_id);
+		return;
+	}
+
+	if (dw->ref_count == 0) {
 		for (i=0; i<dw->rd_ch_cnt; i++) {
 			dw_edma_dma_allocation(dw->rd_dma_id, i, &dw->wr_dma_chan[i]);
 		}

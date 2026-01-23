@@ -41,7 +41,10 @@
 	#endif
 #endif
 
-#define DEEPX_PCIE_ID					(0x1FF4)
+#define DX_PCI_VENDOR_ID					0x1FF4
+#define DX_PCI_DEVICE_ID					0x0
+#define DX_PCI_SUB_VENDOR_ID				0x1FF4
+#define DX_PCI_SUB_DEVICE_ID				0x0
 
 #define USER_BAR_NUM					3
 
@@ -247,7 +250,7 @@ static void dw_edma_pcie_get_vsec_dma_data(struct pci_dev *pdev,
 	u16 vsec;
 	u64 off;
 
-	vsec = dx_pci_find_vsec_capability(pdev, DEEPX_PCIE_ID,
+	vsec = dx_pci_find_vsec_capability(pdev, DX_PCI_VENDOR_ID,
 					DW_PCIE_VSEC_DMA_ID);
 	if (!vsec)
 		return;
@@ -705,8 +708,10 @@ static void dx_dma_pcie_shutdown(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
-	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0000), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE(DEEPX_PCIE_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, DX_PCI_DEVICE_ID, DX_PCI_SUB_VENDOR_ID, DX_PCI_SUB_DEVICE_ID), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	/* TODO: Below should be removed after 2512 FW Release */
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, DX_PCI_DEVICE_ID), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) }, 
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, dx_dma_pcie_id_table);
