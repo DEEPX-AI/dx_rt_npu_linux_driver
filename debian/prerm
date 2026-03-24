@@ -40,19 +40,29 @@ case "$1" in
             systemctl stop dxrt || true
         fi
         
-        # Force remove modules
-        rmmod -f dxrt_driver || true
-        rmmod -f dx_dma || true
+        # Unload modules only if they are loaded
+        if lsmod | grep -q "^dxrt_driver"; then
+            echo "Unloading dxrt_driver module..."
+            rmmod dxrt_driver 2>/dev/null || true
+        fi
+        
+        if lsmod | grep -q "^dx_dma"; then
+            echo "Unloading dx_dma module..."
+            rmmod dx_dma 2>/dev/null || true
+        fi
 
         # 2. Remove the module from DKMS
         # This unregisters the module from DKMS, uninstalls it from /lib/modules/,
         # and cleans up DKMS's internal build directories for this module.
         # '--all' ensures it's removed for all installed kernel versions.
+        # Only attempt removal if the module exists in DKMS
         echo "Removing ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} from DKMS..."
-        if ! dkms remove "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" --all; then
-            echo "Error: 'dkms remove' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}. Manual cleanup may be required." >&2
-            # Do NOT exit 1 here unless absolutely critical, as failing prerm can leave the package in a bad state.
-            # However, for critical drivers, you might decide to exit.
+        if dkms status "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" 2>/dev/null | grep -q "${PACKAGE_NAME}"; then
+            if ! dkms remove "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" --all 2>/dev/null; then
+                echo "Warning: 'dkms remove' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+            fi
+        else
+            echo "Module ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} not found in DKMS, skipping removal."
         fi
     ;;
 

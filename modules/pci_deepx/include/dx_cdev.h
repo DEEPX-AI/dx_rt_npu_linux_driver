@@ -56,6 +56,7 @@ struct dx_dma_io_cb {
 	// void (*io_done)(unsigned long cb_hndl, int err);
 	char result; /* 0:PASS, -1:FAIL */
 	bool is_llm; /* linked list mode */
+	bool pre_mapped; /* SG already has DMA addrs (dma_alloc_coherent) */
 };
 
 struct dx_dma_cdev {

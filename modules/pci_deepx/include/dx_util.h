@@ -78,6 +78,8 @@ extern u16 dx_pci_find_vsec_capability(struct pci_dev *dev, u16 vendor, int cap)
 extern int dx_pci_read_revision_id(struct pci_dev *dev, u8 *revision_id);
 extern int dx_pci_read_program_if(struct pci_dev *dev, u8 *prog_if);
 extern u16 dx_pci_read_msi_data(struct pci_dev *pdev);
+extern int dx_pci_read_msi_msg(struct pci_dev *pdev, struct msi_msg *msg);
+extern int dx_pci_write_msi_msg(struct pci_dev *pdev, struct msi_msg *msg);
 
 #ifndef DEFINE_SHOW_ATTRIBUTE
 #define DEFINE_SHOW_ATTRIBUTE(__name)                   \

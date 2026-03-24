@@ -8,6 +8,9 @@
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
+#include <linux/irq.h>
+#include <linux/msi.h>
+#include <linux/pci.h>
 
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
@@ -16,18 +19,6 @@
 
 #include "dx_lib.h"
 #include "dx_util.h"
-
-/* Minimal anomaly diagnostics (avoid verbose normal path logging) */
-#ifndef EDMA_ANOMALY_DIAG
-#define EDMA_ANOMALY_DIAG 1
-#endif
-
-#if EDMA_ANOMALY_DIAG
-#define edma_anom_warn(fmt, ...) \
-	printk_ratelimited(KERN_WARNING pr_fmt("%s:%d: " fmt), __func__, __LINE__, ##__VA_ARGS__)
-#else
-#define edma_anom_warn(fmt, ...) do { } while (0)
-#endif
 
 enum dw_edma_control {
 	DW_EDMA_V0_CB					= BIT(0),
@@ -230,7 +221,7 @@ static inline void writeq_ch(struct dw_edma *dw, enum dw_edma_dir dir, u16 ch,
 static inline u64 readq_ch(struct dw_edma *dw, enum dw_edma_dir dir, u16 ch,
 			   const void __iomem *addr)
 {
-	u32 value;
+	u64 value;
 
 	if (dw->mf == DX_DMA_MF_EDMA_LEGACY) {
 		u32 viewport_sel;
@@ -300,64 +291,33 @@ enum dma_status dw_edma_v0_core_ch_status(struct dw_edma_chan *chan)
 	tmp = FIELD_GET(EDMA_V0_CH_STATUS_MASK,
 			GET_CH_32(dw, chan->dir, chan->id, ch_control1));
 
-	if (tmp == 1) {
+	switch (tmp) {
+	case 0: /* CS=00: Idle — channel completed or was never started */
+		return DMA_COMPLETE;
+	case 1: /* CS=01: Running */
 		dbg_tfr("[%s] status is progress\n", dma_chan_name(&chan->vc.chan));
 		return DMA_IN_PROGRESS;
-	}
-	else if (tmp == 3)
+	case 3: /* CS=11: Stopped (normal completion) */
 		return DMA_COMPLETE;
-	else {
-		pr_err("[%s] status is error\n", dma_chan_name(&chan->vc.chan));
+	case 2: /* CS=10: Halted on error */
+	default:
+		pr_err("[%s] status is error (CS=%u)\n",
+		       dma_chan_name(&chan->vc.chan), tmp);
 		return DMA_ERROR;
 	}
 }
 
-#define EDMA_ENGINE_HALT_TIMEOUT_US 	(10000) // 10ms
-int dw_edma_v0_core_ch_halt(struct dw_edma_chan *chan)
+/*
+ * Read raw CS bits [6:5] from ch_control1.  Returns 0-3.
+ * Useful for diagnostic logging without side-effects.
+ */
+u32 dw_edma_v0_core_ch_status_raw(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
-	unsigned long timeout_us;
-	int ret = 0;
-	u32 ch_status = 1;
 
-	dbg_core("Channel %s is stuck. Starting global flush sequence.\n",
-		 dma_chan_name(&chan->vc.chan));
-
-	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_DIS);
-	timeout_us = EDMA_ENGINE_HALT_TIMEOUT_US;
-	while (timeout_us > 0) {
-		ch_status = GET_RW_32(dw, chan->dir, engine_en);
-		if (ch_status == EDMA_ENG_DIS) {
-			dbg_core("[%s] Channel %s %s\n",
-			 __func__, dma_chan_name(&chan->vc.chan), 
-			 ch_status ? "enabled" : "disabled");
-			goto cleanup;
-		}
-		usleep_range(10, 20);
-		timeout_us -= 10;
-	}
-
-	dev_err(chan->vc.chan.device->dev, "FATAL: Channel %s did not stop even after engine disable!\n",
-		dma_chan_name(&chan->vc.chan));
-	ret = -ETIMEDOUT;
-	goto re_enable_engine;
-
-cleanup:
-	ch_status = GET_RW_32(dw, chan->dir, engine_en);
-	dbg_core("[%s][%s] Clearing residual status.\n",
-		 __func__, dma_chan_name(&chan->vc.chan));
-	dw_edma_v0_core_clear_done_int(chan);
-	dw_edma_v0_core_clear_abort_int(chan);
-
-re_enable_engine:
-	SET_RW_32(dw, chan->dir, engine_en, 1);
-	dbg_core("[%s] Channel %s %s\n",
-		__func__, dma_chan_name(&chan->vc.chan), 
-		GET_RW_32(dw, chan->dir, engine_en) ? "enabled" : "disabled");
-
-	return ret;
+	return FIELD_GET(EDMA_V0_CH_STATUS_MASK,
+			GET_CH_32(dw, chan->dir, chan->id, ch_control1));
 }
-
 
 void dw_edma_v0_core_clear_done_int(struct dw_edma_chan *chan)
 {
@@ -472,19 +432,415 @@ static void dw_edma_v0_gen_llp(struct dw_edma_v0_llp __iomem *llp,
 	#endif /* DUMP_DESC_TABLE */
 }
 
-static void dw_edma_v0_core_wait_channel_idle(struct dw_edma_chan *chan)
+u32 dw_edma_v0_core_ch_recover_abort(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
-	uint32_t ch_control;
-	unsigned long start_jiffies;
-	unsigned long timeout_jiffies;
-	int retry_count;
-	bool status_changed;
-	unsigned long elapsed_jiffies;
-	unsigned int elapsed_msecs;
-	u32 int_status, done_status, abort_status;
+	u32 ch_control, err_status = 0;
 
 	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+
+	/* Not in error state — nothing to do */
+	if ((ch_control & (BIT(5) | BIT(6))) != BIT(6))
+		return 0;
+
+	/* Read err_status to acknowledge the error (Read-Clear register) */
+	if (chan->dir == EDMA_DIR_WRITE)
+		err_status = GET_32(dw, wr_err_status);
+	else
+		err_status = GET_32(dw, rd_err_status.lsb);
+
+	pr_info("CH%d: abort ack (ch_control1=0x%x, err_status=0x%x)\n",
+		chan->id, ch_control, err_status);
+
+	dw_edma_v0_core_clear_abort_int(chan);
+	dw_edma_v0_core_clear_done_int(chan);
+
+	return err_status;
+}
+
+/**
+ * notify_peer_channels - Wake peer channels after engine_en cycle.
+ *
+ * engine_en=0->1 resets ALL channels on the same direction.
+ * Peer channels that had active transfers will be silently killed.
+ * Set hw_err and wake their waitqueues so their transfer threads
+ * detect the failure immediately instead of waiting for timeout.
+ */
+static void notify_peer_channels(struct dw_edma_chan *initiator)
+{
+	struct dw_edma *dw = initiator->chip->dw;
+	int i, start, end;
+
+	if (initiator->dir == EDMA_DIR_WRITE) {
+		start = 0;
+		end = dw->wr_ch_cnt;
+	} else {
+		start = dw->wr_ch_cnt;
+		end = dw->wr_ch_cnt + dw->rd_ch_cnt;
+	}
+
+	for (i = start; i < end; i++) {
+		struct dw_edma_chan *peer = &dw->chan[i];
+
+		if (peer == initiator)
+			continue;
+
+		if (peer->status == EDMA_ST_BUSY) {
+			pr_warn("CH%d: peer channel killed by engine_en cycle (initiator CH%d)\n",
+				peer->id, initiator->id);
+			WRITE_ONCE(peer->hw_err, true);
+			{
+				wait_queue_head_t *wq = READ_ONCE(peer->transfer_wq);
+				if (wq)
+					wake_up_interruptible(wq);
+			}
+		}
+	}
+}
+
+int dw_edma_v0_core_ch_soft_reset(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+	u32 ch_control, err_status;
+	unsigned long flags;
+
+	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+
+	/* Not in error state — nothing to do */
+	if ((ch_control & (BIT(5) | BIT(6))) != BIT(6))
+		return 0;
+
+	/* Acknowledge error (Read-Clear register) */
+	if (chan->dir == EDMA_DIR_WRITE)
+		err_status = GET_32(dw, wr_err_status);
+	else
+		err_status = GET_32(dw, rd_err_status.lsb);
+
+	dw_edma_v0_core_clear_abort_int(chan);
+	dw_edma_v0_core_clear_done_int(chan);
+
+	pr_warn("CH%d: CS=2 (err_status=0x%x), engine_en cycle\n",
+		chan->id, err_status);
+
+	/*
+	 * Serialize engine_en cycles per device.
+	 * engine_en is a shared register per direction — concurrent
+	 * engine_en cycles from two channels race and cancel each
+	 * other's reset (Thread A: en=0, Thread B: en=0, A: en=1,
+	 * B: en=0 → A's reset undone).  Hold engine_reset_lock
+	 * across the entire cycle to prevent this.
+	 */
+	spin_lock_irqsave(&dw->engine_reset_lock, flags);
+
+	/* Re-check under lock — another channel may have already reset */
+	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+	if ((ch_control & (BIT(5) | BIT(6))) != BIT(6)) {
+		spin_unlock_irqrestore(&dw->engine_reset_lock, flags);
+		pr_info("CH%d: CS cleared by peer reset, skip\n", chan->id);
+		return 0;
+	}
+
+	/* engine_en=0 → 1 resets DMA logic (datasheet Table 6-8) */
+	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_DIS);
+	udelay(200);
+	SET_RW_32(dw, chan->dir, engine_en, EDMA_ENG_EN);
+	udelay(100);
+
+	spin_unlock_irqrestore(&dw->engine_reset_lock, flags);
+
+	/* Notify peer channels that were killed by engine_en cycle */
+	notify_peer_channels(chan);
+
+	/* Verify */
+	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+	if (((ch_control >> 5) & 0x3) == 2) {
+		pr_warn("CH%d: soft reset failed, CS still 2\n", chan->id);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/**
+ * dw_edma_v0_core_engine_cycle - Unconditional engine_en=0 -> 1 reset.
+ *
+ * Resets the DMA engine for the given direction regardless of channel
+ * status.  Used as a last-resort cleanup when a graceful EDMA_REQ_STOP
+ * timed out and the channel HW is still running.
+ *
+ * WARNING: This kills ALL channels on that direction (read or write).
+ */
+void dw_edma_v0_core_engine_cycle(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+	unsigned long flags;
+
+	pr_warn("CH%d %s: engine_en cycle (force reset)\n",
+		chan->id, (chan->dir == EDMA_DIR_WRITE) ? "WR" : "RD");
+
+	spin_lock_irqsave(&dw->engine_reset_lock, flags);
+	SET_RW_32(dw, chan->dir, engine_en, 0);
+	udelay(200);
+	SET_RW_32(dw, chan->dir, engine_en, BIT(0));
+	udelay(100);
+	spin_unlock_irqrestore(&dw->engine_reset_lock, flags);
+
+	/* Notify peer channels killed by engine_en cycle */
+	notify_peer_channels(chan);
+}
+
+/*
+ * PCIe Secondary Bus Reset — PROCESS CONTEXT ONLY.
+ *
+ * Resets the ENTIRE PCIe endpoint by toggling the Secondary Bus Reset
+ * bit on the upstream bridge.  This is electrically equivalent to
+ * asserting PERST# and resets ALL HW state including DW eDMA.
+ *
+ * IMPORTANT: ALL DMA channels must be quiesced (dmaengine_terminate_all)
+ * BEFORE calling this function.  SBR kills all in-flight transfers on
+ * ALL channels.
+ *
+ * After SBR:
+ *   - All eDMA channels are in CS=3 (Stopped, power-on default)
+ *   - DMA engines, channel power, iATU are re-initialized
+ *   - PCI config space + MSI-X restored from saved state
+ *   - New transfers can be started normally
+ *
+ * Return: 0 on success, -EIO on failure.
+ */
+int dw_edma_v0_core_pcie_reset(struct dw_edma *dw)
+{
+	struct pci_dev *pdev;
+	struct pci_dev *bridge;
+	u16 bridge_ctrl;
+	struct msi_msg saved_msi = {0};
+	int i;
+
+	pdev = dw->pdev;
+	if (!pdev) {
+		pr_err("[pcie_reset] no pci_dev\n");
+		return -EIO;
+	}
+
+	bridge = pdev->bus->self;
+	if (!bridge) {
+		pr_err("[pcie_reset] no upstream bridge\n");
+		return -EIO;
+	}
+
+	pr_info("[pcie_reset] performing PCIe Secondary Bus Reset\n");
+
+	/*
+	 * Step 0: Save MSI from PCI config space BEFORE SBR.
+	 *
+	 * This is the ground truth — the actual MSI address/data that the
+	 * APIC/IOMMU programmed at IRQ activation time.  We must save it
+	 * now because:
+	 *
+	 *   (a) pci_restore_msi_state() (called inside pci_restore_state)
+	 *       writes msi_desc->msg back to PCI config, but on some
+	 *       kernels/platforms msi_desc->msg.data is 0 (kernel bug or
+	 *       IOMMU remapping artifact).
+	 *
+	 *   (b) get_cached_msi_msg() reads msi_desc->msg which has the
+	 *       same problem — data=0.
+	 *
+	 * By reading PCI config directly before SBR, we capture the
+	 * working MSI values and can restore them reliably after SBR.
+	 */
+	if (dx_pci_read_msi_msg(pdev, &saved_msi) != 0) {
+		/* Fallback: use driver's cached copy from probe/last-known-good */
+		if (dw->nr_irqs > 0)
+			memcpy(&saved_msi, &dw->irq[0].msi, sizeof(saved_msi));
+	}
+	pr_info("[pcie_reset] saving MSI before SBR: addr=0x%x_%x data=0x%x\n",
+		saved_msi.address_hi, saved_msi.address_lo, saved_msi.data);
+
+	/* Save PCI state (config space + MSI table entries) */
+	pci_save_state(pdev);
+
+	/* Assert Secondary Bus Reset on parent bridge */
+	pci_read_config_word(bridge, PCI_BRIDGE_CONTROL, &bridge_ctrl);
+	pci_write_config_word(bridge, PCI_BRIDGE_CONTROL,
+			      bridge_ctrl | PCI_BRIDGE_CTL_BUS_RESET);
+
+	/* Hold reset for 2ms (PCIe spec minimum) */
+	msleep(2);
+
+	/* De-assert reset */
+	pci_write_config_word(bridge, PCI_BRIDGE_CONTROL,
+			      bridge_ctrl & ~PCI_BRIDGE_CTL_BUS_RESET);
+
+	/* Wait for link re-training and device ready (500ms conservative) */
+	msleep(500);
+
+	/* Restore PCI state + re-enable bus mastering.
+	 * NOTE: pci_restore_msi_state() inside pci_restore_state() may
+	 * write msi_desc->msg.data=0 to PCI config — we fix this below. */
+	pci_restore_state(pdev);
+	pci_set_master(pdev);
+
+	/*
+	 * Full eDMA re-initialization — mirrors the probe sequence:
+	 *   1. off()  : mask/clear interrupts, engines off
+	 *   2. device_config: IMWR (MSI interrupt routing) per channel
+	 *   3. engine_en + ch_pwr_en
+	 *
+	 * SBR resets ALL eDMA registers to power-on defaults (zero).
+	 * pci_restore_state restores PCI config space (incl. MSI cap),
+	 * but MMIO-mapped eDMA registers (IMWR, int_mask, engine_en,
+	 * ch_pwr_en, etc.) must be re-programmed explicitly.
+	 */
+
+	/*
+	 * Restore MSI: Write the pre-SBR MSI message to PCI config and
+	 * update all driver-cached copies.  This fixes the case where
+	 * pci_restore_msi_state wrote data=0 from a stale msi_desc->msg.
+	 *
+	 * NOTE: On platforms with Interrupt Remapping (Intel VT-d / AMD-Vi),
+	 * MSI data=0x0 in PCI config is NORMAL â the actual vector delivery
+	 * is handled by the IR table in DRAM, not the PCI MSI data field.
+	 * The IMWR registers also use data=0 in this case, which is correct.
+	 */
+	if (saved_msi.data != 0) {
+		dx_pci_write_msi_msg(pdev, &saved_msi);
+	} else {
+		/*
+		 * Even the pre-SBR PCI config had data=0 — read from
+		 * kernel's IRQ framework as last resort, and if that also
+		 * fails, the driver's probe-time cache is already in
+		 * dw->irq[0].msi.
+		 */
+		int irq = pci_irq_vector(pdev, 0);
+
+		if (irq >= 0 && irq_get_msi_desc(irq)) {
+			get_cached_msi_msg(irq, &saved_msi);
+			pr_info("[pcie_reset] pre-SBR MSI data was 0, "
+				"kernel cached: data=0x%x\n", saved_msi.data);
+		}
+		if (saved_msi.data == 0 && dw->nr_irqs > 0 &&
+		    dw->irq[0].msi.data != 0) {
+			memcpy(&saved_msi, &dw->irq[0].msi,
+			       sizeof(saved_msi));
+			pr_info("[pcie_reset] using probe-time MSI: "
+				"addr=0x%x_%x data=0x%x\n",
+				saved_msi.address_hi,
+				saved_msi.address_lo, saved_msi.data);
+		}
+		if (saved_msi.data != 0)
+			dx_pci_write_msi_msg(pdev, &saved_msi);
+		else
+			pr_info("[pcie_reset] MSI data=0 on all sources — "
+				"normal if Interrupt Remapping is active\n");
+	}
+
+	/* Update driver's cached MSI for all IRQs and channels */
+	for (i = 0; i < dw->nr_irqs; i++)
+		memcpy(&dw->irq[i].msi, &saved_msi, sizeof(saved_msi));
+	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++)
+		memcpy(&dw->chan[i].msi, &saved_msi, sizeof(saved_msi));
+
+	/* Step 1: Clean slate — same as dw_edma_v0_core_off() */
+	SET_BOTH_32(dw, int_mask,
+		    EDMA_V0_DONE_INT_MASK | EDMA_V0_ABORT_INT_MASK);
+	SET_BOTH_32(dw, int_clear,
+		    EDMA_V0_DONE_INT_MASK | EDMA_V0_ABORT_INT_MASK);
+
+	/* Step 2: Re-enable channel power (all channels, both directions).
+	 * ch_pwr_en gates the channel clock — must be ON before IMWR writes
+	 * so that per-channel registers are accessible. */
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch0_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch0_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch1_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch1_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch2_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch2_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_READ, ch3_pwr_en, EDMA_ENG_EN);
+	SET_RW_COMPAT(dw, EDMA_DIR_WRITE, ch3_pwr_en, EDMA_ENG_EN);
+
+	/* Step 3: Enable DMA engines BEFORE IMWR programming.
+	 * Some HW revisions require engine_en=1 for per-channel register
+	 * writes (IMWR, ch_control1) to take effect.  Enable both
+	 * directions explicitly with readback verification. */
+	SET_32(dw, wr_engine_en, EDMA_ENG_EN);
+	udelay(100);
+	SET_32(dw, rd_engine_en, EDMA_ENG_EN);
+	udelay(100);
+
+	/* Readback verify — retry if rd_engine_en didn't stick */
+	if (!GET_32(dw, rd_engine_en)) {
+		pr_warn("[pcie_reset] rd_engine_en=0 after first write, retrying\n");
+		SET_32(dw, rd_engine_en, EDMA_ENG_EN);
+		udelay(200);
+		if (!GET_32(dw, rd_engine_en))
+			pr_err("[pcie_reset] rd_engine_en STILL 0 after retry!\n");
+	}
+
+	/* Step 4: Re-program IMWR (MSI interrupt routing) for ALL channels.
+	 * chan->msi was updated in Step 0 with the correct kernel-cached
+	 * MSI data (address + vector).  Without this, DMA completion/abort
+	 * generates no MSI interrupt because IMWR registers are zeroed
+	 * by SBR. */
+	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++)
+		dw_edma_v0_core_device_config(&dw->chan[i]);
+
+	/* Step 5: Re-configure iATU inbound mappings from saved config */
+	dw_iatu_default_config_set(dw);
+
+	/* Clear SW flags on all channels */
+	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++) {
+		dw->chan[i].hw_err = false;
+		dw->chan[i].aborted = false;
+	}
+
+	/* Step 6: Unmask interrupts */
+	SET_BOTH_32(dw, int_mask, 0);
+
+	/* Diagnostic: verify final state */
+	{
+		struct msi_msg pci_msi = {0};
+		u32 wr_imwr_data = GET_RW_32(dw, EDMA_DIR_WRITE, ch01_imwr_data);
+		u32 rd_imwr_data = GET_RW_32(dw, EDMA_DIR_READ, ch01_imwr_data);
+
+		dx_pci_read_msi_msg(pdev, &pci_msi);
+
+		pr_info("[pcie_reset] done: wr_eng=0x%x rd_eng=0x%x "
+			"wr_imwr_data=0x%x rd_imwr_data=0x%x "
+			"PCI_MSI_data=0x%x int_mask=0x%x/0x%x\n",
+			GET_32(dw, wr_engine_en), GET_32(dw, rd_engine_en),
+			wr_imwr_data, rd_imwr_data,
+			pci_msi.data,
+			GET_RW_32(dw, EDMA_DIR_WRITE, int_mask),
+			GET_RW_32(dw, EDMA_DIR_READ, int_mask));
+	}
+
+	return 0;
+}
+
+static int dw_edma_v0_core_wait_channel_idle(struct dw_edma_chan *chan)
+{
+	struct dw_edma *dw = chan->chip->dw;
+	u32 ch_control;
+	unsigned long start_jiffies, elapsed_jiffies, timeout_jiffies;
+	unsigned int elapsed_us;
+	int retry_count;
+	bool status_changed;
+
+	ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
+
+	/* CS=2 (Fatal Error) */
+	if ((ch_control & (BIT(5) | BIT(6))) == BIT(6)) {
+		pr_warn("CH%d: channel in error state (CS=2) at transfer start\n",
+			chan->id);
+		return -EIO;
+	}
+
+	/* CS=3 (Stopped): normal state after SBR or power-on */
+	if ((ch_control & (BIT(5) | BIT(6))) == (BIT(5) | BIT(6))) {
+		dbg_tfr("CH%d: channel in Stopped state (CS=3)\n", chan->id);
+		return 0;
+	}
+
 	if ((ch_control & (BIT(5) | BIT(6))) == BIT(5)) {
 		dbg_tfr("Channel %d is busy[%llx, %llx]\n", chan->id,
 			GET_CH_32(dw, chan->dir, chan->id, sar.lsb) |
@@ -492,54 +848,42 @@ static void dw_edma_v0_core_wait_channel_idle(struct dw_edma_chan *chan)
 			GET_CH_32(dw, chan->dir, chan->id, dar.lsb) |
 			((u64)GET_CH_32(dw, chan->dir, chan->id, dar.msb) << 32));
 
-		/* Start monitoring busy channel for status change */
 		start_jiffies = jiffies;
-		timeout_jiffies = start_jiffies + usecs_to_jiffies(5000); /* 5s timeout (5000 us) */
+		timeout_jiffies = start_jiffies + usecs_to_jiffies(5000);
 		retry_count = 0;
 		status_changed = false;
 
-		/* Poll until status changes to "11" (both bits set) or timeout */
 		while (time_before(jiffies, timeout_jiffies)) {
 			retry_count++;
 			ch_control = GET_CH_32(dw, chan->dir, chan->id, ch_control1);
 
-			if ((ch_control & (BIT(5) | BIT(6))) == (BIT(5) | BIT(6))) {
+			if ((ch_control & (BIT(5) | BIT(6))) != BIT(5)) {
 				status_changed = true;
 				break;
 			}
-			/* Don't burn CPU - yield and wait a bit */
 			if (retry_count % 20 == 0)
 				cond_resched();
 			udelay(10);
 		}
 
-		/* Report results in microseconds */
-		{
-			unsigned int elapsed_usecs;
-			elapsed_jiffies = jiffies - start_jiffies;
-			elapsed_usecs = jiffies_to_usecs(elapsed_jiffies);
+		elapsed_jiffies = jiffies - start_jiffies;
+		elapsed_us = jiffies_to_usecs(elapsed_jiffies);
 
-			if (status_changed) {
-				dbg_tfr("CH%d status changed to 0x%x after %u ms (%d retries)\n", 
-						chan->id, ch_control, elapsed_msecs, retry_count);
-			} else {
-				pr_warn("CH%d status still busy (0x%x) after %u ms (%d retries)\n", 
-						chan->id, ch_control, elapsed_msecs, retry_count);
+		if (status_changed) {
+			u32 new_cs = (ch_control >> 5) & 0x3;
 
-				/* Check interrupt status to see if it was triggered */
-				int_status = GET_RW_32(dw, chan->dir, int_status);
-				done_status = FIELD_GET(EDMA_V0_DONE_INT_MASK, int_status);
-				abort_status = FIELD_GET(EDMA_V0_ABORT_INT_MASK, int_status);
-				
-				pr_warn("CH%d interrupt status: done=0x%lx abort=0x%lx\n",
-						chan->id, (unsigned long)(done_status & BIT(chan->id)), 
-						(unsigned long)(abort_status & BIT(chan->id)));
-				/* Force channel reset as a recovery measure */
-				pr_warn("Forcing CH%d reset due to stuck status\n", chan->id);
-				SET_CH_32(dw, chan->dir, chan->id, ch_control1, 0x0);
-			}
+			dbg_tfr("CH%d status changed to CS=%u (0x%x) after %u us (%d retries)\n",
+				chan->id, new_cs, ch_control, elapsed_us, retry_count);
+
+			if (new_cs == 2)
+				dw_edma_v0_core_ch_recover_abort(chan);
+		} else {
+			pr_warn("CH%d status still busy after %u us (%d retries)\n",
+				chan->id, elapsed_us, retry_count);
 		}
 	}
+
+	return 0;
 }
 
 static int wait_for_dma_channel_idle(struct dw_edma *dw, int channel, bool is_write)
@@ -883,15 +1227,34 @@ void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first, bool set_des
 		SET_RW_32(dw, chan->dir, int_mask, tmp);
 	}
 
-	dw_edma_v0_core_wait_channel_idle(chan);
+	ret = dw_edma_v0_core_wait_channel_idle(chan);
+	if (ret) {
+		/*
+		 * Channel is stuck in error state (CS=2) and HW rejected
+		 * the engine soft reset.  Do NOT issue doorbell — it will
+		 * be ignored, causing a timeout hang.  Mark channel so the
+		 * DMA thread can detect it and fail immediately.
+		 */
+		pr_err("CH%d: skipping doorbell — channel in irrecoverable error\n",
+		       chan->id);
+		WRITE_ONCE(chan->hw_err, true);
+		return;
+	}
 	if (is_llm) {
 		dw_edma_v0_core_write_chunk(chunk, dw->idx, chan->id, chan->dir);
 		
-		/* Sync for device if using Buddy Allocator (Streaming DMA) */
+		/* Sync for device if using Buddy Allocator (Streaming DMA).
+		 * Only sync the actual descriptor data size, not the entire
+		 * 1MB host_region, to avoid excessive cache flush overhead. */
 		if (chunk->is_buddy) {
+			size_t desc_sz = (chunk->bursts_alloc + 1) * EDMA_LL_SZ;
+			/* Include the LLP terminator entry (sizeof lli + llp) */
+			desc_sz += sizeof(struct dw_edma_v0_llp);
+			if (desc_sz > chunk->host_region.sz)
+				desc_sz = chunk->host_region.sz;
 			dma_sync_single_for_device(chan->chip->dev,
 						   chunk->host_region.paddr,
-						   chunk->host_region.sz,
+						   desc_sz,
 						   DMA_TO_DEVICE);
 		}
 		ret = dw_edma_v0_core_xfer_llm_desc(chunk);

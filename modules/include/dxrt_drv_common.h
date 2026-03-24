@@ -8,6 +8,8 @@
 #ifndef __DXRT_DRV_COMMON_H
 #define __DXRT_DRV_COMMON_H
 
+#include "dx_mmio_compat.h"
+
 #ifndef IS_STANDALONE
 #define IS_STANDALONE 0
 #endif
@@ -19,4 +21,4 @@
 #define DX_M1 200
 #define DX_V3 104
 
-#endif // __DXRT_DRV_COMMON_H
+#endif /* __DXRT_DRV_COMMON_H */

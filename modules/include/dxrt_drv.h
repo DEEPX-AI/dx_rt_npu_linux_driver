@@ -20,11 +20,13 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/kthread.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/atomic.h>
 
 #include "dxrt_drv_common.h"
 #include "dxrt_drv_npu.h"
@@ -39,6 +41,11 @@
 #endif
 
 #define MODULE_NAME "dxrt"
+
+/* Default PCIe channel count used across the driver */
+#ifndef MAX_PCIE_CH_NUM
+#define MAX_PCIE_CH_NUM     (3)
+#endif
 
 #define INFERENCE_REQUEST_FIFO_SIZE      (10)
 #define INFERENCE_RESPONSE_FIFO_SIZE     (10)
@@ -56,6 +63,7 @@ typedef enum {
     DXRT_EVENT_ERROR,
     DXRT_EVENT_NOTIFY_THROT,
     DXRT_EVENT_RECOVERY,
+    DXRT_EVENT_PROC_EXIT,      /* Process closed the device (contains proc_id) */
     DXRT_EVENT_NUM,
 } dxrt_event_t;
 
@@ -64,9 +72,17 @@ typedef enum _dxrt_error_t {
     ERR_NPU0_HANG = 1,
     ERR_NPU1_HANG,
     ERR_NPU2_HANG,
+    ERR_NPU_BUS,
     ERR_PCIE_DMA_CH0_FAIL = 100,
     ERR_PCIE_DMA_CH1_FAIL,
     ERR_PCIE_DMA_CH2_FAIL,
+    ERR_LPDDR_DED_WR      = 200,
+    ERR_LPDDR_DED_RD,
+    ERR_FW_TIMEOUT        = 300,
+    ERR_PCIE_DMA_CH0_ABORT = 400,
+    ERR_PCIE_DMA_CH1_ABORT,
+    ERR_PCIE_DMA_CH2_ABORT,
+    ERR_DEVICE_ERR        = 1000,
 } dxrt_error_t;
 
 typedef enum _dxrt_notify_throt_t {
@@ -249,6 +265,8 @@ typedef enum {
     DXRT_CMD_START              ,
     DXRT_CMD_TERMINATE          ,
     DXRT_CMD_PCIE               , /* Sub-command */
+    DXRT_CMD_NPU_RUN_RESP_V2    ,
+    DXRT_CMD_EVENT_V2           ,
     DXRT_CMD_MAX                ,
 } dxrt_cmd_t;
 
@@ -384,10 +402,10 @@ struct dxdev {
     dxrt_queue_t *request_queue1;       /* normal priority / queue1 */
     dxrt_queue_t *request_queue2;       /* normal priority / queue2 */
     dxrt_queue_t *request_high_queue;   /* high priority */
-    spinlock_t request_queue_lock;
-    spinlock_t request_queue1_lock;
-    spinlock_t request_queue2_lock;
-    spinlock_t request_high_queue_lock;
+    struct mutex request_queue_mutex;
+    struct mutex request_queue1_mutex;
+    struct mutex request_queue2_mutex;
+    struct mutex request_high_queue_mutex;
 
     struct task_struct *request_handler;
     wait_queue_head_t request_wq;
@@ -397,10 +415,21 @@ struct dxdev {
     dxrt_response_list_t responses;
     spinlock_t responses_lock;
 
+    /* Waiters for response availability per PCIe channel */
+    wait_queue_head_t response_wq[MAX_PCIE_CH_NUM + 1];
+
+    /* Pending response count per channel (avoids dx_dev_list_get in wait) */
+    atomic_t response_pending[MAX_PCIE_CH_NUM + 1];
+
+    /* Waiter for event availability */
+    wait_queue_head_t event_wq;
+
     dxrt_response_t response;
     wait_queue_head_t error_wq;
     dxrt_error_t error;
     dxrt_notify_throt_t notify;
+    atomic_t recovering;            /* Recovery in progress flag */
+    atomic_t recovery_epoch;        /* Monotonic counter: increments each recovery */
     spinlock_t error_lock;
 };
 
@@ -412,35 +441,41 @@ struct dxrt_driver {
     struct platform_device *pdev;
 };
 
-typedef int (*dxrt_message_handler)(struct dxdev*, dxrt_message_t*);
+struct dxrt_file_ctx {
+    struct dxdev *dx;
+    pid_t tgid;
+    atomic_t terminating;
+};
+
+typedef int (*dxrt_message_handler)(struct dxdev*, dxrt_message_t*, struct dxrt_file_ctx*);
 
 int dxrt_driver_cdev_init(struct dxrt_driver *drv);
 void dxrt_driver_cdev_deinit(struct dxrt_driver *drv);
 int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
-int message_handler_general(struct dxdev *dx, dxrt_message_t *msg);
+int message_handler_general(struct dxdev *dx, dxrt_message_t *msg, struct dxrt_file_ctx *ctx);
 void dxrt_device_init(struct dxdev* dev);
 /* Queue */
-void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size);
-void dxrt_enable_queue(dxrt_queue_t *q);
-void dxrt_disable_queue(dxrt_queue_t *q);
-void dxrt_enqueue_irq_notify(dxrt_queue_t* q);
-int dxrt_enqueue_irq_done(dxrt_queue_t* q);
-int dxrt_is_queue_empty(dxrt_queue_t* q);
-int dxrt_is_queue_full(dxrt_queue_t* q);
-int dxrt_lock_queue(dxrt_queue_t *q);
-void dxrt_unlock_queue(dxrt_queue_t *q);
-int dxrt_enqueue(dxrt_queue_t* q, void *elem);
-int dxrt_lock_check(dxrt_queue_t __iomem* q);
+void dxrt_init_queue(dxrt_queue_t __iomem *q, uint32_t max_count, uint32_t elem_size);
+void dxrt_enable_queue(dxrt_queue_t __iomem *q);
+void dxrt_disable_queue(dxrt_queue_t __iomem *q);
+void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem *q);
+int dxrt_enqueue_irq_done(dxrt_queue_t __iomem *q);
+int dxrt_is_queue_empty(dxrt_queue_t __iomem *q);
+int dxrt_is_queue_full(dxrt_queue_t __iomem *q);
+int dxrt_lock_queue(dxrt_queue_t __iomem *q);
+void dxrt_unlock_queue(dxrt_queue_t __iomem *q);
+int dxrt_enqueue(dxrt_queue_t __iomem *q, void *elem);
+int dxrt_lock_check(dxrt_queue_t __iomem *q);
 /* Scheduler */
 int add_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
 int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q);
 int delete_matching_queue(struct dxdev* dev, npu_bound_op bound);
 void clear_queue_list(struct dxdev* dev);
 /* Update */
-bool dx_get_flash_ready(dx_download_msg *msg, int timeout);
-bool dx_get_flash_done(dx_download_msg *msg);
-int8_t dx_get_boot_step(dx_download_msg *msg);
-int8_t dx_get_dl_status(dx_download_msg *msg);
+bool dx_get_flash_ready(dx_download_msg __iomem *msg, int timeout);
+bool dx_get_flash_done(dx_download_msg __iomem *msg);
+int8_t dx_get_boot_step(dx_download_msg __iomem *msg);
+int8_t dx_get_dl_status(dx_download_msg __iomem *msg);
 
 extern dxrt_message_handler message_handler[];
 
@@ -448,6 +483,7 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_send_message(...) 0
 #define dx_sgdma_init(...) 0
 #define dx_sgdma_deinit(...) 0
+#define dx_pcie_reset_dma_channels(...) 0
 #define dx_sgdma_write(...) 0
 #define dx_sgdma_read(...) 0
 #define dx_pcie_get_message_area(...) 0
@@ -470,41 +506,24 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_enqueue_event_response(...) 0
 #define dx_pcie_dequeue_event_response(...) 0
 #define dx_pcie_clear_event_response(...) 0
+#define dx_pcie_enqueue_proc_exit_event(...) 0
+#define dx_pcie_dequeue_proc_exit_event(...) 0
+#define dx_pcie_is_proc_exit_pending(...) 0
+#define dx_pcie_clear_proc_exit_queue(...) 0
+#define dx_pcie_clear_proc_exit_for_pid(...) do {} while(0)
 #define dx_pcie_notify_msg_to_device(...) 0
 #define dx_pcie_notify_req_to_device(...) 0
 #define dx_pcie_get_driver_info(...) 0
+#define dx_pcie_register_response_callback(...) do {} while(0)
+#define dx_pcie_unregister_response_callback(...) do {} while(0)
+#define dx_pcie_register_event_callback(...) do {} while(0)
+#define dx_pcie_unregister_event_callback(...) do {} while(0)
+
 
 int dxrt_request_handler(void *data);
 #endif
 
-#if 0//IS_STANDALONE
-struct deepx_pcie_info {
-    unsigned int    driver_version;
-    unsigned char   bus;
-    unsigned char   dev;
-    unsigned char   func;
-    int             speed; /* GEN1, GEN2...*/
-    int             width; /* 1, 2, 4 */
-};
 
-typedef struct {
-    uint32_t  req_id;
-    uint32_t  inf_time;
-    uint16_t  argmax;
-    uint16_t  model_type;
-	int32_t   status;
-    int32_t   dma_ch;
-    uint64_t  data;
-    uint64_t  base;
-    uint32_t  offset;
-    uint32_t  size;
-} dx_pcie_response_t;
-typedef struct {
-    uint32_t err_code;
-    /* System Infomation power / temperature, etc,,,, */
-} dx_pcie_dev_err_t;
-
-#endif
 #if IS_ACCELERATOR
 #define sbi_l2cache_flush(...) { /*do nothing*/ }
 #endif
