@@ -1,4 +1,36 @@
 # RELEASE_NOTES
+## v2.4.0 / 2026-03-20
+
+### 1. Changed
+- Modularize build system and enhance driver management
+
+### 2. Fixed
+- fix DMA cache coherency bugs on ARM64 IOMMU
+- defer dw_edma_free_desc() to process context to fix IOMMU vunmap crash
+
+### 3. Added
+- implement DMA abnormal recovery for two termination cases
+
+## v2.3.0 / 2026-02-20
+
+### 1. Changed
+
+### 2. Fixed
+- Fix 64-bit PCIe TLP incompatibility on Raspberry Pi 4 (BCM2711) by enforcing 32-bit-only MMIO access across both dxrt_driver and dx_dma modules
+
+### 3. Added
+- Add dx_mmio_compat.h header providing 32-bit safe MMIO accessor helpers for PCIe BAR access
+
+## v2.2.0 / 2026-02-20
+
+### 1. Changed
+- add multi-process support with graceful termination and PROC_EXIT event
+
+### 2. Fixed
+- fix race conditions in PCIe driver synchronization
+
+### 3. Added
+
 ## v2.1.0 / 2026-01-05
 
 ### 1. Changed

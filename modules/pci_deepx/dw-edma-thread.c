@@ -9,30 +9,24 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
-#include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/wait.h>
 
 #include "dw-edma-core.h"
-#include <linux/times.h>
-#include <linux/time.h>
+#include "dw-edma-v0-core.h"
 
 #include "dw-edma-thread.h"
 #include "dx_util.h"
 #include "dx_sgdma_cdev.h"
 #include "dx_lib.h"
+#include "dx_message.h"
 
-#include <linux/compiler.h>
-#include <linux/ratelimit.h>
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0))
 #include <linux/sched/task.h>
 #endif
 
-// #define DMA_S_POLLING_MODE
-
-#define EDMA_TEST_MAX_THREADS_CHANNEL		8
 #define EDMA_CHANNEL_NAME			"dma%uchan%u"
 
 static u32 timeout = 3000;
@@ -52,7 +46,7 @@ static void dw_edma_callback(void *arg)
 
 	dx_pcie_start_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	info->dma_done.done = true;
-	wake_up_interruptible(info->dma_done.wait);
+	wake_up(info->dma_done.wait);
 }
 
 static int dw_edma_sg_process(struct dw_edma_info *info,
@@ -73,6 +67,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	u32 f_tm_cnt = 0;
 	struct dx_dma_io_cb *cb;
 	struct dw_edma_chan *dw_chan;
+	int orig_nents = 0;
 	enum dma_transfer_direction	direction = !info->cb->write ? DMA_DEV_TO_MEM : DMA_MEM_TO_DEV;
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
 	int nice = task_nice(current);
@@ -82,6 +77,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	ktime_t dma_trans_t;
 #endif
 	long ret;
+	int start_epoch;
 
 	dbg_tfr("[%s] Start!!\n", __func__);
 
@@ -90,7 +86,10 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #endif
 
 	if (chan == NULL) {
-		pr_err("[%s] DMA channel Null point error!", __func__);
+		pr_err("[%s] DMA channel Null point error! (dev_n=%d, npu_id=%d, write=%d)\n",
+			__func__, info->dev_n,
+			info->cb ? info->cb->npu_id : -1,
+			info->cb ? info->cb->write : -1);
 		return -1;
 	}
 
@@ -103,7 +102,6 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	cb = info->cb;
 	dw_chan = dchan2dw_edma_chan(chan);
 
-
 	if (info->cb->npu_run) {
 		dw_chan->en_lie = true;
 	} else {
@@ -112,9 +110,6 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	dbg_tfr("%s: local interrupt is %s\n",
 			dma_chan_name(chan), 
 			dw_chan->en_lie ? "enable" : "disable");
-
-	// pr_err("[DMA] task nice:%d, cpu:%d, policy:%d, prio:%d\n",
-	// 	task_nice(current), task_cpu(current), current->policy, current->prio);
 
 	/* Set SG Table */
 	sgt = &(cb->sgt);
@@ -126,11 +121,31 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	 *  - source and destination addresses
 	 */
 	dx_pcie_start_profile(PCIE_DMA_MAP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
-	if (direction == DMA_DEV_TO_MEM) {
+	/* Save original nents before dma_map_sg may coalesce entries.
+	 * dma_unmap_sg must receive the same nents passed to dma_map_sg
+	 * (i.e., the original count), otherwise cache maintenance
+	 * (invalidation for DMA_FROM_DEVICE) will be incomplete,
+	 * causing stale L1 cache lines (64-byte corruption on ARM). */
+	orig_nents = sgt->nents;
+	if (cb->pre_mapped) {
+		/* Buffer already mapped (e.g. dma_alloc_coherent kernel buf).
+		 * sg_dma_address/sg_dma_len are already set - skip dma_map_sg
+		 * to avoid double-mapping and address overwrite. */
+		dbg_tfr("%s: pre_mapped buffer, skip dma_map_sg\n",
+			dma_chan_name(chan));
+		if (direction == DMA_DEV_TO_MEM) {
+			sconf.src_addr = cb->ep_addr;
+			sconf.dst_addr = sg_dma_address(sg);
+		} else {
+			sconf.src_addr = sg_dma_address(sg);
+			sconf.dst_addr = cb->ep_addr;
+		}
+		dw_chan->set_desc = true;
+	} else if (direction == DMA_DEV_TO_MEM) {
 		/* DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE */
 		dbg_tfr("%s: DMA_DEV_TO_MEM - WRITE - DMA_FROM_DEVICE\n",
 			dma_chan_name(chan));
-		sgt->nents = dma_map_sg(dev, sgt->sgl, sgt->nents, DMA_FROM_DEVICE);
+		sgt->nents = dma_map_sg(dev, sgt->sgl, orig_nents, DMA_FROM_DEVICE);
 		if (!sgt->nents) {
 			pr_err("sg table mapped fail(DMA_FROM_DEVICE)\n");
 			goto err_alloc_descs;
@@ -144,7 +159,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		/* DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE */
 		dbg_tfr("%s: DMA_MEM_TO_DEV - READ - DMA_TO_DEVICE\n",
 			dma_chan_name(chan));
-		sgt->nents = dma_map_sg(dev, sgt->sgl, sgt->nents, DMA_TO_DEVICE);
+		sgt->nents = dma_map_sg(dev, sgt->sgl, orig_nents, DMA_TO_DEVICE);
 		if (!sgt->nents) {
 			pr_err("sg table mapped fail(DMA_TO_DEVICE)\n");
 			goto err_alloc_descs;
@@ -154,7 +169,6 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		sconf.src_addr = sg_dma_address(sg);
 		/* Endpoint memory */
 		sconf.dst_addr = cb->ep_addr;
-		// sconf.dst_addr = dt_region->paddr;
 		dw_chan->set_desc = true;
 	}
 	dx_pcie_end_profile(PCIE_DMA_MAP_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
@@ -162,8 +176,6 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		cb->is_llm = false;
 	}
 	dw_chan->is_llm = cb->is_llm;
-	// pr_info("DMA mapped: sg[dir:%d] -> phys: %llx, dma: %llx\n",
-	// 	direction, (unsigned long long)sg_phys(sg), (unsigned long long)sg_dma_address(sg));
 
 	sconf.direction = DMA_TRANS_NONE; /* remote DMA (Device <-> Host Memory) */
 
@@ -188,8 +200,17 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	}
 
 	done->done = false;
+	dw_chan->hw_err = false;
+	dw_chan->aborted = false;
+
+	/* Capture recovery epoch — used after every wait to detect if
+	 * a recovery happened during this transfer.  If the epoch changed,
+	 * the channel has already been cleaned up by recovery and we must
+	 * exit immediately without calling dmaengine_terminate_all() to
+	 * avoid corrupting new post-recovery transfers on this channel. */
+	start_epoch = atomic_read(&dw_chan->chip->dw->recovery_epoch);
+
 	txdesc->callback = dw_edma_callback;
-	// txdesc->callback_param = done;
 	txdesc->callback_param = info;
 	cookie = dmaengine_submit(txdesc);
 	if (dma_submit_error(cookie)) {
@@ -204,6 +225,30 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 	dw_chan->chip->dw->irq[0].data[info->cb->npu_id][info->cb->write] = info;
 #endif
 
+	/* Publish waitqueue so recovery (dx_pcie_reset_dma_channels) can
+	 * wake this thread immediately instead of waiting for timeout. */
+	WRITE_ONCE(dw_chan->transfer_wq, &info->done_wait);
+
+	/* ── Admission gate ──
+	 * Block new DMA submissions while recovery/SBR is in progress.
+	 * Without this gate, a concurrent process can ring the doorbell
+	 * during SBR, causing the transfer to be silently lost (the HW
+	 * is being reset).  Also re-check recovery_epoch in case recovery
+	 * started between our epoch capture and this point.
+	 *
+	 * smp_rmb() pairs with smp_mb() in dx_pcie_reset_dma_channels()
+	 * to ensure we see the latest sbr_in_progress/recovery_epoch
+	 * stores on ARM64. */
+	smp_rmb();
+	if (atomic_read(&dw_chan->chip->dw->sbr_in_progress) ||
+	    atomic_read(&dw_chan->chip->dw->recovery_epoch) != start_epoch) {
+		dev_warn(dev, "%s: recovery/SBR in progress, rejecting transfer\n",
+			 dma_chan_name(chan));
+		WRITE_ONCE(dw_chan->transfer_wq, NULL);
+		cb->result = -EIO;
+		goto err_stats;
+	}
+
 	/* Start DMA transfer - trigger a doorbell of dma */
 	dx_pcie_start_profile(PCIE_DMA_XFER_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 	dma_async_issue_pending(chan);
@@ -216,7 +261,7 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #endif
 
 	ret = wait_event_interruptible_timeout(info->done_wait,
-		done->done,
+		done->done || dw_chan->hw_err,
 		msecs_to_jiffies(timeout));
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
@@ -225,26 +270,152 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 #endif
 	dx_pcie_end_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
-// #ifdef DMA_PERF_MEASURE
-// 	dev_err(dev, "[PERF] DMA Transer Elapsed Time(%s) @ %lld ns\n",
-// 		(direction == DMA_DEV_TO_MEM) ? "WRITE" : "READ",
-// 		get_elapsed_time_ns(dma_trans_t));
-// #endif
+	/* ── Recovery guard ──
+	 * If a recovery happened while we were waiting, the channel was
+	 * already cleaned up by dx_pcie_reset_dma_channels().  Exit
+	 * immediately — calling dmaengine_terminate_all() would corrupt
+	 * new post-recovery transfers (set EDMA_REQ_STOP or clear
+	 * configured on a channel the new transfer is using). */
+	if (atomic_read(&dw_chan->chip->dw->recovery_epoch) != start_epoch) {
+		cb->result = -EIO;
+		goto err_stats;
+	}
 
 	/* Check DMA transfer status and act upon it  */
 	status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
-	if (ret == -ERESTARTSYS) {
-		dbg_tfr("%s: transfer interrupted by signal\n", dma_chan_name(chan));
-		if (dmaengine_terminate_all(chan) != 0) {
-			dev_err(dev, "%s: dmaengine_terminate_all fail\n", dma_chan_name(chan));
+	if (dw_chan->hw_err) {
+		dev_err(dev, "%s: channel in irrecoverable HW error (CS=2), failing transfer\n",
+			dma_chan_name(chan));
+		/*
+		 * Two terminate_all calls needed (same as abort path):
+		 *   1st: sets EDMA_REQ_STOP (channel was BUSY)
+		 *   2nd: enters EDMA_REQ_STOP branch â drains desc_completed
+		 *         and all other descriptor lists.
+		 * Without the 2nd call, the stale vchan_complete tasklet from
+		 * the original transfer fires into the shared info struct,
+		 * setting done->done=true for the NEXT transfer â that transfer
+		 * sees done->done=true but its cookie was never completed â
+		 * "completion busy status=1" error.
+		 */
+		dmaengine_terminate_all(chan);  /* 1st: EDMA_REQ_STOP */
+		dmaengine_terminate_all(chan);  /* 2nd: drain descriptors */
+		cb->result = -EIO;
+		/* No event here — hw_err is set by recovery path which
+		 * already handles user-space coordination. */
+	} else if (ret == -ERESTARTSYS) {
+		dev_info(dev, "%s: signal received, requesting graceful DMA stop\n",
+			 dma_chan_name(chan));
+		dmaengine_terminate_all(chan);
+
+		/* Re-wait (non-interruptible) for the current chunk to finish */
+		ret = wait_event_timeout(info->done_wait,
+			done->done || dw_chan->hw_err,
+			msecs_to_jiffies(timeout));
+
+		/* Recovery guard for re-wait */
+		if (atomic_read(&dw_chan->chip->dw->recovery_epoch) != start_epoch) {
 			cb->result = -EIO;
+			goto err_stats;
+		}
+
+		if (ret == 0 && !done->done) {
+			dev_warn(dev, "%s: graceful stop timed out, forcing cleanup\n",
+				 dma_chan_name(chan));
+			/* Second terminate_all call → force cleanup path */
+			dmaengine_terminate_all(chan);
+			cb->result = -ETIMEDOUT;
 		} else {
+			dev_info(dev, "%s: DMA stopped gracefully\n",
+				 dma_chan_name(chan));
 			cb->result = 0;
 		}
 	} else if (!done->done) {
+		u32 cs = dw_edma_v0_core_ch_status_raw(dw_chan);
 		f_tm_cnt++;
-		dmaengine_terminate_all(chan);
-		cb->result = -ETIMEDOUT;
+
+		if (cs == 2) {
+			/*
+			 * CS=2: PCIe error stopped the channel.  Abort MSI
+			 * never arrived (HW limitation).
+			 * ch_soft_reset (called by 2nd terminate_all) performs
+			 * engine_en=0->1 to clear HW CS=2 state.
+			 *
+			 * NOTE: engine_en cycle resets ALL channels on this
+			 * direction.  CS bits [6:5] are read-only HW status;
+			 * there is no per-channel-only HW recovery path.
+			 */
+			dev_warn(dev, "%s: timeout (CS=2), attempting soft reset\n",
+				 dma_chan_name(chan));
+			dmaengine_terminate_all(chan);  /* 1st: EDMA_REQ_STOP */
+			dmaengine_terminate_all(chan);  /* 2nd: ch_soft_reset -> IDLE */
+
+			/* Verify HW actually recovered */
+			cs = dw_edma_v0_core_ch_status_raw(dw_chan);
+			if (cs == 0 || cs == 3) {
+				dev_info(dev, "%s: channel recovered (CS=%u)\n",
+					 dma_chan_name(chan), cs);
+				cb->result = -EIO;
+				/* Channel is usable again - no user-space event */
+			} else {
+				dev_err(dev, "%s: soft reset FAILED (CS=%u), user-space recovery needed\n",
+					dma_chan_name(chan), cs);
+				cb->result = -EIO;
+#if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
+				{
+					struct dw_edma *dw = dw_chan->chip->dw;
+					dx_pcie_enqueue_event_response(dw->idx,
+						ERR_PCIE_DMA_CH_FAIL(dw_chan->id));
+				}
+#endif
+			}
+		} else {
+			/*
+			 * CS!=2: channel stuck or in unknown state.
+			 * Only one terminate_all (EDMA_REQ_STOP) here;
+			 * full recovery deferred to user-space.
+			 */
+			{
+				struct dw_edma *dw = dw_chan->chip->dw;
+				u32 done_sts = dw_edma_v0_core_status_done_int(
+					dw, dw_chan->dir);
+				u32 abort_sts = dw_edma_v0_core_status_abort_int(
+					dw, dw_chan->dir);
+
+				dev_err(dev, "%s: timeout (CS=%u) "
+					"done_int=0x%x abort_int=0x%x\n",
+					dma_chan_name(chan), cs,
+					done_sts, abort_sts);
+			}
+			dmaengine_terminate_all(chan);
+			cb->result = -ETIMEDOUT;
+#if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
+			{
+				struct dw_edma *dw = dw_chan->chip->dw;
+				dx_pcie_enqueue_event_response(dw->idx,
+					ERR_PCIE_DMA_CH_FAIL(dw_chan->id));
+			}
+#endif
+		}
+	} else if (dw_chan->aborted) {
+		/*
+		 * Abort ISR completed the descriptor (done->done = true)
+		 * but the transfer data is incomplete/corrupt.
+		 * Abort ISR already sent enriched event to user-space
+		 * (dx_pcie_enqueue_abort_event), so no duplicate here.
+		 *
+		 * Two terminate_all calls needed:
+		 *   1st: sets EDMA_REQ_STOP
+		 *   2nd: sees EDMA_REQ_STOP + CS=2, triggers ch_soft_reset
+		 *         (engine_en cycle) to clear the HW error state.
+		 * Without the 2nd call, channel stays in CS=2 permanently
+		 * and all subsequent transfers fail with "skipping doorbell".
+		 */
+		dev_err(dev, "%s: transfer aborted by HW (CS=2)\n",
+			dma_chan_name(chan));
+		dw_chan->aborted = false;
+		dmaengine_terminate_all(chan);  /* 1st: EDMA_REQ_STOP */
+		dmaengine_terminate_all(chan);  /* 2nd: ch_soft_reset */
+		cb->result = -EIO;
 	} else if (status != DMA_COMPLETE) {
 		if (status == DMA_ERROR) {
 			f_cpl_err++;
@@ -265,20 +436,23 @@ err_stats:
 		if (cb->result == 0) cb->result = -EIO;
 	}
 
-	/* Unmap scatter gatter mapping */
+	/* Unmap scatter gather mapping.
+	 * Use orig_nents (the count passed to dma_map_sg), not the
+	 * coalesced sgt->nents returned by dma_map_sg, to ensure
+	 * every original page receives proper cache maintenance.
+	 * Skip unmap for pre-mapped buffers (dma_alloc_coherent). */
 	dx_pcie_start_profile(PCIE_POST_PROCESS_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
-	if (sgt->nents > 0) {
+	if (!cb->pre_mapped && orig_nents > 0) {
 		if (direction == DMA_DEV_TO_MEM) {
-			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_FROM_DEVICE);
+			dma_unmap_sg(dev, sgt->sgl, orig_nents, DMA_FROM_DEVICE);
 		} else {
-			dma_unmap_sg(dev, sgt->sgl, sgt->nents, DMA_TO_DEVICE);
+			dma_unmap_sg(dev, sgt->sgl, orig_nents, DMA_TO_DEVICE);
 		}
 	}
 	dx_pcie_end_profile(PCIE_POST_PROCESS_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
-	/* TODO - need a recovery code in case of dma errors. */
-
 err_alloc_descs:
+	WRITE_ONCE(dw_chan->transfer_wq, NULL);	/* Unpublish waitqueue */
 	sg_free_table(sgt);
 	info->done = true; 
 
@@ -427,16 +601,6 @@ void dw_edma_thread_probe(void)
 	}
 }
 
-// static void dw_edma_del_channel(struct dw_edma_thread_chan *tchan)
-// {
-// 	struct dw_edma_thread *thread = tchan->thread;
-// 	dbg_tfr("thread %s exited\n", thread->task->comm);
-// 	kvfree(thread);
-// 	tchan->thread = NULL;
-// 	dmaengine_terminate_all(tchan->chan);
-// 	kvfree(tchan);
-// }
-
 void dw_edma_thread_exit(int dev_n)
 {
 	struct dw_edma_info *info;
@@ -448,8 +612,6 @@ void dw_edma_thread_exit(int dev_n)
 			mutex_lock(&info->lock);
 			dbg_init("Thread Exit for dev#%d npu#%d [info:%p]\n", dev_n, i, info);
 			info->init = false;
-			/* TODO - A defense code is required so that the DMA can be forcibly terminated in case the DMA is not terminated.*/
-			// dw_edma_thread_stop(info);
 			mutex_unlock(&info->lock);
 		}
 	}

@@ -8,6 +8,7 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include "dxrt_drv.h"
+
 typedef enum dxqueue_lock_t {
     DX_QUEUE_UNLOCK     = 0,
     DX_QUEUE_HOST_LOCK  = 33,
@@ -21,45 +22,36 @@ typedef enum dxqueue_flag_t {
 
 static size_t buffer_offset = offsetof(dxrt_queue_t, buffer[0]);
 
-void dxrt_init_queue(dxrt_queue_t* q, uint32_t max_count, uint32_t elem_size)
+void dxrt_init_queue(dxrt_queue_t __iomem *q, uint32_t max_count, uint32_t elem_size)
 {
-    memset(q, 0, sizeof(dxrt_queue_t));
-    q->lock = 0;
-    q->front = 0;
-    q->rear = 0;
-    q->count = 0;
-    q->max_count = max_count;
-    q->elem_size = elem_size;
-    q->enable = 1;
+    dx_memset_io32((volatile void __iomem *)q, 0, sizeof(dxrt_queue_t));
+    /* Set non-zero initial values */
+    writel(max_count, &q->max_count);
+    writel(elem_size, &q->elem_size);
+    writel(1, &q->enable);
 }
 
-void dxrt_enable_queue(dxrt_queue_t *q)
+void dxrt_enable_queue(dxrt_queue_t __iomem *q)
 {
-    q->enable = 1;
+    writel(1, &q->enable);
 }
 
-void dxrt_disable_queue(dxrt_queue_t *q)
+void dxrt_disable_queue(dxrt_queue_t __iomem *q)
 {
-    q->enable = 0;
+    writel(0, &q->enable);
 }
 
-int dxrt_is_queue_empty(dxrt_queue_t* q)
+int dxrt_is_queue_empty(dxrt_queue_t __iomem *q)
 {
-    volatile uint32_t val;
-    void __iomem *count = &q->count;
-    val = readl(count);
-    return val == 0;
+    return readl(&q->count) == 0;
 }
 
-int dxrt_is_queue_full(dxrt_queue_t* q)
+int dxrt_is_queue_full(dxrt_queue_t __iomem *q)
 {
-    volatile uint32_t val;
-    void __iomem *count = &q->count;
-    val = readl(count);
-    return val == q->max_count;
+    return readl(&q->count) == readl(&q->max_count);
 }
 
-int dxrt_lock_queue(dxrt_queue_t __iomem* q)
+int dxrt_lock_queue(dxrt_queue_t __iomem *q)
 {
     int ret = 1;
     writel(DX_QUEUE_HOST_LOCK, &q->lock);
@@ -68,10 +60,10 @@ int dxrt_lock_queue(dxrt_queue_t __iomem* q)
 
 #define DXRT_ENQUEUE_TIMEOUT        (1000000) /* 1000ms */
 #define DXRT_ENQUEUE_DELAY          (1)
-int dxrt_lock_check(dxrt_queue_t __iomem* q)
+int dxrt_lock_check(dxrt_queue_t __iomem *q)
 {
     int timeout = DXRT_ENQUEUE_TIMEOUT;
-    volatile uint32_t val;
+    u32 val;
     int ret = 1;
 
     while(timeout >= 0) {
@@ -89,18 +81,17 @@ int dxrt_lock_check(dxrt_queue_t __iomem* q)
     }
     return ret;
 }
-void dxrt_unlock_queue(dxrt_queue_t __iomem* q)
-{    
+void dxrt_unlock_queue(dxrt_queue_t __iomem *q)
+{
     writel(DX_QUEUE_UNLOCK, &q->lock);
 }
 
-void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem* q)
+void dxrt_enqueue_irq_notify(dxrt_queue_t __iomem *q)
 {
-    void __iomem *irq_done = &q->irq_done;
-    writel(1, irq_done);
+    writel(1, &q->irq_done);
 }
 
-int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
+int dxrt_enqueue_irq_done(dxrt_queue_t __iomem *q)
 {
     int timeout = 1000000;  /* 1000ms */
     int ret = 0;
@@ -114,19 +105,22 @@ int dxrt_enqueue_irq_done(dxrt_queue_t __iomem* q)
     return ret;
 }
 
-int dxrt_enqueue(dxrt_queue_t __iomem* q, void *elem)
+int dxrt_enqueue(dxrt_queue_t __iomem *q, void *elem)
 {
     int ret = 0;
     u32 rear, count, acces_count;
+    u32 elem_size;
 
     pr_debug( "%s: %d\n", __func__, ((dxrt_request_acc_t*)elem)->req_id);
     if (readl(&q->enable) == 0) return -EINVAL; 
 
+    elem_size = readl(&q->elem_size);
+
     rear = readl(&q->rear);
-    memcpy_toio(
-        (void __iomem*)q + buffer_offset + (rear * readl(&q->elem_size)),
+    dx_memcpy_toio32(
+        (void __iomem*)q + buffer_offset + (rear * elem_size),
         elem,
-        readl(&q->elem_size)
+        elem_size
     );
 
     wmb();

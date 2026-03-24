@@ -18,7 +18,9 @@
 #include <linux/pci.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <linux/cpumask.h>
 
+#include "dx_mmio_compat.h"
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
 #include "dw-edma-v0-regs.h"
@@ -57,7 +59,6 @@ static irqreturn_t dw_edma_user_irq_npu(int irq, void *data);
 static irqreturn_t dw_edma_user_events(int irq, void *data);
 static irqreturn_t user_irq_service(int irq, struct dx_dma_user_irq *user_irq);
 static irqreturn_t user_irq_events(struct dx_edma_irq *dw_irq, struct dx_dma_user_irq *user_irq);
-
 
 static user_irq_v_table_t user_irq_vec_table_v3[USER_IRQ_NUMS] = {
 	/* handler / name / irq_pos / event_id / dma_ch_n / bit */
@@ -445,9 +446,85 @@ struct dw_edma_desc *vd2dw_edma_desc(struct virt_dma_desc *vd)
 
 
 
+/*
+ * Deferred desc free - runs in process context via system workqueue.
+ * This is scheduled when vchan_free_desc() is called from tasklet/IRQ context
+ * (e.g., vchan_complete tasklet after DMA completion interrupt).
+ *
+ * In process context, it is safe to:
+ * - call cancel_work_sync() (may sleep)
+ * - call dma_free_coherent() (with IOMMU, calls vunmap() which requires
+ *   process context — BUG_ON(in_interrupt()) at mm/vmalloc.c)
+ */
+static void dw_edma_deferred_free_desc_work(struct work_struct *work)
+{
+	struct dw_edma_desc *desc = container_of(work, struct dw_edma_desc,
+						 deferred_free_work);
+	dw_edma_free_desc(desc);
+}
+
 static void vchan_free_desc(struct virt_dma_desc *vdesc)
 {
-	dw_edma_free_desc(vd2dw_edma_desc(vdesc));
+	struct dw_edma_desc *desc = vd2dw_edma_desc(vdesc);
+
+	if (in_interrupt() || in_atomic()) {
+		/*
+		 * Called from tasklet (vchan_complete) or interrupt context.
+		 * dw_edma_free_desc() is NOT safe here because:
+		 *
+		 * 1) cancel_work_sync(&desc->cleanup_work) may sleep
+		 * 2) dw_edma_desc_cleanup_work() calls dma_free_coherent()
+		 *    which with IOMMU enabled calls vunmap() →
+		 *    BUG_ON(in_interrupt()) at mm/vmalloc.c:3416
+		 *
+		 * Defer the entire desc cleanup to process context.
+		 */
+		INIT_WORK(&desc->deferred_free_work,
+			  dw_edma_deferred_free_desc_work);
+		schedule_work(&desc->deferred_free_work);
+		return;
+	}
+
+	dw_edma_free_desc(desc);
+}
+
+/*
+ * Check and fix MSI mismatch before DMA transfer (Single MSI mode only).
+ * Called only when nr_irqs == 1. Detects if irqbalance changed MSI address
+ * and updates EP DMA registers accordingly.
+ */
+static void dx_dma_check_and_fix_msi(struct dw_edma *dw)
+{
+	struct msi_msg pci_msi;
+	struct dx_edma_irq *dw_irq = &dw->irq[0];
+	struct dw_edma_chan *chan;
+	int i;
+
+	/* Read current MSI from PCI config space */
+	if (dx_pci_read_msi_msg(dw->pdev, &pci_msi) != 0)
+		return;
+
+	/* Check if MSI changed since last update */
+	if (pci_msi.address_lo == dw_irq->msi.address_lo &&
+	    pci_msi.address_hi == dw_irq->msi.address_hi &&
+	    pci_msi.data == dw_irq->msi.data) {
+		return;  /* No change */
+	}
+
+	/* MSI mismatch detected - update cached value and EP registers */
+	pr_debug("dx_dma: MSI config updated by irqbalance - [addr=0x%x_%x, data=0x%x] -> [addr=0x%x_%x, data=0x%x]\n",
+		dw_irq->msi.address_hi, dw_irq->msi.address_lo, dw_irq->msi.data,
+		pci_msi.address_hi, pci_msi.address_lo, pci_msi.data);
+
+	/* Update cached MSI */
+	memcpy(&dw_irq->msi, &pci_msi, sizeof(pci_msi));
+
+	/* Update all DMA channels */
+	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++) {
+		chan = &dw->chan[i];
+		memcpy(&chan->msi, &pci_msi, sizeof(pci_msi));
+		dw_edma_v0_core_device_config(chan);
+	}
 }
 
 static void dw_edma_start_transfer(struct dw_edma_chan *chan)
@@ -455,7 +532,12 @@ static void dw_edma_start_transfer(struct dw_edma_chan *chan)
 	struct dw_edma_chunk *child;
 	struct dw_edma_desc *desc;
 	struct virt_dma_desc *vd;
+	struct dw_edma *dw = chan->chip->dw;
 	dbg_core("dw_edma_start_transfer!!\n");
+
+	/* Check and fix MSI mismatch before starting DMA (Single MSI mode only) */
+	if (dw->nr_irqs == 1)
+		dx_dma_check_and_fix_msi(dw);
 
 	vd = vchan_next_desc(&chan->vc);
 	if (!vd) {
@@ -501,6 +583,7 @@ static int dw_edma_device_config(struct dma_chan *dchan,
 
 	memcpy(&chan->config, config, sizeof(*config));
 	chan->configured = true;
+	chan->aborted = false;  /* Clear stale abort flag from previous transfer */
 
 	return 0;
 }
@@ -553,12 +636,30 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 
 	dbg_core("[%s] start for channel %s!!\n", __func__, dma_chan_name(dchan));
 
+	/*
+	 * Hold vc.lock across the entire state machine to prevent races
+	 * with issue_pending(), which checks configured/request/status
+	 * under the same lock.  Without this, a concurrent issue_pending
+	 * can see a partially-updated state and start a transfer on a
+	 * channel that is being torn down.
+	 */
+	spin_lock_irqsave(&vc->lock, flags);
+
 	if (!chan->configured) {
 		/* Do nothing */
 	} else if (chan->status == EDMA_ST_PAUSE) {
 		chan->status = EDMA_ST_IDLE;
 		chan->configured = false;
 	} else if (chan->status == EDMA_ST_IDLE) {
+		/*
+		 * SW is IDLE but HW may still be in CS=2 error state
+		 * (e.g., abort ISR set status=IDLE before thread called
+		 * terminate_all).  Check HW and clear if needed, otherwise
+		 * the next transfer hits "channel in error state" → "skipping
+		 * doorbell" and fails permanently.
+		 */
+		if (dw_edma_v0_core_ch_status_raw(chan) == 2)
+			dw_edma_v0_core_ch_soft_reset(chan);
 		chan->configured = false;
 	} else if (dw_edma_v0_core_ch_status(chan) == DMA_COMPLETE) {
 		/*
@@ -569,27 +670,78 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 		chan->configured = false;
 	} else if (chan->request > EDMA_REQ_PAUSE) {
 		err = -EPERM;
-	} else {
-		int ret = dw_edma_v0_core_ch_halt(chan);
-		if (ret) {
-			dbg_core("Failed to halt channel %d, forcing software cleanup.\n", chan->id);
-			err = ret;
+	} else if (chan->request == EDMA_REQ_STOP) {
+		/*
+		 * EDMA_REQ_STOP was already set (first terminate_all call)
+		 * but Done ISR never fired - channel timed out.
+		 * Try per-channel recovery first; fall back to engine reset.
+		 */
+		u32 cs = dw_edma_v0_core_ch_status_raw(chan);
+
+		if (cs == 2) {
+			/*
+			 * CS=2: channel halted on error (e.g. PCIe completion
+			 * error).  ch_soft_reset performs:
+			 *   1. Read err_status (RC) to acknowledge the error
+			 *   2. Clear abort/done interrupt status bits
+			 *   3. engine_en=0->1 cycle to clear CS=2
+			 *   4. Verify CS is no longer 2
+			 *
+			 * NOTE: engine_en cycle resets ALL channels on this
+			 * direction (read or write).  CS bits are read-only HW
+			 * status — there is no per-channel-only HW recovery.
+			 */
+			if (dw_edma_v0_core_ch_soft_reset(chan) == 0) {
+				pr_info("Channel %d: CS=2, soft reset OK\n",
+					chan->id);
+			} else {
+				pr_err("Channel %d: CS=2, soft reset FAILED\n",
+					chan->id);
+				chan->hw_err = true;
+			}
+		} else {
+			/*
+			 * CS!=2: channel may still be running or in an
+			 * unknown state.  Engine reset is the only way to
+			 * force-stop it.
+			 * WARNING: kills ALL channels on this direction.
+			 */
+			pr_warn("Channel %d: CS=%u, forcing engine reset\n",
+				chan->id, cs);
+			dw_edma_v0_core_engine_cycle(chan);
+			dw_edma_v0_core_clear_done_int(chan);
+			dw_edma_v0_core_clear_abort_int(chan);
 		}
 
-		spin_lock_irqsave(&vc->lock, flags);
+		/* Common SW cleanup: free descriptors + return to IDLE.
+		 * Drain ALL descriptor lists — including desc_completed
+		 * and desc_submitted — to prevent stale tasklet callbacks
+		 * from setting done->done on the NEXT transfer.  Without
+		 * this, the vchan_complete tasklet can fire after we start
+		 * a new transfer and wake it prematurely (done->done=true
+		 * but cookie not yet complete → "completion busy" error). */
+		/* vc.lock already held by outer lock */
+		list_splice_tail_init(&vc->desc_allocated, &head);
+		list_splice_tail_init(&vc->desc_submitted, &head);
 		list_splice_tail_init(&vc->desc_issued, &head);
-		spin_unlock_irqrestore(&vc->lock, flags);
+		list_splice_tail_init(&vc->desc_completed, &head);
 
-		if (!list_empty(&head)) {
-			dbg_core("Cleaning up stale DMA descriptors for channel %d\n", chan->id);
-			vchan_dma_desc_free_list(vc, &head);
-		}
+		chan->request = EDMA_REQ_NONE;
 		chan->status = EDMA_ST_IDLE;
 		chan->configured = false;
 
-		dbg_core("Channel %d successfully terminated and cleaned.\n", chan->id);
+		/* Drop lock before freeing descriptors -- free callbacks
+		 * may do memory operations incompatible with spinlock. */
+		spin_unlock_irqrestore(&vc->lock, flags);
+		if (!list_empty(&head))
+			vchan_dma_desc_free_list(vc, &head);
+		spin_lock_irqsave(&vc->lock, flags);
+	} else {
+		chan->request = EDMA_REQ_STOP;
+		dbg_core("Channel %d: EDMA_REQ_STOP set, Done ISR will complete.\n", chan->id);
 	}
 
+	spin_unlock_irqrestore(&vc->lock, flags);
 	return err;
 }
 
@@ -916,7 +1068,7 @@ static irqreturn_t user_irq_events(struct dx_edma_irq *dw_irq, struct dx_dma_use
 	return IRQ_HANDLED;
 }
 
-void dw_edma_done_interrupt(struct dw_edma_chan *chan)
+static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 {
 	struct dw_edma_desc *desc;
 	struct virt_dma_desc *vd;
@@ -1002,8 +1154,29 @@ static void dw_edma_abort_interrupt(struct dw_edma_chan *chan)
 {
 	struct virt_dma_desc *vd;
 	unsigned long flags;
+	struct dw_edma *dw = chan->chip->dw;
+	u32 err_status;
 
-	dw_edma_v0_core_clear_abort_int(chan);
+	dev_err(&dw->pdev->dev,
+		"DMA abort interrupt on dev %u, ch %d, dir %s\n",
+		dw->idx, chan->id,
+		chan->dir == EDMA_DIR_WRITE ? "WRITE" : "READ");
+
+	/*
+	 * Acknowledge the error: read err_status (Read-Clear register),
+	 * clear abort and done interrupt status bits.
+	 * No engine_en cycle here â that would kill all channels on
+	 * this direction.  Full HW reset is deferred to user-space
+	 * recovery (DXRT_CMD_RECOVERY ioctl).
+	 */
+	err_status = dw_edma_v0_core_ch_recover_abort(chan);
+
+	/*
+	 * Mark channel as aborted BEFORE completing the descriptor.
+	 * dw_edma_sg_process checks this flag after wakeup so it can
+	 * report -EIO instead of success.
+	 */
+	WRITE_ONCE(chan->aborted, true);
 
 	spin_lock_irqsave(&chan->vc.lock, flags);
 	vd = vchan_next_desc(&chan->vc);
@@ -1014,6 +1187,30 @@ static void dw_edma_abort_interrupt(struct dw_edma_chan *chan)
 	spin_unlock_irqrestore(&chan->vc.lock, flags);
 	chan->request = EDMA_REQ_NONE;
 	chan->status = EDMA_ST_IDLE;
+
+	/*
+	 * Notify user-space with enriched DMA abort event.
+	 * Includes err_status register and all channel CS values
+	 * so the monitoring daemon can log diagnostics and decide
+	 * whether to trigger full recovery.
+	 */
+#if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
+	{
+		u32 wr_sts[4] = {0}, rd_sts[4] = {0};
+		int i;
+
+		for (i = 0; i < dw->wr_ch_cnt && i < 4; i++)
+			wr_sts[i] = dw_edma_v0_core_ch_status_raw(
+						&dw->chan[i]);
+		for (i = 0; i < dw->rd_ch_cnt && i < 4; i++)
+			rd_sts[i] = dw_edma_v0_core_ch_status_raw(
+						&dw->chan[dw->wr_ch_cnt + i]);
+
+		dx_pcie_enqueue_abort_event(dw->idx,
+			ERR_PCIE_DMA_CH_ABORT(chan->id),
+			err_status, wr_sts, rd_sts);
+	}
+#endif
 }
 
 static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
@@ -1240,6 +1437,7 @@ static int dw_edma_channel_setup(struct dw_edma_chip *chip, bool write,
 		chan->configured = false;
 		chan->request = EDMA_REQ_NONE;
 		chan->status = EDMA_ST_IDLE;
+		chan->aborted = false;
 
 		if (write)
 			chan->ll_max = (dw->ll_region_wr[j].sz / EDMA_LL_SZ);
@@ -1380,8 +1578,15 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 			return err;
 		}
 
-		if (irq_get_msi_desc(irq))
-			get_cached_msi_msg(irq, &dw->irq[0].msi);
+		/* Read current MSI from PCI config space - use OS-assigned value as-is */
+		if (dx_pci_read_msi_msg(dw->pdev, &dw->irq[0].msi) != 0) {
+			pr_warn("dx_dma: Failed to read MSI from PCI config\n");
+			if (irq_get_msi_desc(irq))
+				get_cached_msi_msg(irq, &dw->irq[0].msi);
+		}
+		pr_info("dx_dma: Single MSI mode - addr=0x%x_%x, data=0x%x (IRQ %d)\n",
+			dw->irq[0].msi.address_hi, dw->irq[0].msi.address_lo,
+			dw->irq[0].msi.data, irq);
 	} else {
 		/* Distribute IRQs equally among all channels */
 		int tmp = dw->nr_irqs;
@@ -1486,6 +1691,7 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 	}
 
 	raw_spin_lock_init(&dw->lock);
+	spin_lock_init(&dw->engine_reset_lock);
 	for(i = 0; i < EDMA_MAX_WR_CH; i++) {
 		spin_lock_init(&dw->wr_dma_chan_locks[i].ch_lock);
 		dw->wr_dma_chan_locks[i].ch_in_use = false;
@@ -1573,8 +1779,10 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 	return 0;
 
 err_irq_free:
-	for (i = (dw->nr_irqs - 1); i >= 0; i--)
-		free_irq(dw->ops->irq_vector(dev, i), &dw->irq[i]);
+	for (i = (dw->nr_irqs - 1); i >= 0; i--) {
+		int irq = dw->ops->irq_vector(dev, i);
+		free_irq(irq, &dw->irq[i]);
+	}
 
 	dw->nr_irqs = 0;
 
@@ -1595,9 +1803,11 @@ int dx_dma_remove(struct dw_edma_chip *chip)
 	/* Free Global Memory Pools */
 	dw_edma_mem_deinit(dw);
 
-	/* Free irqs */
-	for (i = (dw->nr_irqs - 1); i >= 0; i--)
-		free_irq(dw->ops->irq_vector(dev, i), &dw->irq[i]);
+	/* Free IRQs */
+	for (i = (dw->nr_irqs - 1); i >= 0; i--) {
+		int irq = dw->ops->irq_vector(dev, i);
+		free_irq(irq, &dw->irq[i]);
+	}
 
 	/* Power management */
 	if (dw->pm_runtime_managed)

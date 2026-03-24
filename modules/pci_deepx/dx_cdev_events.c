@@ -8,6 +8,7 @@
 
 #include <linux/poll.h>
 #include "dx_cdev.h"
+#include "dx_cdev_ctrl.h"
 #include "dx_lib.h"
 #include "dx_util.h"
 

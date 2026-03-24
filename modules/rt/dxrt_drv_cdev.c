@@ -43,36 +43,164 @@ static atomic_t dxdev_refcnt = ATOMIC_INIT(0);
 static int dxrt_dev_open(struct inode *i, struct file *f)
 {
     struct dxdev *dx;
+    struct dxrt_file_ctx *ctx;
     int num = iminor(f->f_inode);
+
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
+
     dx = container_of(i->i_cdev, struct dxdev, cdev);
-    f->private_data = dx;
-    if(dx->type==DX_ACC)
-    {
+
+    ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+        return -ENOMEM;
+
+    ctx->dx = dx;
+    ctx->tgid = current->tgid;
+    atomic_set(&ctx->terminating, 0);
+
+    f->private_data = ctx;
+
+    if (dx->type == DX_ACC) {
         dx_sgdma_init(num);
+        /*
+         * Clear stale PROC_EXIT events only for THIS process's tgid.
+         * A previous incarnation of the same pid may have left a stale
+         * exit event. Do NOT clear all proc_exit events — other processes'
+         * exit events must be preserved for the service to consume.
+         */
+        dx_pcie_clear_proc_exit_for_pid(dx->id, current->tgid);
+    } else {
+        dx->npu->irq_event = 0; /* irq init */
     }
-    else//dx->type==DX_STD
-    {
-        dx->npu->irq_event = 0;// irq init
-    }	
+
     dx->response.req_id = 0;
     return 0;
 }
+
+/*
+ * Helper function to wake up all waiting threads.
+ * Called from both flush and release to terminate pending operations.
+ */
+static void dxrt_wakeup_waiters(struct dxdev *dx, struct dxrt_file_ctx *ctx)
+{
+    int ch;
+    unsigned long flags;
+
+    if (ctx)
+        atomic_set(&ctx->terminating, 1);
+
+    for (ch = 0; ch <= MAX_PCIE_CH_NUM; ch++)
+        wake_up_interruptible(&dx->response_wq[ch]);
+    wake_up_interruptible(&dx->event_wq);
+
+    if (dx->type == DX_ACC) {
+#if DEVICE_TYPE==0
+        for (ch = 0; ch <= MAX_PCIE_CH_NUM; ch++)
+            dx_pcie_interrupt_wakeup(dx->id, ch);
+        dx_pcie_interrupt_event_wakeup(dx->id);
+#endif
+    } else {
+        struct dxnpu *npu = dx->npu;
+
+        if (npu) {
+            spin_lock_irqsave(&npu->irq_event_lock, flags);
+            npu->irq_event = 1;
+            wake_up_interruptible(&npu->irq_wq);
+            spin_unlock_irqrestore(&npu->irq_event_lock, flags);
+
+            spin_lock_irqsave(&dx->error_lock, flags);
+            dx->error = 99;
+            wake_up_interruptible(&dx->error_wq);
+            spin_unlock_irqrestore(&dx->error_lock, flags);
+        }
+    }
+}
+
 static int dxrt_dev_release(struct inode *i, struct file *f)
 {
     int num = iminor(f->f_inode);
-    struct dxdev *dx = f->private_data;
-    pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
-    if(dx->type==DX_ACC)
-    {
-        dx_sgdma_deinit(num);
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
+
+    if (!dx) {
+        kfree(ctx);
+        return 0;
     }
+
+    pr_debug("%s: %s\n", f->f_path.dentry->d_iname, __func__);
+
+    /*
+     * Note: dxrt_wakeup_waiters() is NOT called here because
+     * flush() is always called before release() by the kernel,
+     * and flush() already wakes up all waiting threads.
+     */
+
+    if (dx->type == DX_ACC) {
+        dx_sgdma_deinit(num);
+        /* Cleanup pending responses for this process.
+         * Skip during recovery — recovery already clears all queues,
+         * and concurrent cleanup could operate on stale entries. */
+        if (ctx && !atomic_read(&dx->recovering)) {
+            int cleaned;
+            int queue_count;
+
+            cleaned = dx_pcie_cleanup_responses_for_proc(dx->id, ctx->tgid);
+            if (cleaned > 0)
+                pr_debug("%s: cleaned %d responses for proc %d\n",
+                    __func__, cleaned, ctx->tgid);
+
+            /*
+             * Notify Service about process exit via event.
+             * Service can receive this via DXRT_CMD_EVENT_V2.
+             */
+            dx_pcie_enqueue_proc_exit_event(dx->id, ctx->tgid);
+            queue_count = dx_pcie_is_proc_exit_pending(dx->id);
+            wake_up_interruptible(&dx->event_wq);
+            dx_pcie_interrupt_event_wakeup(dx->id);
+            pr_debug("%s: proc %d exit event queued (queue_count=%d)\n",
+                __func__, ctx->tgid, queue_count);
+        } else if (ctx) {
+            /* During recovery, still enqueue proc_exit but skip response cleanup */
+            dx_pcie_enqueue_proc_exit_event(dx->id, ctx->tgid);
+            wake_up_interruptible(&dx->event_wq);
+            pr_debug("%s: proc %d exit during recovery\n",
+                __func__, ctx->tgid);
+        }
+    }
+
+    kfree(ctx);
     return 0;
 }
+
+/*
+ * flush is called on every close(), even if fd is duplicated (dup/fork).
+ * This ensures waiting threads are woken up immediately when any fd is closed.
+ * release is only called when the last fd reference is closed.
+ */
+static int dxrt_dev_flush(struct file *f, fl_owner_t id)
+{
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
+
+    if (!dx)
+        return 0;
+
+    pr_debug("%s: %s\n", f->f_path.dentry->d_iname, __func__);
+
+    /* Wake up all waiting threads */
+    dxrt_wakeup_waiters(dx, ctx);
+
+    return 0;
+}
+
 static ssize_t dxrt_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off)
 {
     // unsigned long flags;
-    struct dxdev *dx = f->private_data;
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
+
+    if (!dx)
+        return -ENODEV;
     // dxrt_response_list_t *entry;
     // dxrt_response_list_t *responses = &dx->responses;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
@@ -109,8 +237,11 @@ static ssize_t dxrt_dev_write(struct file *f, const char __user *buf, size_t len
     loff_t *off)
 {
     // unsigned long flags;
-    struct dxdev *dx = f->private_data;
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
+    if (!dx)
+        return -ENODEV;
     if(dx->request_handler)
     {
         dxrt_request_list_t *entry;
@@ -148,7 +279,11 @@ static ssize_t dxrt_dev_write(struct file *f, const char __user *buf, size_t len
 static int dxrt_dev_mmap(struct file *f, struct vm_area_struct *vma)
 {
     int ret = -1;
-    struct dxdev *dx = f->private_data;
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
+
+    if (!dx)
+        return -ENODEV;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
     if(dx->type==DX_STD)
     {
@@ -161,10 +296,15 @@ static int dxrt_dev_mmap(struct file *f, struct vm_area_struct *vma)
 }
 static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
 {
-    struct dxdev *dx = f->private_data;
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
     // int num = iminor(f->f_inode);
     unsigned int mask = 0;
     unsigned long flags;
+
+    if (!dx)
+        return POLLERR;
+
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
     if(dx->type==DX_STD)
     {
@@ -204,8 +344,12 @@ static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
 static long dxrt_dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
     int num = iminor(f->f_inode);
-    struct dxdev *dx = f->private_data;
+    struct dxrt_file_ctx *ctx = f->private_data;
+    struct dxdev *dx = ctx ? ctx->dx : NULL;
     dxrt_message_t msg;
+
+    if (!dx)
+        return -ENODEV;
     pr_debug( "%s: ioctl() cmd %d\n", f->f_path.dentry->d_iname, cmd);    
     if (_IOC_TYPE(cmd) != DXRT_IOCTL_MAGIC || \
         _IOC_NR(cmd) >= DXRT_IOCTL_MAX)
@@ -223,11 +367,10 @@ static long dxrt_dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
             if(msg.cmd >=0 && msg.cmd < DXRT_CMD_MAX)
             {
                 pr_debug( MODULE_NAME "%d: message %d\n", num, msg.cmd);
-                if (dx_pcie_get_init_completed(dx->id)) {
-                    dx_pcie_set_init_completed(dx->id);
+                if (dx_pcie_test_and_clear_init_completed(dx->id)) {
                     dxrt_device_init(dx);
                 }
-                return message_handler_general(dx, &msg);
+                return message_handler_general(dx, &msg, ctx);
                 // return message_handler[msg.cmd](dx, msg.data);
             }
             else
@@ -252,7 +395,8 @@ static struct file_operations dxrt_cdev_fops =
     .write = dxrt_dev_write,
     .mmap = dxrt_dev_mmap,
     .unlocked_ioctl = dxrt_dev_ioctl,
-    .poll = dxrt_dev_poll
+    .poll = dxrt_dev_poll,
+    .flush = dxrt_dev_flush
 };
 
 static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct file_operations *fops)
@@ -298,15 +442,17 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     INIT_LIST_HEAD(&dxdev->sched);
     init_waitqueue_head(&dxdev->request_wq);
     init_waitqueue_head(&dxdev->error_wq);
-    spin_lock_init(&dxdev->request_queue_lock);
-    spin_lock_init(&dxdev->request_queue1_lock);
-    spin_lock_init(&dxdev->request_queue2_lock);
-    spin_lock_init(&dxdev->request_high_queue_lock);
+    mutex_init(&dxdev->request_queue_mutex);
+    mutex_init(&dxdev->request_queue1_mutex);
+    mutex_init(&dxdev->request_queue2_mutex);
+    mutex_init(&dxdev->request_high_queue_mutex);
     spin_lock_init(&dxdev->sched_lock);
     spin_lock_init(&dxdev->requests_lock);
     spin_lock_init(&dxdev->responses_lock);
     spin_lock_init(&dxdev->error_lock);
     mutex_init(&dxdev->msg_lock);
+    atomic_set(&dxdev->recovering, 0);
+    atomic_set(&dxdev->recovery_epoch, 0);
 #if IS_STANDALONE
     if (dxdev->type == DX_STD) {
         dxdev->request_handler = kthread_run(
@@ -321,10 +467,16 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
 }
 static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
 {
-
+#if DEVICE_TYPE==0
+    /* Unregister ISR callbacks BEFORE freeing dxdev to prevent use-after-free:
+     * After kfree(dxdev), the PCIe ISR could still fire and call the callback
+     * with a dangling dxdev pointer (wake_up_interruptible on freed memory). */
+    dx_pcie_unregister_response_callback(dxdev->id);
+    dx_pcie_unregister_event_callback(dxdev->id);
+#endif
     device_destroy(drv->dev_class, drv->dev_num + dxdev->id);
     cdev_del(&dxdev->cdev);
-    kfree(dxdev);    
+    kfree(dxdev);
 }
 
 #if IS_STANDALONE
@@ -345,10 +497,23 @@ static int dxrt_dev_get_device_id(struct dxrt_driver *drv)
 }
 #endif
 
+/* Set device node permission to 0666 so it is accessible without udev */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0))
+static char *dxrt_devnode(const struct device *dev, umode_t *mode)
+#else
+static char *dxrt_devnode(struct device *dev, umode_t *mode)
+#endif
+{
+    if (mode)
+        *mode = 0666;
+    return NULL;
+}
+
 int dxrt_driver_cdev_init(struct dxrt_driver *drv)
 {
     int i, ret;
     pr_debug( "%s\n", __func__);
+
 #if NUM_DEVICES==0
     drv->num_devices = dx_pcie_get_dev_num();
 #else
@@ -375,15 +540,11 @@ int dxrt_driver_cdev_init(struct dxrt_driver *drv)
                 unregister_chrdev_region(drv->dev_num, drv->num_devices);
                 return PTR_ERR(drv->dev_class);
             }
+            /* Set default permission 0666 so device is accessible without udev */
+            drv->dev_class->devnode = dxrt_devnode;
         }
-        //pr_info("%s: alloc_chrdev & class_create done!\n", __func__);
     }
-
-#if IS_STANDALONE
-	i = dxrt_dev_get_device_id(drv);
-#else
-    for(i=0;i<drv->num_devices;i++)
-#endif	
+    for (i = 0; i < drv->num_devices; i++)
     {
         drv->devices[i] = create_dxrt_device(i, drv, &dxrt_cdev_fops);
         if(drv->devices[i]==NULL)
@@ -393,7 +554,6 @@ int dxrt_driver_cdev_init(struct dxrt_driver *drv)
     }
     pr_debug( "%s done.\n", __func__);
     return 0;
-
 }
 void dxrt_driver_cdev_deinit(struct dxrt_driver *drv)
 {
@@ -410,9 +570,11 @@ void dxrt_driver_cdev_deinit(struct dxrt_driver *drv)
     for(i=0;i<drv->num_devices;i++)
 #endif	
     {
-        remove_dxrt_device(drv, drv->devices[i]);
+        /* Save npu/request_handler BEFORE remove_dxrt_device() which calls
+         * kfree(dxdev) — accessing dxdev fields after kfree is use-after-free. */
         npu = drv->devices[i]->npu;
         request_handler = drv->devices[i]->request_handler;
+        remove_dxrt_device(drv, drv->devices[i]);
         if(npu)
         {
             npu->deinit(npu);

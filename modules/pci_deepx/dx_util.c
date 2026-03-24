@@ -9,6 +9,7 @@
 #include <linux/pci.h>
 #include <linux/version.h>
 #include <linux/ktime.h>
+#include <linux/slab.h>
 
 #include "dx_util.h"
 #include "dx_lib.h"
@@ -160,9 +161,9 @@ char *show_pcie_profile(void)
 	int dev = 0, dma = 0, ch = 0, i;
 	int offset = 0;
 	char *ret;
-	static int active_devs[128];
-	static int active_dmas[128];
-	static int active_chs[128];
+	int *active_devs = NULL;
+	int *active_dmas = NULL;
+	int *active_chs = NULL;
 	int active_count = 0;
 	uint64_t total_count = 0;
 	uint64_t total_bw = 0;
@@ -170,6 +171,14 @@ char *show_pcie_profile(void)
 	dx_pcie_profiler_t *p;
 	uint64_t sw_prep, hw_exec, compl, total, bw;
 	char t_sw[16], t_hw[16], t_compl[16], t_total[16], t_size[16], t_total_sum[16];
+
+	active_devs = kcalloc(128, sizeof(int), GFP_KERNEL);
+	active_dmas = kcalloc(128, sizeof(int), GFP_KERNEL);
+	active_chs = kcalloc(128, sizeof(int), GFP_KERNEL);
+	if (!active_devs || !active_dmas || !active_chs) {
+		ret = NULL;
+		goto out_free;
+	}
 
 	memset(dx_buff, 0x00, sizeof(dx_buff));
 
@@ -182,12 +191,13 @@ char *show_pcie_profile(void)
 					active_dmas[active_count] = dma;
 					active_chs[active_count] = ch;
 					active_count++;
-					if (active_count >= 128) break;
+					if (active_count >= 128) goto collection_done;
 				}
 			}
 		}
 	}
 
+collection_done:
 	if (active_count == 0) {
 		offset += sprintf(dx_buff+offset, "No active profiling data found.\n");
 		goto show_exit;
@@ -319,6 +329,11 @@ show_exit:
 	} else {
 		ret = dx_buff;
 	}
+
+out_free:
+	kfree(active_devs);
+	kfree(active_dmas);
+	kfree(active_chs);
 	return ret;
 }
 
@@ -546,17 +561,52 @@ u64 dx_pcie_get_booting_region(int dev_id, int id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_booting_region);
 
-bool dx_pcie_get_init_completed(int dev_id)
+/**
+ * dx_pcie_test_and_clear_init_completed - Atomically test and clear init_completed flag
+ * @dev_id: Device id
+ * Returns: true if init was needed (flag was true), false otherwise
+ *
+ * This function atomically tests the init_completed flag and clears it if set.
+ * Returns the previous value to prevent race conditions when multiple threads
+ * try to initialize simultaneously. Only the first caller will get true.
+ */
+bool dx_pcie_test_and_clear_init_completed(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	return dw->init_completed;
-}
-EXPORT_SYMBOL_GPL(dx_pcie_get_init_completed);
+	unsigned long flags;
+	bool was_set;
 
+	if (!dw)
+		return false;
+
+	raw_spin_lock_irqsave(&dw->lock, flags);
+	was_set = dw->init_completed;
+	dw->init_completed = false;
+	raw_spin_unlock_irqrestore(&dw->lock, flags);
+
+	return was_set;
+}
+EXPORT_SYMBOL_GPL(dx_pcie_test_and_clear_init_completed);
+
+/**
+ * dx_pcie_set_init_completed - Set init_completed flag to trigger re-init
+ * @dev_id: Device id
+ *
+ * Sets init_completed = true so that the next ioctl call will invoke
+ * dxrt_device_init() to refresh device pointers (msg, dl, queues).
+ * Called after PCIe SBR where FW was fully reset.
+ */
 void dx_pcie_set_init_completed(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	dw->init_completed = false;
+	unsigned long flags;
+
+	if (!dw)
+		return;
+
+	raw_spin_lock_irqsave(&dw->lock, flags);
+	dw->init_completed = true;
+	raw_spin_unlock_irqrestore(&dw->lock, flags);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_set_init_completed);
 
@@ -659,4 +709,80 @@ u16 dx_pci_read_msi_data(struct pci_dev *pdev)
 			((u64)addr_high << 32) | addr_low, msi_data);
 
 	return msi_data;
+}
+
+/**
+ * dx_pci_read_msi_msg - Read complete MSI info from PCI config space
+ * @pdev: PCI device
+ * @msg: struct msi_msg to fill
+ * 
+ * Return: 0 on success, -1 on failure
+ */
+int dx_pci_read_msi_msg(struct pci_dev *pdev, struct msi_msg *msg)
+{
+	int pos;
+	u16 control;
+
+	if (!msg)
+		return -1;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+	if (!pos) {
+		pr_err("MSI capability not found\n");
+		return -1;
+	}
+
+	pci_read_config_word(pdev, pos + PCI_MSI_FLAGS, &control);
+	pci_read_config_dword(pdev, pos + PCI_MSI_ADDRESS_LO, &msg->address_lo);
+	if (control & PCI_MSI_FLAGS_64BIT) {
+		pci_read_config_dword(pdev, pos + PCI_MSI_ADDRESS_HI, &msg->address_hi);
+		pci_read_config_word(pdev, pos + PCI_MSI_DATA_64, (u16 *)&msg->data);
+	} else {
+		msg->address_hi = 0;
+		pci_read_config_word(pdev, pos + PCI_MSI_DATA_32, (u16 *)&msg->data);
+	}
+
+	pr_debug("MSI from PCI config: addr=0x%x_%x, data=0x%x\n",
+		msg->address_hi, msg->address_lo, msg->data);
+
+	return 0;
+}
+
+/**
+ * dx_pci_write_msi_msg - Write MSI address/data to PCI config space
+ * @pdev: PCI device
+ * @msg: struct msi_msg containing values to write
+ * 
+ * This directly programs the MSI capability in PCI config space.
+ * Use with caution as it bypasses kernel's MSI management.
+ * 
+ * Return: 0 on success, -1 on failure
+ */
+int dx_pci_write_msi_msg(struct pci_dev *pdev, struct msi_msg *msg)
+{
+	int pos;
+	u16 control;
+
+	if (!msg)
+		return -1;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+	if (!pos) {
+		pr_err("MSI capability not found\n");
+		return -1;
+	}
+
+	pci_read_config_word(pdev, pos + PCI_MSI_FLAGS, &control);
+	pci_write_config_dword(pdev, pos + PCI_MSI_ADDRESS_LO, msg->address_lo);
+	if (control & PCI_MSI_FLAGS_64BIT) {
+		pci_write_config_dword(pdev, pos + PCI_MSI_ADDRESS_HI, msg->address_hi);
+		pci_write_config_word(pdev, pos + PCI_MSI_DATA_64, msg->data);
+	} else {
+		pci_write_config_word(pdev, pos + PCI_MSI_DATA_32, msg->data);
+	}
+
+	pr_info("dx_dma: Wrote MSI to PCI config: addr=0x%x_%x, data=0x%x\n",
+		msg->address_hi, msg->address_lo, msg->data);
+
+	return 0;
 }

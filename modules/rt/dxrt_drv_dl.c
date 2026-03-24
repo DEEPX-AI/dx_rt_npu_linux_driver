@@ -14,49 +14,51 @@
     true : ready
     false : not ready
 */
-bool dx_get_flash_ready(dx_download_msg *msg, int timeout)
+bool dx_get_flash_ready(dx_download_msg __iomem *msg, int timeout)
 {
     bool ret = true;
+    void __iomem *sts = DX_FIELD_ADDR(msg, dx_download_msg, sts);
 
     do {
-        if ((timeout-- < 0) || (msg->sts == PCIE_COMM_FAIL_VAL)) {
+        if ((timeout-- < 0) || (readb(sts) == PCIE_COMM_FAIL_VAL)) {
             ret = false;
             break;
         }
         udelay(1);
-    } while(msg->sts != DW_READY);
-    // pr_info("%s:status:%d\n", __func__, msg->sts);
+    } while(readb(sts) != DW_READY);
 
     return ret;
 }
 
-bool dx_get_flash_done(dx_download_msg *msg)
+bool dx_get_flash_done(dx_download_msg __iomem *msg)
 {
     int timeout = 1000; /* 1ms */
     bool ret = true;
+    void __iomem *sts = DX_FIELD_ADDR(msg, dx_download_msg, sts);
 
     do {
-        if ((timeout-- < 0) || (msg->sts == PCIE_COMM_FAIL_VAL)) {
+        if ((timeout-- < 0) || (readb(sts) == PCIE_COMM_FAIL_VAL)) {
             ret = false;
             break;
         }
         udelay(1);
-    } while(msg->sts != DW_DONE);
+    } while(readb(sts) != DW_DONE);
 
     return ret;
 }
 /*
     fail : negative 
 */
-int8_t dx_get_boot_step(dx_download_msg *msg)
+int8_t dx_get_boot_step(dx_download_msg __iomem *msg)
 {
-    if(msg->bt_step <= DX_RTOS)
-        return msg->bt_step;
+    uint8_t step = dx_read8(msg, dx_download_msg, bt_step);
+    if(step <= DX_RTOS)
+        return step;
     else
         return -1;
 }
 
-int8_t dx_get_dl_status(dx_download_msg *msg)
+int8_t dx_get_dl_status(dx_download_msg __iomem *msg)
 {
-    return msg->sts;
+    return dx_read8(msg, dx_download_msg, sts);
 }
