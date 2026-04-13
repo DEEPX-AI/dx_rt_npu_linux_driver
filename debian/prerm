@@ -5,16 +5,17 @@ set -e
 # Define DKMS module information
 # This should match PACKAGE_NAME in dkms.conf and the package name prefix.
 PACKAGE_NAME="dxrt-driver-dkms"
-DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
-DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
-                                           --show-field Version \
-                                           | head -n 1 \
-                                           | sed 's/[[:space:]]//g') 
 
-# Fallback if version extraction fails (optional, for robustness)
+# Extract version using dpkg-query (same method as postinst, no dpkg-dev dependency)
+DKMS_MODULE_VERSION=$(dpkg-query -W -f '${Version}' "${PACKAGE_NAME}" 2>/dev/null \
+                      | sed 's/[[:space:]]//g')
+
 if [ -z "${DKMS_MODULE_VERSION}" ]; then
-    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog during prerm. Using default '0.0.0'." >&2
-    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+    echo "Warning: Could not determine DKMS_MODULE_VERSION during prerm." >&2
+    echo "Attempting best-effort cleanup by module name..." >&2
+    # Best-effort: remove all versions of this module from DKMS
+    dkms remove "${PACKAGE_NAME}" --all 2>/dev/null || true
+    exit 0
 fi
 
 # =========================================================================
@@ -66,13 +67,8 @@ case "$1" in
         fi
     ;;
 
-    # Other package management events
-    # 'purge' typically follows 'remove' for configuration file cleanup,
-    # but DKMS module removal is handled by 'dkms remove' in the 'remove' stage.
-    purge)
-        # For 'purge', the 'remove' action would have already handled DKMS cleanup.
-        # No additional DKMS-specific actions are typically needed here.
-        echo "Purge operation for ${PACKAGE_NAME}-dkms. DKMS module already removed."
+    failed-upgrade)
+        # Nothing to do — dpkg handles rollback
     ;;
 
     *)

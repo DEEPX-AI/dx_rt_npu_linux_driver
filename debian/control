@@ -2,12 +2,13 @@ Source: dxrt-driver-dkms
 Section: kernel
 Priority: optional
 Maintainer: Lee Huseong <hslee@deepx.ai>
-Build-Depends: debhelper (>= 12), cmake
+Build-Depends: debhelper (>= 12)
 Homepage: https://deepx.ai
 
 Package: dxrt-driver-dkms
 Architecture: all
-Depends: ${shlibs:Depends}, ${misc:Depends}, dkms
+Depends: ${shlibs:Depends}, ${misc:Depends}, dkms, build-essential
+Recommends: linux-headers-generic | linux-headers-amd64 | linux-headers-arm64 | linux-headers-armmp | raspberrypi-kernel-headers
 Homepage: https://deepx.ai
 Description: A DEEPX NPU Driver
 

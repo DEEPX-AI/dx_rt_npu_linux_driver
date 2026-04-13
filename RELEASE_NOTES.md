@@ -1,4 +1,13 @@
 # RELEASE_NOTES
+## v2.4.1 / 2026-04-13
+
+### 1. Changed
+- harden DKMS package for external distribution
+
+### 2. Fixed
+
+### 3. Added
+
 ## v2.4.0 / 2026-03-20
 
 ### 1. Changed

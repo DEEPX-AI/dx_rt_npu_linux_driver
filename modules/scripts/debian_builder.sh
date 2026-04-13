@@ -213,7 +213,7 @@ function build_debian_package() {
     logmsg "  To install:"
     logmsg "    ./build.sh -c install-package"
     logmsg "  Or manually:"
-    logmsg "    sudo dpkg -i release/${DEBIAN_PKG_VERSION}/${PACKAGE_NAME}_${DEBIAN_PKG_FULL_VERSION}_*.deb"
+    logmsg "    sudo apt-get install ./release/${DEBIAN_PKG_VERSION}/${PACKAGE_NAME}_${DEBIAN_PKG_FULL_VERSION}_all.deb"
     logmsg ""
     
     cd "${project_root}"
@@ -285,22 +285,38 @@ install_debian_package() {
         return 1
     fi
     
-    logmsg "-> Installing: ${deb_file}"
-    
-    # Install the package
-    if sudo dpkg -i "${deb_file}"; then
+    # Ensure absolute path for apt-get (requires "/" in path to treat as local file)
+    local abs_deb_file
+    abs_deb_file=$(realpath "${deb_file}") || abs_deb_file="${deb_file}"
+
+    logmsg "-> Installing: ${abs_deb_file}"
+
+    # Install via apt-get (auto-resolves dependencies from APT repositories)
+    if sudo apt-get install -y "${abs_deb_file}"; then
         logmsg "✓ Package installed successfully"
         logmsg ""
         logmsg "  To check status:"
-        logmsg "    lsmod | grep -E 'dxrt|dx_dma' or"
+        logmsg "    lsmod | grep -E 'dxrt|dx_dma'"
         logmsg "    dkms status"
         return 0
-    else
-        logerr "Failed to install package"
-        logmsg "  Try fixing dependencies with:"
-        logmsg "    sudo apt-get install -f"
-        return 1
     fi
+
+    # Installation failed — provide actionable dependency guide
+    logerr "Failed to install package. Missing dependencies?"
+    logerr ""
+    logerr "Required packages:"
+    logerr "  - dkms"
+    logerr "  - linux-headers for your kernel (e.g. linux-headers-$(uname -r))"
+    logerr "  - build-essential"
+    logerr ""
+    logerr "Install dependencies first, then retry:"
+    logerr "  # Ubuntu / Debian x86_64:"
+    logerr "  sudo apt-get install -y dkms linux-headers-$(uname -r) build-essential"
+    logerr "  # Raspberry Pi OS:"
+    logerr "  sudo apt-get install -y dkms raspberrypi-kernel-headers build-essential"
+    logerr ""
+    logerr "  sudo apt-get install -y ${abs_deb_file}"
+    return 1
 }
 
 # Uninstall the Debian package
