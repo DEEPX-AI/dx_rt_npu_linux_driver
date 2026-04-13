@@ -2,18 +2,16 @@
 set -e
 
 PACKAGE_NAME="dxrt-driver-dkms"
-DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
-DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
-                                           --show-field Version \
-                                           | head -n 1 \
-                                           | sed 's/[[:space:]]//g') 
 
+# Extract version using dpkg-query (no dpkg-dev dependency required)
+DKMS_MODULE_VERSION=$(dpkg-query -W -f '${Version}' "${PACKAGE_NAME}" 2>/dev/null \
+                      | sed 's/[[:space:]]//g')
 
 echo "DEBUG: Final DKMS_MODULE_VERSION is: '${DKMS_MODULE_VERSION}'" >&2
 
 if [ -z "${DKMS_MODULE_VERSION}" ]; then
-    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog. Using default '0.0.0'." >&2
-    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+    echo "Error: Could not determine DKMS_MODULE_VERSION. Aborting." >&2
+    exit 1
 fi
 
 # The postinst script is invoked by dpkg. The $1 variable represents the type of package management event currently being executed.
@@ -44,14 +42,32 @@ case "$1" in
         fi
         
         # Only remove modules if they are actually loaded (avoid duplicate removal)
+        MODULES_STILL_LOADED=false
         if lsmod | grep -q "^dxrt_driver"; then
             echo "Removing loaded dxrt_driver module..."
-            rmmod -f dxrt_driver || true
+            if ! rmmod dxrt_driver 2>/dev/null; then
+                echo "Warning: dxrt_driver module is in use and could not be unloaded." >&2
+                MODULES_STILL_LOADED=true
+            fi
         fi
         
         if lsmod | grep -q "^dx_dma"; then
             echo "Removing loaded dx_dma module..."
-            rmmod -f dx_dma || true
+            if ! rmmod dx_dma 2>/dev/null; then
+                echo "Warning: dx_dma module is in use and could not be unloaded." >&2
+                MODULES_STILL_LOADED=true
+            fi
+        fi
+        
+        if [ "$MODULES_STILL_LOADED" = true ]; then
+            echo "" >&2
+            echo "===================================================================" >&2
+            echo "WARNING: Old driver modules are still loaded in memory." >&2
+            echo "===================================================================" >&2
+            echo "New module files will be installed, but the old version remains" >&2
+            echo "active until reboot. A reboot is REQUIRED to complete the upgrade." >&2
+            echo "===================================================================" >&2
+            echo "" >&2
         fi
 
         # 2. Check for conflicting manual installation
@@ -88,12 +104,16 @@ case "$1" in
         fi
         echo "No conflicting manual installation found."
 
-        # 3. Add the module to DKMS
+        # 3. Add the module to DKMS (idempotent — skip if already registered)
         # This registers the source code located at /usr/src/${PACKAGE_NAME}-${DKMS_MODULE_VERSION} with DKMS.
         echo "Adding ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} to DKMS..."
-        if ! dkms add "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
-            echo "Error: 'dkms add' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
-            exit 1
+        if dkms status "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" 2>/dev/null | grep -q "${PACKAGE_NAME}"; then
+            echo "Module already registered in DKMS, skipping 'dkms add'."
+        else
+            if ! dkms add "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+                echo "Error: 'dkms add' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+                exit 1
+            fi
         fi
 
         # 4. Build the DKMS module
@@ -116,11 +136,11 @@ case "$1" in
         # 6. Create Modprobe configuration file
         MODPROBE_CONF="/etc/modprobe.d/dx_dma.conf"
         echo "Creating modprobe configuration for module load order..."
-        echo "softdep dx_dma pre: dxrt_driver post:" | sudo tee "$MODPROBE_CONF" > /dev/null
+        echo "softdep dx_dma pre: dxrt_driver post:" > "$MODPROBE_CONF"
 
         # 7. Update initramfs
         echo "Updating initramfs..."
-        update-initramfs -u 
+        update-initramfs -u || echo "Warning: update-initramfs not available." >&2
         
         # 9. Ensure virt-dma dependency is satisfied
         # Check if CONFIG_DMA_VIRTUAL_CHANNELS is available (builtin or module)
@@ -130,10 +150,10 @@ case "$1" in
         VDMA_MODULE=false
         
         if [ -f "$KERNEL_CONFIG" ]; then
-            if grep -Eq '^CONFIG_DMA_VIRTUAL_CHANNELS=y' "$KERNEL_CONFIG"; then
+            if grep -q '^CONFIG_DMA_VIRTUAL_CHANNELS=y$' "$KERNEL_CONFIG"; then
                 VDMA_BUILTIN=true
                 echo "-> CONFIG_DMA_VIRTUAL_CHANNELS=y (built-in)"
-            elif grep -Eq '^CONFIG_DMA_VIRTUAL_CHANNELS=m' "$KERNEL_CONFIG"; then
+            elif grep -q '^CONFIG_DMA_VIRTUAL_CHANNELS=m$' "$KERNEL_CONFIG"; then
                 VDMA_MODULE=true
                 echo "-> CONFIG_DMA_VIRTUAL_CHANNELS=m (module)"
             fi
@@ -141,7 +161,7 @@ case "$1" in
         
         # If it's a module, ensure it's loaded before loading our drivers
         if [ "$VDMA_MODULE" = "true" ]; then
-            if ! lsmod | grep -Eq '^virt_dma\b'; then
+            if ! lsmod | grep -q '^virt_dma '; then
                 echo "-> Loading virt_dma module..."
                 modprobe virt-dma 2>/dev/null || modprobe virt_dma 2>/dev/null || {
                     echo "Warning: Could not load virt_dma module. Driver may fail to load." >&2
@@ -151,22 +171,29 @@ case "$1" in
             fi
         fi
         
-        # 10. Load the modules
-        # Load the installed driver modules into the kernel.
-        echo "Loading modules..."
-        modprobe dx_dma || {
-            echo "Warning: Failed to load dx_dma module. Please check dmesg for errors." >&2
-        }
-        modprobe dxrt_driver || {
-            echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
-        }
+        # 10. Load the modules (skip if old modules are still loaded — reboot required)
+        if [ "$MODULES_STILL_LOADED" = true ]; then
+            echo "Skipping module loading — old modules still in memory. Reboot to activate new version."
+        else
+            echo "Loading modules..."
+            modprobe dx_dma || {
+                echo "Warning: Failed to load dx_dma module. Please check dmesg for errors." >&2
+            }
+            modprobe dxrt_driver || {
+                echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
+            }
+        fi
         
         # 11. Restart dxrt systemd service if it was enabled before
         if [ "$DXRT_SERVICE_WAS_ENABLED" = "true" ]; then
-            echo "Restarting dxrt systemd service..."
-            systemctl restart dxrt || {
-                echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
-            }
+            if [ "$MODULES_STILL_LOADED" = true ]; then
+                echo "Skipping service restart — reboot required to activate new modules."
+            else
+                echo "Restarting dxrt systemd service..."
+                systemctl restart dxrt || {
+                    echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
+                }
+            fi
         fi
         
     ;;
