@@ -28,13 +28,70 @@ override_dh_install:
 	rm -rf -- "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)"/*
 
 # Copy working directory (including uncommitted changes) to DKMS_INSTALL_DEST
-	rsync -a --exclude=".git" --exclude="debian" ./ \
+# Only include necessary files for DKMS build
+	rsync -a \
+		--exclude=".git" \
+		--exclude=".gitignore" \
+		--exclude=".gitmodules" \
+		--exclude=".github" \
+		--exclude=".vscode" \
+		--exclude=".pre-commit-config.yaml" \
+		--exclude=".bumpversion.cfg" \
+		--exclude=".cliff.toml" \
+		--exclude="sonar-project.properties" \
+		--exclude="debian" \
+		--exclude="release" \
+		--exclude="utils" \
+		--exclude="scripts" \
+		--exclude="build_debian_package.sh" \
+		--exclude="modules/scripts" \
+		--exclude="modules/module_insert.sh" \
+		--exclude="modules/pci_xilinx" \
+		--exclude="modules/pci_deepx/test" \
+		--exclude="modules/pci_deepx/utils" \
+		--exclude="modules/pci_deepx/.github" \
+		--exclude="*.ko" \
+		--exclude="*.o" \
+		--exclude="*.mod" \
+		--exclude="*.mod.c" \
+		--exclude="modules.order" \
+		--exclude="Module.symvers" \
+		--filter='- .*/' \
+		--filter='- .*.cmd' \
+		--filter='- .*.d' \
+		--filter='- .*.o' \
+		./ \
 		"$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/"
+	
+	# Clean up hidden build artifacts that may have slipped through
+	find "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/" -type f \( -name '.*.cmd' -o -name '.*.d' -o -name '.*.o' \) -delete
+	find "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/" -type d -name '.tmp_versions' -exec rm -rf {} + 2>/dev/null || true
 
 # Handle submodules manually (copy working directory)
+# Only copy necessary submodules for DKMS build (exclude utils and pci_xilinx)
 	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
+		case "$$submodule_path" in \
+			utils|modules/pci_xilinx) \
+				echo "Skipping submodule: $$submodule_path (not needed for DKMS)"; \
+				continue; \
+				;; \
+		esac; \
 		echo "Handling submodule: $$submodule_path"; \
-		rsync -a --exclude=".git" "./$$submodule_path/" \
+		rsync -a \
+			--exclude=".git" \
+			--exclude=".gitignore" \
+			--exclude=".github" \
+			--exclude=".bumpversion.cfg" \
+			--exclude=".cliff.toml" \
+			--exclude=".pre-commit-config.yaml" \
+			--exclude="test" \
+			--exclude="utils" \
+			--exclude="*.ko" \
+			--exclude="*.o" \
+			--exclude="*.mod" \
+			--filter='- .*.cmd' \
+			--filter='- .*.d' \
+			"./$$submodule_path/" \
 			"$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/$$submodule_path/"; \
 	done
 	

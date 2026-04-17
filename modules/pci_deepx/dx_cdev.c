@@ -345,7 +345,7 @@ unregister_region:
 }
 #endif
 
-void xpdev_destroy_interfaces(struct dx_dma_pci_dev *xpdev)
+static void xpdev_destroy_interfaces(struct dx_dma_pci_dev *xpdev)
 {
 	struct dw_edma *dw = xpdev->dw;
 	int i = 0;
@@ -507,6 +507,18 @@ void xpdev_release_interfaces(struct dx_dma_pci_dev *xpdev)
 }
 EXPORT_SYMBOL_GPL(xpdev_release_interfaces);
 
+/* Set device node permission to 0666 so it is accessible without udev */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0))
+static char *dx_dma_devnode(const struct device *dev, umode_t *mode)
+#else
+static char *dx_dma_devnode(struct device *dev, umode_t *mode)
+#endif
+{
+	if (mode)
+		*mode = 0666;
+	return NULL;
+}
+
 int dx_cdev_init(void)
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
@@ -518,6 +530,8 @@ int dx_cdev_init(void)
 		pr_err(DX_DMA_NODE_NAME ": failed to create class");
 		return -EINVAL;
 	}
+	/* Set default permission 0666 so device is accessible without udev */
+	g_edma_class->devnode = dx_dma_devnode;
 
 	/* using kmem_cache_create to enable sequential cleanup */
 	cdev_cache = kmem_cache_create("cdev_cache",

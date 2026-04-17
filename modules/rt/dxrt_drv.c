@@ -34,6 +34,18 @@
 
 static struct dxrt_driver drv;
 
+/*
+ * Fault injection: skip address-range validation in dxrt_write_mem /
+ * dxrt_read_mem so that an out-of-range DMA can be triggered to
+ * exercise the recovery path.  Toggle at runtime:
+ *   echo 1 > /sys/module/dxrt_driver/parameters/fault_inject_skip_addr_check
+ */
+bool dxrt_fault_inject_skip_addr_check;
+module_param_named(fault_inject_skip_addr_check,
+		   dxrt_fault_inject_skip_addr_check, bool, 0644);
+MODULE_PARM_DESC(fault_inject_skip_addr_check,
+		 "Skip address-range validation in write_mem/read_mem (DANGER: test only)");
+
 #if IS_ACCELERATOR
 static int __init dxrt_driver_init(void)
 {

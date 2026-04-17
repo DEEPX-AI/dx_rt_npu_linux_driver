@@ -1,3 +1,12 @@
+dxrt-driver-dkms (2.4.0-2) unstable; urgency=medium
+
+  - Modularize build system and enhance driver management
+  - fix DMA cache coherency bugs on ARM64 IOMMU
+  - defer dw_edma_free_desc() to process context to fix IOMMU vunmap crash
+  - implement DMA abnormal recovery for two termination cases
+
+ -- dx-ci <dci@deepx.ai>  Tue, 24 Mar 2026 21:56:26 +0900
+
 dxrt-driver-dkms (2.1.0-2) unstable; urgency=medium
 
   * Add sleep/resched in dxrt_polling_ack to avoid soft lockups during slow ACKs

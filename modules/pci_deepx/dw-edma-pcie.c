@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/device.h>
-// #include <linux/pci-epf.h>
 #include <linux/msi.h>
 #include <linux/bitfield.h>
 #include <linux/aer.h>
@@ -129,8 +128,6 @@ struct dw_edma_pcie_data {
 -------------------------------------------------- << DESC_RD_BASE_OFFS
      DMA Read Descriptor   (Size : DESC_WR_RD_SIZE)
 -------------------------------------------------- */
-
-// #define SRAM_DESC_TABLE
 
 #define BAR0_MEM_SIZE		(4*1024*1024) /* 4MB */
 #define DESC_WR_BASE_OFFS	(0x00)
@@ -340,8 +337,6 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	}
 
 	pci_set_master(pdev);
-	/* AER (Advanced Error Reporting) hooks */
-	// pci_enable_pcie_error_reporting(pdev);
 
 	if ((dx_pci_read_revision_id(pdev, &revision_id) != 0) ||
 		(dx_pci_read_program_if(pdev, &prog_if) != 0)) {
@@ -421,8 +416,6 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	/* Data structure initialization */
 	chip->dw = dw;
 	chip->dev = dev;
-	// chip->id = pdev->devfn;
-	// chip->irq = pdev->irq;
 
 	dw->mf = vsec_data.mf;
 	dw->nr_irqs = nr_irqs;
@@ -566,6 +559,13 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	/* Detect device number */
 	dx_dev_list_add(chip->dw);
 
+	/* Initialize per-device mutexes before any code path can contend.
+	 * dw is devm_kzalloc'd (zeroed) — without explicit mutex_init the
+	 * wait_list head is NULL, which works on the uncontended fast-path
+	 * but causes a NULL-pointer dereference on the slow-path. */
+	mutex_init(&chip->dw->wr_lock);
+	mutex_init(&chip->dw->rd_lock);
+
 	/* Starting eDMA driver */
 	err = dx_dma_probe(chip);
 	if (err) {
@@ -583,6 +583,8 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	dw_edma_thread_init(chip->dw->idx);
 	chip->dw->init_completed = true;
+	atomic_set(&chip->dw->alive, 1);
+	atomic_set(&chip->dw->sbr_in_progress, 0);
 
 	pci_err(pdev, "[%s] Probe Done!!\n", __func__);
 
@@ -596,13 +598,15 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 
 	pci_dbg(pdev, "[%s]\n", __func__);
 
+	/* Mark device as going away — callers from dxrt_driver
+	 * (dx_sgdma_deinit, dx_pcie_reset_dma_channels) check this
+	 * flag before touching dw->wr_lock to avoid use-after-free. */
+	atomic_set(&chip->dw->alive, 0);
+
 	/* Stopping eDMA driver */
 	err = dx_dma_remove(chip);
 	if (err)
 		pci_warn(pdev, "can't remove device properly: %d\n", err);
-
-	/* AER (Advanced Error Reporting) hooks */
-	// pci_disable_pcie_error_reporting(pdev);
 
 	/* Remove Cdev */
 	xpdev_release_interfaces(chip->dw->xpdev);

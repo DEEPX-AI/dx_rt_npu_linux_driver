@@ -2,18 +2,16 @@
 set -e
 
 PACKAGE_NAME="dxrt-driver-dkms"
-DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
-DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
-                                           --show-field Version \
-                                           | head -n 1 \
-                                           | sed 's/[[:space:]]//g') 
 
+# Extract version using dpkg-query (no dpkg-dev dependency required)
+DKMS_MODULE_VERSION=$(dpkg-query -W -f '${Version}' "${PACKAGE_NAME}" 2>/dev/null \
+                      | sed 's/[[:space:]]//g')
 
 echo "DEBUG: Final DKMS_MODULE_VERSION is: '${DKMS_MODULE_VERSION}'" >&2
 
 if [ -z "${DKMS_MODULE_VERSION}" ]; then
-    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog. Using default '0.0.0'." >&2
-    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+    echo "Error: Could not determine DKMS_MODULE_VERSION. Aborting." >&2
+    exit 1
 fi
 
 # The postinst script is invoked by dpkg. The $1 variable represents the type of package management event currently being executed.
@@ -44,32 +42,78 @@ case "$1" in
         fi
         
         # Only remove modules if they are actually loaded (avoid duplicate removal)
+        MODULES_STILL_LOADED=false
         if lsmod | grep -q "^dxrt_driver"; then
             echo "Removing loaded dxrt_driver module..."
-            rmmod -f dxrt_driver || true
+            if ! rmmod dxrt_driver 2>/dev/null; then
+                echo "Warning: dxrt_driver module is in use and could not be unloaded." >&2
+                MODULES_STILL_LOADED=true
+            fi
         fi
         
         if lsmod | grep -q "^dx_dma"; then
             echo "Removing loaded dx_dma module..."
-            rmmod -f dx_dma || true
+            if ! rmmod dx_dma 2>/dev/null; then
+                echo "Warning: dx_dma module is in use and could not be unloaded." >&2
+                MODULES_STILL_LOADED=true
+            fi
+        fi
+        
+        if [ "$MODULES_STILL_LOADED" = true ]; then
+            echo "" >&2
+            echo "===================================================================" >&2
+            echo "WARNING: Old driver modules are still loaded in memory." >&2
+            echo "===================================================================" >&2
+            echo "New module files will be installed, but the old version remains" >&2
+            echo "active until reboot. A reboot is REQUIRED to complete the upgrade." >&2
+            echo "===================================================================" >&2
+            echo "" >&2
         fi
 
-        # # 2. Remove legacy-installed .ko files from any location under /lib/modules/<kernel-version>
+        # 2. Check for conflicting manual installation
+        # If manual installation is detected, fail with clear error message
         KERNEL_VERSION="$(uname -r)"
         MODULES_DIR="/lib/modules/${KERNEL_VERSION}"
-        echo "Cleaning legacy-installed modules before DKMS setup..."
+        MANUAL_INSTALL_DETECTED=false
+        
+        echo "Checking for conflicting manual installation..."
         for module in dxrt_driver.ko dx_dma.ko; do
-            echo "Searching and removing ${module} under ${MODULES_DIR}..."
-            find "$MODULES_DIR" -type f -name "$module" -exec rm -f {} \;
+            if find "$MODULES_DIR/extra" -type f -name "$module" 2>/dev/null | grep -q .; then
+                MANUAL_INSTALL_DETECTED=true
+                echo "ERROR: Found manually installed module: $module" >&2
+                find "$MODULES_DIR/extra" -type f -name "$module" 2>/dev/null
+            fi
         done
+        
+        if [ "$MANUAL_INSTALL_DETECTED" = true ]; then
+            echo "" >&2
+            echo "===================================================================" >&2
+            echo "ERROR: Manual installation detected in /lib/modules/" >&2
+            echo "===================================================================" >&2
+            echo "" >&2
+            echo "This will conflict with DKMS package installation." >&2
+            echo "" >&2
+            echo "Please uninstall manually installed modules first:" >&2
+            echo "  cd /path/to/dx_rt_npu_linux_driver/modules" >&2
+            echo "  sudo ./build.sh -c uninstall" >&2
+            echo "" >&2
+            echo "Then install via DKMS package:" >&2
+            echo "  sudo ./build.sh -c install-package" >&2
+            echo "" >&2
+            exit 1
+        fi
+        echo "No conflicting manual installation found."
 
-
-        # 3. Add the module to DKMS
+        # 3. Add the module to DKMS (idempotent — skip if already registered)
         # This registers the source code located at /usr/src/${PACKAGE_NAME}-${DKMS_MODULE_VERSION} with DKMS.
         echo "Adding ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} to DKMS..."
-        if ! dkms add "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
-            echo "Error: 'dkms add' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
-            exit 1
+        if dkms status "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" 2>/dev/null | grep -q "${PACKAGE_NAME}"; then
+            echo "Module already registered in DKMS, skipping 'dkms add'."
+        else
+            if ! dkms add "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}"; then
+                echo "Error: 'dkms add' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+                exit 1
+            fi
         fi
 
         # 4. Build the DKMS module
@@ -92,39 +136,64 @@ case "$1" in
         # 6. Create Modprobe configuration file
         MODPROBE_CONF="/etc/modprobe.d/dx_dma.conf"
         echo "Creating modprobe configuration for module load order..."
-        echo "softdep dx_dma pre: dxrt_driver post:" | sudo tee "$MODPROBE_CONF" > /dev/null
+        echo "softdep dx_dma pre: dxrt_driver post:" > "$MODPROBE_CONF"
 
-        # 7. Install udev rules
-        UDEV_RULE_SCRIPT="/usr/src/${PACKAGE_NAME}-${DKMS_MODULE_VERSION}/modules/install-udev_rule.sh"
-        if [ -x "$UDEV_RULE_SCRIPT" ]; then
-            echo "Installing udev rules using ${UDEV_RULE_SCRIPT}..."
-            "$UDEV_RULE_SCRIPT"
-            udevadm control --reload-rules
-            udevadm trigger
-        else  
-            echo "Warning: Udev rule installation script not found or not executable at ${UDEV_RULE_SCRIPT}. Skipping." >&2
-        fi
-
-        # 8. Update initramfs
+        # 7. Update initramfs
         echo "Updating initramfs..."
-        update-initramfs -u 
+        update-initramfs -u || echo "Warning: update-initramfs not available." >&2
         
-        # 9. Load the modules
-        # Load the installed driver modules into the kernel.
-        echo "Loading modules..."
-        modprobe dx_dma || {
-            echo "Warning: Failed to load dx_dma module. Please check dmesg for errors." >&2
-        }
-        modprobe dxrt_driver || {
-            echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
-        }
+        # 9. Ensure virt-dma dependency is satisfied
+        # Check if CONFIG_DMA_VIRTUAL_CHANNELS is available (builtin or module)
+        echo "Checking virt-dma dependency..."
+        KERNEL_CONFIG="/boot/config-$(uname -r)"
+        VDMA_BUILTIN=false
+        VDMA_MODULE=false
         
-        # 10. Restart dxrt systemd service if it was enabled before
-        if [ "$DXRT_SERVICE_WAS_ENABLED" = "true" ]; then
-            echo "Restarting dxrt systemd service..."
-            systemctl restart dxrt || {
-                echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
+        if [ -f "$KERNEL_CONFIG" ]; then
+            if grep -q '^CONFIG_DMA_VIRTUAL_CHANNELS=y$' "$KERNEL_CONFIG"; then
+                VDMA_BUILTIN=true
+                echo "-> CONFIG_DMA_VIRTUAL_CHANNELS=y (built-in)"
+            elif grep -q '^CONFIG_DMA_VIRTUAL_CHANNELS=m$' "$KERNEL_CONFIG"; then
+                VDMA_MODULE=true
+                echo "-> CONFIG_DMA_VIRTUAL_CHANNELS=m (module)"
+            fi
+        fi
+        
+        # If it's a module, ensure it's loaded before loading our drivers
+        if [ "$VDMA_MODULE" = "true" ]; then
+            if ! lsmod | grep -q '^virt_dma '; then
+                echo "-> Loading virt_dma module..."
+                modprobe virt-dma 2>/dev/null || modprobe virt_dma 2>/dev/null || {
+                    echo "Warning: Could not load virt_dma module. Driver may fail to load." >&2
+                }
+            else
+                echo "-> virt_dma module already loaded"
+            fi
+        fi
+        
+        # 10. Load the modules (skip if old modules are still loaded — reboot required)
+        if [ "$MODULES_STILL_LOADED" = true ]; then
+            echo "Skipping module loading — old modules still in memory. Reboot to activate new version."
+        else
+            echo "Loading modules..."
+            modprobe dx_dma || {
+                echo "Warning: Failed to load dx_dma module. Please check dmesg for errors." >&2
             }
+            modprobe dxrt_driver || {
+                echo "Warning: Failed to load dxrt_driver module. Please check dmesg for errors." >&2
+            }
+        fi
+        
+        # 11. Restart dxrt systemd service if it was enabled before
+        if [ "$DXRT_SERVICE_WAS_ENABLED" = "true" ]; then
+            if [ "$MODULES_STILL_LOADED" = true ]; then
+                echo "Skipping service restart — reboot required to activate new modules."
+            else
+                echo "Restarting dxrt systemd service..."
+                systemctl restart dxrt || {
+                    echo "Warning: Failed to Restart dxrt systemd service. Please check systemctl status dxrt." >&2
+                }
+            fi
         fi
         
     ;;

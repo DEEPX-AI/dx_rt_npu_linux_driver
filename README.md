@@ -36,13 +36,14 @@ Support Linux kernel Kbuild system.
     - device.mk
     - kbuild
     - Makefile
-    - build.sh
+    - build.sh (main build script - refactored and modularized)
     - [rt]
         - Kbuild
     - [pci_deepx] : submodule
         - Kbuild
+- [debian]
+    - control, rules, postinst, prerm (Debian packaging files)
 
-- [utils] : submodule
 ```
 ***device.mk***
 - set up configuration for supported devices, you can select device with 'DEVICE=[device]' macro
@@ -51,7 +52,7 @@ $ make DEVICE=[device]
 ```
 - For a device like m1, you need to select a submodule(PCIe) that has a dependency on m1.
 ```console
-$ make DEVICE=m1 PCIE=[deepx|xilinx]
+$ make DEVICE=m1 PCIE=deepx
 ```
 
 | DEVICE | CONFIG                                        |
@@ -84,22 +85,31 @@ $ make DEVICE=v3
 
 ***build.sh***
 - This is a shell script that supports building. This script runs the Makefile using the entered options.
+- **Refactored and modularized** - functionality split into multiple scripts in `modules/scripts/` directory for better maintainability
 ```console
  Usage:
 	build.sh <options>
 
  options:
-	-d [device]	     select target device: m1
-	-m [module]	     select PCIe module: deepx xilinx
-	-k [kernel dir]	 'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located
-			         default: /lib/modules/5.15.0-100-generic/build)
-	-a [arch]	     set 'ARCH=[arch]' Target CPU architecture for cross-compilation, default: x86_64
-	-t [cross tool]	 'CROSS_COMPILE=[cross tool]' cross compiler binary, e.g aarch64-linux-gnu-
-	-i [install dir] 'INSTALL_MOD_PATH=[install dir]', module install directory
-			         install to: [install dir]/lib/modules/[KERNELRELEASE]/extra/
-	-c [command]	 clean | install
-	-j [jobs]	     set build jobs
-	-v		         verbose (V=1)
+	-d, --device   [device]      select target device: m1
+	-m, --module   [module]      select PCIe module: deepx
+	-k, --kernel   [kernel dir]  'KERNEL_DIR=[kernel dir]', The directory where the kernel source is located
+	                             - default: /lib/modules/$(uname -r)/build)
+	-a, --arch     [arch]        set 'ARCH=[arch]' Target CPU architecture for cross-compilation, default: $(uname -m)
+	-t, --compiler [cross tool]  'CROSS_COMPILE=[cross tool]' cross compiler binary, e.g aarch64-linux-gnu-
+	-i, --install  [install dir] 'INSTALL_MOD_PATH=[install dir]', module install directory
+	                             - install to: [install dir]/lib/modules/[KERNELRELEASE]/extra/
+	-c, --command  [command]     clean | install | uninstall | debian-package | install-package | uninstall-package
+	                             - uninstall: Remove the module files installed on the host PC.
+	                             - debian-package: Build Debian package (.deb)
+	                             - install-package: Install the built Debian package
+	                             - uninstall-package: Uninstall the Debian package
+	-p, --pkg-version [version]  Specify package version for install-package (default: latest)
+	-j, --jops     [jobs]        set build jobs
+	-f, --debug    [debug]       set debug feature [debugfs | log | all]
+	-v, --verbose                build verbose (V=1)
+	    --reload                 reload drivers after install (force unload and reload)
+	-h, --help                   show this help
 ```
 
 ***Modules***
@@ -169,10 +179,6 @@ If your target system is capable of self-compiling the Linux Kernel module, you 
 ```console
 e.g $ ./build.sh
 ```
-- Build m1 with submodule xilinx : make DEVICE=m1 PCIE=xilinx
-```console
-e.g $ ./build.sh -d m1 -m xilinx
-```
 ***clean***
 ```console
 e.g $ ./build.sh -c clean
@@ -180,8 +186,22 @@ e.g $ ./build.sh -c clean
 
 ***install***
 - installed to : /lib/modules/$(KERNELRELEASE)/extra/
+- **Note**: By default, modules are installed but NOT automatically loaded. Use `--reload` flag to force reload.
 ```console
 e.g $ sudo ./build.sh -c install
+```
+
+***install with reload***
+- installed to : /lib/modules/$(KERNELRELEASE)/extra/
+- automatically stops service, kills processes, unloads old modules, and loads new modules
+```console
+e.g $ sudo ./build.sh -c install --reload
+```
+
+***uninstall***
+- Remove all installed modules files
+```console
+e.g $ sudo ./build.sh -c uninstall
 ```
 
 ### Cross Compile : build.sh
@@ -299,4 +319,112 @@ $ ./build.sh -d m1 -m deepx -c uninstall
 
  *** Update : /lib/modules/5.15.0-102-generic/modules.dep ***
  $ depmod
+```
+## Debian Package Installation
+
+### Build Debian Package
+Build optimized Debian package (.deb) for DKMS-based installation:
+```console
+$ ./build.sh -c debian-package
+```
+- Package output: `release/<VERSION>/dxrt-driver-dkms_<VERSION>_all.deb`
+- Package size: ~107KB (optimized, excludes utils/ and build artifacts)
+- Includes only source files needed for DKMS compilation
+
+### Install Debian Package
+Install the latest or specific version of the Debian package:
+
+***Install latest version***
+```console
+$ sudo ./build.sh -c install-package
+```
+
+***Install specific version***
+```console
+$ sudo ./build.sh -c install-package -p 2.1.0
+```
+
+**Post-installation:**
+- DKMS automatically builds modules for current kernel
+- Checks virt-dma dependency (CONFIG_DMA_VIRTUAL_CHANNELS)
+- Loads modules: virt_dma → dx_dma → dxrt_driver
+- Modules reload automatically on kernel updates
+
+**Important Notes:**
+- DKMS package installation conflicts with manual installation (`build.sh -c install`)
+- If DKMS package is installed, remove it before manual installation:
+  ```console
+  $ sudo dpkg -r dxrt-driver-dkms
+  ```
+
+### Uninstall Debian Package
+Remove the DKMS package and all installed modules:
+```console
+$ sudo ./build.sh -c uninstall-package
+```
+
+**Optional: Purge configuration files**
+```console
+$ sudo dpkg --purge dxrt-driver-dkms
+```
+
+## Driver Sanity Check
+
+### Quick Start
+
+Run the sanity check from the project root:
+
+```console
+$ sudo ./SanityCheck.sh
+```
+
+This wrapper script automatically calls `sanity/Sanity.sh` and provides comprehensive driver verification.
+
+### What it Checks
+
+1. **PCIe Link-up** - Verifies DEEPX device (vendor ID 1ff4) is detected
+2. **Device Files** - Checks `/dev/dxrt*` existence, type, and permissions
+3. **Kernel Modules** - Verifies `dxrt_driver` and `dx_dma` are loaded
+4. **Driver Installation** - Checks legacy and DKMS installation status
+5. **PCIe Communication** - Tests ioctl interface (IDENTIFY/WRITE_MEM/READ_MEM)
+
+### Test Tools
+
+The sanity check uses test programs in `sanity/tools/`:
+
+**pcie_test** - PCIe driver ioctl verification:
+- IDENTIFY_DEVICE: Get device info (memory, DMA channels, etc.)
+- WRITE_MEM: Write 4KB test pattern to device memory
+- READ_MEM: Read back and verify data integrity
+
+To build test tools:
+```console
+$ cd sanity/tools
+$ make
+```
+
+To run manually:
+```console
+$ sudo ./pcie_test           # Test /dev/dxrt0
+$ sudo ./pcie_test /dev/dxrt1  # Test specific device
+```
+
+### Output
+
+Results are saved to `sanity/result/`:
+- `sanity_check_result_*.log` - Test results and status
+- `dmesg_*.log` - Kernel messages (on failure)
+- `pcie_*.log` - PCIe device information (on failure)
+
+**Success:**
+```
+** Sanity check PASSED!
+** Driver is properly installed and running.
+** PCIe communication test: All ioctl commands verified successfully.
+```
+
+**Failure:**
+```
+** Sanity check FAILED! Check logs at: sanity/result/sanity_check_result_*.log
+** Please report this result to DEEPX with logs
 ```

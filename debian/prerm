@@ -5,16 +5,17 @@ set -e
 # Define DKMS module information
 # This should match PACKAGE_NAME in dkms.conf and the package name prefix.
 PACKAGE_NAME="dxrt-driver-dkms"
-DEBIAN_CHANGELOG="/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz"
-DKMS_MODULE_VERSION=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" \
-                                           --show-field Version \
-                                           | head -n 1 \
-                                           | sed 's/[[:space:]]//g') 
 
-# Fallback if version extraction fails (optional, for robustness)
+# Extract version using dpkg-query (same method as postinst, no dpkg-dev dependency)
+DKMS_MODULE_VERSION=$(dpkg-query -W -f '${Version}' "${PACKAGE_NAME}" 2>/dev/null \
+                      | sed 's/[[:space:]]//g')
+
 if [ -z "${DKMS_MODULE_VERSION}" ]; then
-    echo "Warning: Could not determine DKMS_MODULE_VERSION from changelog during prerm. Using default '0.0.0'." >&2
-    DKMS_MODULE_VERSION="0.0.0" # Fallback to a default version
+    echo "Warning: Could not determine DKMS_MODULE_VERSION during prerm." >&2
+    echo "Attempting best-effort cleanup by module name..." >&2
+    # Best-effort: remove all versions of this module from DKMS
+    dkms remove "${PACKAGE_NAME}" --all 2>/dev/null || true
+    exit 0
 fi
 
 # =========================================================================
@@ -40,29 +41,34 @@ case "$1" in
             systemctl stop dxrt || true
         fi
         
-        # Force remove modules
-        rmmod -f dxrt_driver || true
-        rmmod -f dx_dma || true
+        # Unload modules only if they are loaded
+        if lsmod | grep -q "^dxrt_driver"; then
+            echo "Unloading dxrt_driver module..."
+            rmmod dxrt_driver 2>/dev/null || true
+        fi
+        
+        if lsmod | grep -q "^dx_dma"; then
+            echo "Unloading dx_dma module..."
+            rmmod dx_dma 2>/dev/null || true
+        fi
 
         # 2. Remove the module from DKMS
         # This unregisters the module from DKMS, uninstalls it from /lib/modules/,
         # and cleans up DKMS's internal build directories for this module.
         # '--all' ensures it's removed for all installed kernel versions.
+        # Only attempt removal if the module exists in DKMS
         echo "Removing ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} from DKMS..."
-        if ! dkms remove "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" --all; then
-            echo "Error: 'dkms remove' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}. Manual cleanup may be required." >&2
-            # Do NOT exit 1 here unless absolutely critical, as failing prerm can leave the package in a bad state.
-            # However, for critical drivers, you might decide to exit.
+        if dkms status "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" 2>/dev/null | grep -q "${PACKAGE_NAME}"; then
+            if ! dkms remove "${PACKAGE_NAME}/${DKMS_MODULE_VERSION}" --all 2>/dev/null; then
+                echo "Warning: 'dkms remove' failed for ${PACKAGE_NAME}/${DKMS_MODULE_VERSION}." >&2
+            fi
+        else
+            echo "Module ${PACKAGE_NAME}/${DKMS_MODULE_VERSION} not found in DKMS, skipping removal."
         fi
     ;;
 
-    # Other package management events
-    # 'purge' typically follows 'remove' for configuration file cleanup,
-    # but DKMS module removal is handled by 'dkms remove' in the 'remove' stage.
-    purge)
-        # For 'purge', the 'remove' action would have already handled DKMS cleanup.
-        # No additional DKMS-specific actions are typically needed here.
-        echo "Purge operation for ${PACKAGE_NAME}-dkms. DKMS module already removed."
+    failed-upgrade)
+        # Nothing to do — dpkg handles rollback
     ;;
 
     *)

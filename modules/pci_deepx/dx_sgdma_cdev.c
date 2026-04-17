@@ -73,17 +73,23 @@ static loff_t dx_sgdma_cdev_llseek(struct file *file, loff_t off, int whence)
 int dx_sgdma_cdev_open(struct inode *inode, struct file *filp) {
 	struct dx_dma_cdev *xcdev;
 	struct dw_edma *dw;
+	unsigned long flags;
+	int count;
 
 	char_open(inode, filp);
 	xcdev = (struct dx_dma_cdev *)filp->private_data;
 	dw = xcdev->xpdev->dw;
+
+	spin_lock_irqsave(&xcdev->lock, flags);
 	xcdev->f_count++;
+	count = xcdev->f_count;
+	spin_unlock_irqrestore(&xcdev->lock, flags);
 
 	dbg_sg("[%s][%s][%s] Device_#%d NPU_#%d called!(count:%d)\n", __func__,
 		!xcdev->write ? "W" : "R",
 		xcdev->sys_device->kobj.name,
 		dw->idx, xcdev->npu_id,
-		xcdev->f_count);
+		count);
 	/* TODO - Check device busy */
 
 	/* DMA Channel allocation */
@@ -100,16 +106,23 @@ int dx_sgdma_cdev_open(struct inode *inode, struct file *filp) {
 int dx_sgdma_cdev_release(struct inode *inode, struct file *filp) {
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)filp->private_data;
 	struct dw_edma *dw = xcdev->xpdev->dw;
+	unsigned long flags;
+	int count;
+
+	spin_lock_irqsave(&xcdev->lock, flags);
 	xcdev->f_count--;
+	count = xcdev->f_count;
+	spin_unlock_irqrestore(&xcdev->lock, flags);
 
 	dbg_sg("[%s][%s][%s] Device_#%d NPU_#%d called!(count:%d)\n", __func__,
 		!xcdev->write ? "W" : "R",
 		xcdev->sys_device->kobj.name,
 		dw->idx, xcdev->npu_id,
-		xcdev->f_count);
+		count);
 
-	// ret = dw_edma_get(dw->idx, xcdev->npu_id);
-	if (xcdev->f_count == 0) {
+	if (count == 0 && dw->ref_count == 0) {
+		pr_debug("[%s] dev %d: last cdev close (no Service), releasing DMA channel npu_id=%d\n",
+			__func__, dw->idx, xcdev->npu_id);
 		if (xcdev->write)
 			dw_edma_dma_deallocation(&dw->wr_dma_chan[xcdev->npu_id]);
 		else

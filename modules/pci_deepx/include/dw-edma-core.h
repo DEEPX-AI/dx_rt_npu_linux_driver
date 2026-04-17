@@ -17,7 +17,6 @@
 #include "dx_message.h"
 #endif
 
-//#include "../virt-dma.h"	//DEEPX MODIFIED
 #include "virt-dma.h"		//DEEPX MODIFIED
 #include "dx_cdev.h"
 
@@ -27,8 +26,6 @@
 
 #define USER_NUM_MAX					4
 #define USER_IRQ_NUMS					16
-
-// #define SRAM_DESC_TABLE
 
 enum dw_edma_dir {
 	EDMA_DIR_WRITE = 0,
@@ -140,6 +137,17 @@ struct dw_edma_desc {
 	/* Deferred cleanup for non-pool chunks */
 	struct list_head		pending_free_chunks;
 	struct work_struct		cleanup_work;
+
+	/*
+	 * Deferred desc free for atomic context (tasklet/IRQ).
+	 * When dw_edma_free_desc() is called from vchan_complete() tasklet,
+	 * cancel_work_sync() and dma_free_coherent() are not safe:
+	 * - cancel_work_sync() can sleep in atomic context
+	 * - dma_free_coherent() with IOMMU calls vunmap() which has
+	 *   BUG_ON(in_interrupt()) at mm/vmalloc.c
+	 * This work defers the entire desc cleanup to process context.
+	 */
+	struct work_struct		deferred_free_work;
 };
 
 /*
@@ -169,12 +177,15 @@ struct dw_edma_chan {
 	u8						set_desc; /* check to send description table */
 	u8 						en_lie;   /* Generate a local interrupt to start npu */
 	bool					is_llm;   /* Enable Linked List Mode */
+	bool					aborted;  /* Set by abort ISR, checked by sg_process */
+	bool					hw_err;   /* Channel stuck in CS=2, HW irrecoverable */
+
+	wait_queue_head_t		*transfer_wq;  /* Thread waitqueue for in-flight wake */
 
 	struct dma_slave_config	config;
 };
 
 struct dx_dma_user_irq {
-	// struct xdma_dev *xdev;		/* parent device */
 	struct dw_edma		*dw;
 	u8					user_idx;			/* 0 ~ 15 */
 	u8					events_irq;			/* accumulated IRQs */
@@ -223,8 +234,6 @@ struct dw_edma {
 	struct dx_edma_region		rg_region;	/* Registers */
 	struct dx_edma_region		ll_region_wr[EDMA_MAX_WR_CH];
 	struct dx_edma_region		ll_region_rd[EDMA_MAX_RD_CH];
-	struct dx_edma_region		dt_region_wr[EDMA_MAX_WR_CH]; /* not used */
-	struct dx_edma_region		dt_region_rd[EDMA_MAX_RD_CH]; /* not used */
 
 	/* Global Shared Memory Pools */
 	struct dw_edma_desc		*desc_pool;
@@ -268,6 +277,9 @@ struct dw_edma {
 	struct dma_chan 			*wr_dma_chan[EDMA_MAX_WR_CH];	/* DMA_WRITE */
 	struct dma_chan_lock        wr_dma_chan_locks[EDMA_MAX_WR_CH];
 	bool 						init_completed;
+	atomic_t					alive;		/* 1 = device usable, 0 = removal in progress */
+	atomic_t					recovery_epoch;	/* incremented on each DMA channel reset/recovery */
+	atomic_t					sbr_in_progress;	/* 1 = SBR/recovery active, blocks new DMA submissions */
 	int 						ref_count;	/* external module reference count */
 
 	/* DXNN V2 only */
@@ -280,6 +292,7 @@ struct dw_edma {
 	const struct dx_edma_core_ops	*ops;
 
 	raw_spinlock_t				lock;		/* Only for legacy */
+	spinlock_t					engine_reset_lock; /* Serialize engine_en cycles */
 
 	/* Device Specific Datas */
 	u64							download_region;

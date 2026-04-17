@@ -26,7 +26,7 @@
 	#define VMEM_FLAGS (VM_IO | VM_RESERVED)
 #endif
 
-int char_ctrl_open(struct inode *inode, struct file *file)
+static int char_ctrl_open(struct inode *inode, struct file *file)
 {
 	struct dx_dma_cdev *xcdev;
 
@@ -40,7 +40,7 @@ int char_ctrl_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-int char_ctrl_close(struct inode *inode, struct file *file)
+static int char_ctrl_close(struct inode *inode, struct file *file)
 {
 #ifdef DX_DEBUG_ENABLE
 	struct dx_dma_cdev *xcdev;
@@ -220,7 +220,7 @@ void dx_pcie_get_driver_info(struct deepx_pcie_info *info, int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_driver_info);
 
-long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)filp->private_data;
 	struct dw_edma *dw = xcdev->xpdev->dw;
@@ -284,7 +284,7 @@ long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 }
 
 /* maps the PCIe BAR into user space for memory-like access using mmap() */
-int bridge_mmap(struct file *file, struct vm_area_struct *vma)
+static int bridge_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	// struct xdma_dev *xdev;
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)file->private_data;
