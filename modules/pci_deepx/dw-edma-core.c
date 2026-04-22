@@ -1103,10 +1103,18 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 				spin_unlock_irqrestore(&dw->pool_lock, pool_flags);
 				dev_vdbg(chan->chip->dev, "[MEM][CHUNK][POOL] Free: idx=%ld addr=%p buf_paddr=%pad buf_vaddr=%p\n", (child - dw->chunk_pool), child, &child->host_region.paddr, child->host_region.vaddr);
 			} else {
-				/* Non-pool chunk: Move to descriptor's pending free list
-				 * Will be freed by work after all chunks complete */
+				/* Non-pool chunk: DMA memory cannot be freed in this
+				 * atomic/IRQ context because dma_free_coherent() may
+				 * sleep.  Queue the chunk for release by the device-level
+				 * deferred_free_work in process context. */
+				struct dw_edma *dw = chan->chip->dw;
+				unsigned long dfl;
+
 				list_del(&child->list);
-				list_add_tail(&child->list, &desc->pending_free_chunks);
+				spin_lock_irqsave(&dw->deferred_free_lock, dfl);
+				list_add_tail(&child->list, &dw->deferred_free_chunks);
+				spin_unlock_irqrestore(&dw->deferred_free_lock, dfl);
+				schedule_work(&dw->deferred_free_work);
 			}
 			desc->chunks_alloc--;
 		}
@@ -1117,10 +1125,6 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 				chan->status = EDMA_ST_BUSY;
 				dw_edma_start_transfer(chan);
 			} else {
-				/* All chunks transferred - schedule cleanup work NOW */
-				if (!list_empty(&desc->pending_free_chunks))
-					schedule_work(&desc->cleanup_work);
-				
 				list_del(&vd->node);
 				vchan_cookie_complete(vd);
 				chan->status = EDMA_ST_IDLE;
@@ -1128,10 +1132,6 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 			break;
 
 		case EDMA_REQ_STOP:
-			/* Also schedule cleanup on stop */
-			if (!list_empty(&desc->pending_free_chunks))
-				schedule_work(&desc->cleanup_work);
-			
 			list_del(&vd->node);
 			vchan_cookie_complete(vd);
 			chan->request = EDMA_REQ_NONE;

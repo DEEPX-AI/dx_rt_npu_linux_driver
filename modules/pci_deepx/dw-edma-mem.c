@@ -72,7 +72,42 @@ static void dw_edma_free_dma_mem(struct device *dev, struct dx_edma_region *regi
 	region->vaddr = NULL;
 }
 
-void dw_edma_desc_cleanup_work(struct work_struct *work);
+/*
+ * dw_edma_deferred_free_work - process-context worker for non-pool chunk DMA
+ *                              memory release.
+ *
+ * dma_free_coherent() (used for CMA allocations) may sleep and therefore
+ * cannot be called from an IRQ handler or a tasklet.  When the DMA interrupt
+ * handler completes a transfer it enqueues non-pool chunks on
+ * dw->deferred_free_chunks and schedules this work item, so that the actual
+ * free happens safely in process context.
+ *
+ * Keeping the work_struct in struct dw_edma (rather than in each
+ * struct dw_edma_desc) means the work never outlives the device, and there
+ * is no need to call cancel_work_sync() from the descriptor-free path —
+ * which would deadlock because that path is called from a tasklet.
+ */
+static void dw_edma_deferred_free_work(struct work_struct *work)
+{
+	struct dw_edma *dw = container_of(work, struct dw_edma, deferred_free_work);
+	struct device *dev = &dw->pdev->dev;
+	struct dw_edma_chunk *chunk, *tmp;
+	unsigned long flags;
+	LIST_HEAD(local);
+
+	/* Splice the pending list under the lock, then process without it
+	 * because dw_edma_free_dma_mem() can sleep. */
+	spin_lock_irqsave(&dw->deferred_free_lock, flags);
+	list_splice_init(&dw->deferred_free_chunks, &local);
+	spin_unlock_irqrestore(&dw->deferred_free_lock, flags);
+
+	list_for_each_entry_safe(chunk, tmp, &local, list) {
+		list_del(&chunk->list);
+		if (chunk->host_region.vaddr)
+			dw_edma_free_dma_mem(dev, &chunk->host_region, chunk->is_buddy);
+		kfree(chunk);
+	}
+}
 
 static struct dw_edma_chunk *dw_edma_alloc_chunk_from_pool(struct dw_edma *dw)
 {
@@ -459,8 +494,6 @@ struct dw_edma_desc *dw_edma_alloc_desc(struct dw_edma_chan *chan)
 	}
 
 	desc->chan = chan;
-	INIT_LIST_HEAD(&desc->pending_free_chunks);
-	INIT_WORK(&desc->cleanup_work, dw_edma_desc_cleanup_work);
 	if (!dw_edma_alloc_chunk(desc)) {
 		if (desc->from_pool) {
 			spin_lock_irqsave(&dw->pool_lock, flags);
@@ -510,14 +543,6 @@ void dw_edma_free_desc(struct dw_edma_desc *desc)
 		dev_vdbg(&dw->pdev->dev, "[MEM][DESC] Summary: Chunks(P:%d/D:%d) Bursts(P:%d/D:%d)\n", c_pool, c_dyn, b_pool, b_dyn);
 	}
 
-	/* Cancel any pending cleanup work */
-	cancel_work_sync(&desc->cleanup_work);
-	
-	/* Manually trigger cleanup if there are pending chunks */
-	if (!list_empty(&desc->pending_free_chunks)) {
-		dw_edma_desc_cleanup_work(&desc->cleanup_work);
-	}
-
 	dw_edma_free_chunk(desc);
 	
 	if (desc->from_pool) {
@@ -532,28 +557,6 @@ void dw_edma_free_desc(struct dw_edma_desc *desc)
 }
 EXPORT_SYMBOL_GPL(dw_edma_free_desc);
 
-/* Descriptor-specific cleanup work (runs in process context) */
-void dw_edma_desc_cleanup_work(struct work_struct *work)
-{
-	struct dw_edma_desc *desc = container_of(work, struct dw_edma_desc, cleanup_work);
-	struct dw_edma_chunk *chunk, *tmp;
-	struct device *dev = desc->chan->chip->dev;
-	
-	dev_vdbg(dev, "[MEM][DESC] Cleanup Work: desc=%p\n", desc);
-
-	/* Free all non-pool chunks for this descriptor */
-	list_for_each_entry_safe(chunk, tmp, &desc->pending_free_chunks, list) {
-		if (chunk->host_region.vaddr) {
-			dw_edma_free_dma_mem(dev, &chunk->host_region, chunk->is_buddy);
-		}
-		list_del(&chunk->list);
-		kfree(chunk);
-	}
-	
-	pr_debug("Freed non-pool chunks for descriptor %p\n", desc);
-}
-EXPORT_SYMBOL_GPL(dw_edma_desc_cleanup_work);
-
 int dw_edma_mem_init(struct dw_edma *dw)
 {
 	struct device *dev = &dw->pdev->dev;
@@ -561,6 +564,11 @@ int dw_edma_mem_init(struct dw_edma *dw)
 
 	/* Initialize Global Memory Pools */
 	spin_lock_init(&dw->pool_lock);
+
+	/* Initialize device-level deferred free queue for non-pool chunks */
+	INIT_LIST_HEAD(&dw->deferred_free_chunks);
+	spin_lock_init(&dw->deferred_free_lock);
+	INIT_WORK(&dw->deferred_free_work, dw_edma_deferred_free_work);
 
 	/* 1. Allocate Global Chunk Pool (32MB CMA) */
 	dw->chunk_pool = devm_kcalloc(dev, EDMA_GLOBAL_CHUNK_POOL_SIZE, sizeof(struct dw_edma_chunk), GFP_KERNEL);
@@ -648,10 +656,27 @@ int dw_edma_mem_init(struct dw_edma *dw)
 
 void dw_edma_mem_deinit(struct dw_edma *dw)
 {
-	int i;
+	struct dw_edma_chunk *chunk, *tmp;
 	struct device *dev = &dw->pdev->dev;
+	LIST_HEAD(local);
+	int i;
 
 	dev_vdbg(dev, "[MEM][DEINIT] De-initializing memory pools\n");
+
+	/* Flush and drain the device-level deferred free queue.
+	 * cancel_work_sync() is safe here because dw_edma_mem_deinit() is
+	 * called from process context during driver removal, after all DMA
+	 * activity and IRQs have been stopped. */
+	cancel_work_sync(&dw->deferred_free_work);
+	spin_lock_irq(&dw->deferred_free_lock);
+	list_splice_init(&dw->deferred_free_chunks, &local);
+	spin_unlock_irq(&dw->deferred_free_lock);
+	list_for_each_entry_safe(chunk, tmp, &local, list) {
+		list_del(&chunk->list);
+		if (chunk->host_region.vaddr)
+			dw_edma_free_dma_mem(dev, &chunk->host_region, chunk->is_buddy);
+		kfree(chunk);
+	}
 
 	/* Free Global Chunk Pool DMA buffers */
 	if (dw->chunk_pool) {

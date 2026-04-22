@@ -133,21 +133,6 @@ struct dw_edma_desc {
 	u32						alloc_sz;
 	u32						xfer_sz;
 	bool					from_pool;
-	
-	/* Deferred cleanup for non-pool chunks */
-	struct list_head		pending_free_chunks;
-	struct work_struct		cleanup_work;
-
-	/*
-	 * Deferred desc free for atomic context (tasklet/IRQ).
-	 * When dw_edma_free_desc() is called from vchan_complete() tasklet,
-	 * cancel_work_sync() and dma_free_coherent() are not safe:
-	 * - cancel_work_sync() can sleep in atomic context
-	 * - dma_free_coherent() with IOMMU calls vunmap() which has
-	 *   BUG_ON(in_interrupt()) at mm/vmalloc.c
-	 * This work defers the entire desc cleanup to process context.
-	 */
-	struct work_struct		deferred_free_work;
 };
 
 /*
@@ -293,6 +278,23 @@ struct dw_edma {
 
 	raw_spinlock_t				lock;		/* Only for legacy */
 	spinlock_t					engine_reset_lock; /* Serialize engine_en cycles */
+
+	/*
+	 * Device-level deferred free queue for non-pool chunks.
+	 *
+	 * dma_free_coherent() (and free_pages() for buddy allocations) may
+	 * sleep and therefore cannot be called from IRQ or tasklet context.
+	 * When a completed transfer's non-pool chunks need their DMA memory
+	 * released in an atomic path, they are enqueued here and freed by
+	 * deferred_free_work in process context.
+	 *
+	 * This deliberately lives in struct dw_edma rather than in each
+	 * struct dw_edma_desc, so that the work_struct lifetime is tied to
+	 * the device and not to the descriptor being freed.
+	 */
+	struct list_head			deferred_free_chunks;
+	spinlock_t					deferred_free_lock;
+	struct work_struct			deferred_free_work;
 
 	/* Device Specific Datas */
 	u64							download_region;
