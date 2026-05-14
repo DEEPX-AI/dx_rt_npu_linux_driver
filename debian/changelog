@@ -1,3 +1,9 @@
+dxrt-driver-dkms (2.4.1-2) unstable; urgency=medium
+
+  - harden DKMS package for external distribution
+
+ -- dx-ci <dci@deepx.ai>  Mon, 13 Apr 2026 20:00:03 +0900
+
 dxrt-driver-dkms (2.4.0-2) unstable; urgency=medium
 
   - Modularize build system and enhance driver management
