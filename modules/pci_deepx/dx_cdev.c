@@ -6,6 +6,7 @@
  * Author: Taegyun An <atg@deepx.ai>
  */
 #include <linux/fs.h>
+#include <linux/err.h>
 
 #include "dx_cdev.h"
 #include "dx_sgdma_cdev.h"
@@ -14,9 +15,9 @@
 
 static struct class *g_edma_class;
 
-struct kmem_cache *cdev_cache;
+static struct kmem_cache *cdev_cache;
 
-static int xpdev_cnt;
+static atomic_t xpdev_cnt = ATOMIC_INIT(0);
 #ifdef DX_DEBUG_FS
 static int user_cnt = 0;
 #endif
@@ -28,12 +29,14 @@ enum cdev_type {
 	CHAR_XDMA_C2H,
 };
 
+#ifdef DX_DEBUG_FS
 static const char * const devnode_names[] = {
 	DX_DMA_NODE_NAME "%d_npu_%d",
 	DX_DMA_NODE_NAME "%d_events_%d",
 	DX_DMA_NODE_NAME "%d_h2c_%d",
 	DX_DMA_NODE_NAME "%d_c2h_%d",
 };
+#endif
 
 enum xpdev_flags_bits {
 	XDF_CDEV_USER,
@@ -138,6 +141,11 @@ int char_open(struct inode *inode, struct file *file)
 {
 	struct dx_dma_cdev *xcdev;
 	xcdev = container_of(inode->i_cdev, struct dx_dma_cdev, cdev);
+	if (!xcdev) {
+		pr_err("char device with inode 0x%lx xcdev NULL\n",
+			inode->i_ino);
+		return -EINVAL;
+	}
 
 	/* pointer to containing structure of the character device inode */
 	dbg_sg("[%s] - %s\n", __func__, xcdev->sys_device->kobj.name);
@@ -160,13 +168,12 @@ int char_close(struct inode *inode, struct file *file)
 	// struct xdma_dev *xdev;
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)file->private_data;
 
-	dbg_sg("[%s] - %s\n", __func__, xcdev->sys_device->kobj.name);
-
 	if (!xcdev) {
 		pr_err("char device with inode 0x%lx xcdev NULL\n",
 			inode->i_ino);
 		return -EINVAL;
 	}
+	dbg_sg("[%s] - %s\n", __func__, xcdev->sys_device->kobj.name);
 
 	if (xcdev->magic != MAGIC_CHAR) {
 		pr_err("xcdev 0x%p magic mismatch 0x%lx\n",
@@ -213,9 +220,12 @@ static int create_sys_device(struct dx_dma_cdev *xcdev, enum cdev_type type, int
 		xcdev->cdevno, NULL, devnode_names[type], xcdev->xpdev->dw->idx,
 		last_param);
 
-	if (!xcdev->sys_device) {
-		pr_err("device_create(%s) failed\n", devnode_names[type]);
-		return -1;
+	if (IS_ERR_OR_NULL(xcdev->sys_device)) {
+		int rv = xcdev->sys_device ? PTR_ERR(xcdev->sys_device) : -ENOMEM;
+
+		xcdev->sys_device = NULL;
+		pr_err("device_create(%s) failed: %d\n", devnode_names[type], rv);
+		return rv;
 	}
 
 	return 0;
@@ -229,8 +239,7 @@ static int destroy_xcdev(struct dx_dma_cdev *cdev)
 		return -EINVAL;
 	}
 	if (cdev->magic != MAGIC_CHAR) {
-		pr_warn("cdev 0x%p magic mismatch 0x%lx\n", cdev, cdev->magic);
-		return -EINVAL;
+		return 0;
 	}
 
 	if (!cdev->xpdev) {
@@ -238,20 +247,21 @@ static int destroy_xcdev(struct dx_dma_cdev *cdev)
 		return -EINVAL;
 	}
 
-	if (!g_edma_class) {
-		pr_err("g_edma_class NULL\n");
-		return -EINVAL;
+	if (cdev->sys_device) {
+		if (g_edma_class)
+			device_destroy(g_edma_class, cdev->cdevno);
+		else
+			pr_err("g_edma_class NULL\n");
+		cdev->sys_device = NULL;
 	}
 
-	if (!cdev->sys_device) {
-		pr_err("cdev sys_device NULL\n");
-		return -EINVAL;
+	if (cdev->cdev_added) {
+		cdev_del(&cdev->cdev);
+		cdev->cdev_added = false;
 	}
-
-	if (cdev->sys_device)
-		device_destroy(g_edma_class, cdev->cdevno);
-
-	cdev_del(&cdev->cdev);
+	cdev->magic = 0;
+	cdev->xpdev = NULL;
+	cdev->cdevno = 0;
 
 	return 0;
 }
@@ -269,7 +279,7 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 	/* new instance? */
 	if (!xpdev->major) {
 		/* allocate a dynamically allocated char device node */
-		int rv = alloc_chrdev_region(&dev, DX_DMA_MINOR_BASE,
+		rv = alloc_chrdev_region(&dev, DX_DMA_MINOR_BASE,
 					DX_DMA_MINOR_COUNT, DX_DMA_NODE_NAME);
 
 		if (rv) {
@@ -285,12 +295,14 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 	xcdev->magic = MAGIC_CHAR;
 	xcdev->cdev.owner = THIS_MODULE;
 	xcdev->xpdev = xpdev;
+	xcdev->sys_device = NULL;
+	xcdev->cdev_added = false;
 	xcdev->bar = bar;
 	xcdev->npu_id = cnt;
 
 	rv = config_kobject(xpdev->dw, xcdev, type, cnt);
 	if (rv < 0)
-		return rv;
+		goto clear_xcdev;
 
 	switch (type) {
 	case CHAR_USER:
@@ -314,7 +326,8 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 		break;
 	default:
 		pr_info("type 0x%x NOT supported.\n", type);
-		return -EINVAL;
+		rv = -EINVAL;
+		goto clear_xcdev;
 	}
 	xcdev->cdevno = MKDEV(xpdev->major, minor);
 
@@ -322,8 +335,9 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 	rv = cdev_add(&xcdev->cdev, xcdev->cdevno, 1);
 	if (rv < 0) {
 		pr_err("cdev_add failed %d, type 0x%x.\n", rv, type);
-		goto unregister_region;
+		goto clear_xcdev;
 	}
+	xcdev->cdev_added = true;
 
 	dbg_sg("xcdev 0x%p, %u:%u, %s, type 0x%x.\n",
 		xcdev, xpdev->major, minor, xcdev->cdev.kobj.name, type);
@@ -338,9 +352,15 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 	return 0;
 
 del_cdev:
-	cdev_del(&xcdev->cdev);
-unregister_region:
-	unregister_chrdev_region(xcdev->cdevno, DX_DMA_MINOR_COUNT);
+	if (xcdev->cdev_added) {
+		cdev_del(&xcdev->cdev);
+		xcdev->cdev_added = false;
+	}
+clear_xcdev:
+	xcdev->magic = 0;
+	xcdev->xpdev = NULL;
+	xcdev->sys_device = NULL;
+	xcdev->cdevno = 0;
 	return rv;
 }
 #endif
@@ -348,61 +368,63 @@ unregister_region:
 static void xpdev_destroy_interfaces(struct dx_dma_pci_dev *xpdev)
 {
 	struct dw_edma *dw = xpdev->dw;
-	int i = 0;
+	int i;
 	int rv;
+	int user_count = dw ? min_t(int, dw->user_bar_cnt,
+					 ARRAY_SIZE(xpdev->user_cdev)) : 0;
 #ifdef __XDMA_SYSFS__
 	device_remove_file(&xpdev->pdev->dev, &dev_attr_xdma_dev_instance);
 #endif
 
-	if (xpdev_flag_test(xpdev, XDF_CDEV_SG)) {
-		/* iterate over channels */
-		for (i = 0; i < xpdev->h2c_channel_max; i++) {
-			/* remove SG DMA character device */
-			rv = destroy_xcdev(&xpdev->sgdma_h2c_cdev[i]);
-			if (rv < 0)
-				pr_err("Failed to destroy h2c xcdev %d error :0x%x\n",
-						i, rv);
-		}
-		for (i = 0; i < xpdev->c2h_channel_max; i++) {
-			rv = destroy_xcdev(&xpdev->sgdma_c2h_cdev[i]);
-			if (rv < 0)
-				pr_err("Failed to destroy c2h xcdev %d error 0x%x\n",
-						i, rv);
-		}
+	/* iterate over channels */
+	for (i = 0; i < xpdev->h2c_channel_max; i++) {
+		/* remove SG DMA character device */
+		rv = destroy_xcdev(&xpdev->sgdma_h2c_cdev[i]);
+		if (rv < 0)
+			pr_err("Failed to destroy h2c xcdev %d error :0x%x\n",
+					i, rv);
+	}
+	for (i = 0; i < xpdev->c2h_channel_max; i++) {
+		rv = destroy_xcdev(&xpdev->sgdma_c2h_cdev[i]);
+		if (rv < 0)
+			pr_err("Failed to destroy c2h xcdev %d error 0x%x\n",
+					i, rv);
 	}
 
-	if (xpdev_flag_test(xpdev, XDF_CDEV_EVENT)) {
-		for (i = 0; i < xpdev->user_max; i++) {
-			rv = destroy_xcdev(&xpdev->events_cdev[i]);
-			if (rv < 0)
-				pr_err("Failed to destroy cdev event %d error 0x%x\n",
-					i, rv);
-		}
+	for (i = 0; i < xpdev->user_max; i++) {
+		rv = destroy_xcdev(&xpdev->events_cdev[i]);
+		if (rv < 0)
+			pr_err("Failed to destroy cdev event %d error 0x%x\n",
+				i, rv);
 	}
 
 	/* remove user character device */
-	if (xpdev_flag_test(xpdev, XDF_CDEV_USER)) {
-		for (i = 0; i < dw->user_bar_cnt; i++)	{
-			rv = destroy_xcdev(&xpdev->user_cdev[i]);
-			if (rv < 0)
-				pr_err("Failed to destroy user cdev %d error 0x%x\n",
-					i, rv);
-		}
+	for (i = 0; i < user_count; i++) {
+		rv = destroy_xcdev(&xpdev->user_cdev[i]);
+		if (rv < 0)
+			pr_err("Failed to destroy user cdev %d error 0x%x\n",
+				i, rv);
 	}
 
-	if (xpdev->major)
+	if (xpdev->major) {
 		unregister_chrdev_region(
 				MKDEV(xpdev->major, DX_DMA_MINOR_BASE),
 				DX_DMA_MINOR_COUNT);
+		xpdev->major = 0;
+	}
 
 	dbg_sg("xpdev_destroy_interfaces success!!\n");
 }
 
 static void xpdev_free(struct dx_dma_pci_dev *xpdev)
 {
+	struct dw_edma *dw = xpdev->dw;
+
 	xpdev_destroy_interfaces(xpdev);
-	xpdev_cnt--;
-	pr_info("xpdev 0x%p, cnt:%d dx_dma_device_close.\n", xpdev, xpdev_cnt);
+	if (dw && dw->xpdev == xpdev)
+		dw->xpdev = NULL;
+	atomic_dec(&xpdev_cnt);
+	pr_info("xpdev 0x%p, cnt:%d dx_dma_device_close.\n", xpdev, atomic_read(&xpdev_cnt));
 	kfree(xpdev);
 }
 
@@ -417,11 +439,12 @@ static struct dx_dma_pci_dev *xpdev_alloc(struct pci_dev *pdev, struct dw_edma *
 	xpdev->magic = MAGIC_DEVICE;
 	xpdev->pdev = pdev;
 	xpdev->user_max = 16;
-	xpdev->h2c_channel_max = dw->rd_ch_cnt;
+	xpdev->h2c_channel_max = min_t(u16, dw->rd_ch_cnt,
+					 DX_H2C_DATA_CH_CNT);
 	xpdev->c2h_channel_max = dw->wr_ch_cnt;
 
-	xpdev_cnt++;
-	dbg_sg("xpedv allocation success(p:%p, cnt:%d\n", xpdev, xpdev_cnt);
+	atomic_inc(&xpdev_cnt);
+	dbg_sg("xpedv allocation success(p:%p, cnt:%d\n", xpdev, atomic_read(&xpdev_cnt));
 
 	return xpdev;
 }
@@ -431,7 +454,7 @@ int xpdev_create_interfaces(struct dw_edma_chip *chip)
 	struct dx_dma_pci_dev *xpdev = NULL;
 	struct pci_dev *pdev = chip->dw->pdev;
 #ifdef DX_DEBUG_FS
-	int rv = 0;
+	int rv;
 	int i;
 #endif
 
@@ -490,8 +513,7 @@ int xpdev_create_interfaces(struct dw_edma_chip *chip)
 
 #ifdef DX_DEBUG_FS
 fail:
-	rv = -1;
-	xpdev_destroy_interfaces(xpdev);
+	xpdev_free(xpdev);
 	return rv;
 #endif
 }

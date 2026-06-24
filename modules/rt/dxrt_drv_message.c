@@ -8,8 +8,6 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
-extern bool dxrt_fault_inject_skip_addr_check;
-
 /* Shorthand macros for dxrt_device_message_t (dev->msg) access */
 #define dx_msg_read32(dev, field) \
     dx_read32((dev)->msg, dxrt_device_message_t, field)
@@ -17,13 +15,93 @@ extern bool dxrt_fault_inject_skip_addr_check;
 #define dx_msg_write32(dev, field, val) \
     dx_write32((dev)->msg, dxrt_device_message_t, field, val)
 
-#define DX_MSG_DATA_ADDR(dev) \
-    DX_FIELD_ADDR((dev)->msg, dxrt_device_message_t, data)
+static u64 dxrt_addr_end(u64 start, u64 size)
+{
+    if (!size)
+        return start;
+    if (start > U64_MAX - (size - 1))
+        return U64_MAX;
+    return start + size - 1;
+}
+
+static int dxrt_dev_state_errno(struct dxdev *dev)
+{
+    dxrt_dev_state_t state;
+
+    if (!dev || dev->type == DX_STD)
+        return 0;
+
+    state = atomic_read(&dev->dev_state);
+    switch (state) {
+    case DXRT_STATE_READY:
+        return 0;
+    case DXRT_STATE_RECOVERING:
+    case DXRT_STATE_TRANSPORT_OK:
+        return -ENODATA;
+    case DXRT_STATE_FW_HANG:
+    case DXRT_STATE_WAITING_USER:
+    case DXRT_STATE_PERM_FAIL:
+    default:
+        return -EIO;
+    }
+}
+
+static bool dxrt_cmd_allowed_while_not_ready(dxrt_cmd_t cmd,
+                                             dxrt_dev_state_t state)
+{
+    switch (cmd) {
+    case DXRT_CMD_EVENT:
+    case DXRT_CMD_EVENT_V2:
+    case DXRT_CMD_DRV_INFO:
+    case DXRT_CMD_TERMINATE:
+    case DXRT_CMD_TERMINATE_EVENT:
+        return true;
+    case DXRT_CMD_RECOVERY:
+        return state != DXRT_STATE_RECOVERING &&
+               state != DXRT_STATE_TRANSPORT_OK;
+    default:
+        return false;
+    }
+}
+
+void dxrt_bind_pcie_resources(struct dxdev *dev, bool clear_queues)
+{
+    int num = dev->id;
+
+    dev->msg                = dx_pcie_get_message_area(num);
+    dev->log                = dx_pcie_get_log_area(num);
+    dev->dl                 = dx_pcie_get_dl_area(num);
+    dev->request_queue      = dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE0);
+    dev->request_queue1     = dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE1);
+    dev->request_queue2     = dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE2);
+    dev->request_high_queue = dx_pcie_get_request_queue(num, DX_HIGH_QUEUE);
+
+    if (clear_queues)
+        dx_pcie_clear_response_queue(num);
+}
+
+void dxrt_clear_all_pending(struct dxdev *dev)
+{
+    int i;
+
+    for (i = 0; i <= MAX_PCIE_CH_NUM; i++) {
+        atomic_set(&dev->response_pending[i], 0);
+        wake_up_interruptible(&dev->response_wq[i]);
+    }
+}
 
 /* Callback invoked by PCIe module when a response is enqueued */
-static void dxrt_response_notify(u32 dev_id, int dma_ch, void *data)
+static void dxrt_response_notify(u32 dev_id, int dma_ch, uint32_t proc_id,
+                                 void *data)
 {
     struct dxdev *dev = (struct dxdev *)data;
+
+    if (!dev || dma_ch < 0 || dma_ch >= DX_PCIE_RESP_NUM)
+        return;
+
+    (void)dev_id;
+    (void)proc_id;
+
     atomic_inc(&dev->response_pending[dma_ch]);
     wake_up_interruptible(&dev->response_wq[dma_ch]);
 }
@@ -36,12 +114,28 @@ static void dxrt_event_notify(u32 dev_id, void *data)
 }
 
 /*
-* Initialization function to drive the device
-*/
-void dxrt_device_init(struct dxdev* dev)
+ * dxrt_device_init_early - HW-independent per-device init.
+ *
+ * Called from create_dxrt_device() at module load, BEFORE any ioctl
+ * or /dev/dxrtN open.  Safe because:
+ *   - waitqueue / atomic inits touch only dxdev memory.
+ *   - callback registration on the pci_deepx side is just a fn-pointer
+ *     store into a global table (dx_pcie_register_*_callback), no
+ *     BAR/MMIO access.
+ *
+ * Moving callback registration here (rather than keeping it in the
+ * lazy dxrt_device_init() path) ensures that PCIe link events
+ * (DX_PCIE_LINK_EV_DOWN/UP) are delivered to the RT module even when
+ * userspace has NEVER opened /dev/dxrtN.  Without this, automated
+ * tests that exercise recovery via sysfs + external triggers (e.g.
+ * test 16 recovery_count) would silently drop LINK_EV_UP and never
+ * schedule the recovery readiness worker.
+ */
+void dxrt_device_init_early(struct dxdev *dev)
 {
     int num = dev->id;
     int i;
+
     pr_debug("%s:%d type:%d\n", __func__, num, dev->type);
 
     for (i = 0; i <= MAX_PCIE_CH_NUM; i++) {
@@ -50,21 +144,32 @@ void dxrt_device_init(struct dxdev* dev)
     }
     init_waitqueue_head(&dev->event_wq);
 
+    if (dev->type == DX_STD)
+        return;
+
+    /* Bind mailbox/request pointers before link callbacks can schedule
+     * readiness work; callbacks themselves still do not touch BAR MMIO. */
+    dxrt_bind_pcie_resources(dev, false);
+
+    /* Register ISR→RT wake-up callbacks eagerly so link/response/event
+     * notifications are delivered even without an open fd. */
+    dx_pcie_register_response_callback(num, dxrt_response_notify, dev);
+    dx_pcie_register_event_callback(num, dxrt_event_notify, dev);
+    dx_pcie_register_link_event_callback(num, dxrt_link_event_notify, dev);
+}
+
+/*
+* Initialization function to drive the device
+*/
+void dxrt_device_init(struct dxdev* dev)
+{
+    int num = dev->id;
+    pr_debug("%s:%d type:%d\n", __func__, num, dev->type);
+
     if (dev->type == DX_STD) {
         /* do nothing */
     } else {
-        dev->msg                = (dxrt_device_message_t*)dx_pcie_get_message_area(num);
-        dev->log                = (uint32_t*)dx_pcie_get_log_area(num);
-        dev->dl                 = (dx_download_msg*)dx_pcie_get_dl_area(num);
-        dev->request_queue      = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE0);
-        dev->request_queue1     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE1);
-        dev->request_queue2     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE2);
-        dev->request_high_queue = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_HIGH_QUEUE);
-        dx_pcie_clear_response_queue(num);
-
-        /* Register ISR→RT wake-up callbacks */
-        dx_pcie_register_response_callback(num, dxrt_response_notify, dev);
-        dx_pcie_register_event_callback(num, dxrt_event_notify, dev);
+        dxrt_bind_pcie_resources(dev, true);
     }
 }
 
@@ -74,6 +179,8 @@ static int dxrt_copy_to_user_io(int num, void __user *dest, void __iomem *src, s
 {
     size_t remaining_size = size;
     int ret = 0;
+    char __user *user_dest = dest;
+    u8 __iomem *io_src = src;
     char *buffer = kmalloc(INTERNAL_BUFF_MAX, GFP_KERNEL);
 
     if (!buffer) {
@@ -83,15 +190,14 @@ static int dxrt_copy_to_user_io(int num, void __user *dest, void __iomem *src, s
 
     while (remaining_size > 0) {
         size_t copy_size = (remaining_size < INTERNAL_BUFF_MAX) ? remaining_size : INTERNAL_BUFF_MAX;
-        // pr_info("%d: %s, cp_size:%ld, dest:%p, src:%p\n", num, __func__, copy_size, dest, src);
-        dx_memcpy_fromio32(buffer, src, copy_size);
-        if (copy_to_user(dest, buffer, copy_size)) {
+        dx_memcpy_fromio32(buffer, io_src, copy_size);
+        if (copy_to_user(user_dest, buffer, copy_size)) {
             pr_err("%d: %s failed to copy data to user space.\n", num, __func__);
             ret = -EFAULT;
             break;
         }
-        dest += copy_size;
-        src += copy_size;
+        user_dest += copy_size;
+        io_src += copy_size;
         remaining_size -= copy_size;
     }
     kfree(buffer);
@@ -103,6 +209,8 @@ static int dxrt_copy_from_user_io(int num, void __iomem *dest, const void __user
 {
     size_t remaining_size = size;
     int ret = 0;
+    u8 __iomem *io_dest = dest;
+    const char __user *user_src = src;
     char *buffer = kmalloc(INTERNAL_BUFF_MAX, GFP_KERNEL);
 
     if (!buffer) {
@@ -112,15 +220,14 @@ static int dxrt_copy_from_user_io(int num, void __iomem *dest, const void __user
 
     while (remaining_size > 0) {
         size_t copy_size = (remaining_size < INTERNAL_BUFF_MAX) ? remaining_size : INTERNAL_BUFF_MAX;
-        // pr_info("%d: %s, cp_size:%ld, dest:%p, src:%p\n", num, __func__, copy_size, dest, src);
-        if (copy_from_user(buffer, src, copy_size)) {
+        if (copy_from_user(buffer, user_src, copy_size)) {
             pr_err("%d: %s failed to copy data from user space.\n", num, __func__);
             ret = -EFAULT;
             break;
         }
-        dx_memcpy_toio32(dest, buffer, copy_size);
-        src += copy_size;
-        dest += copy_size;
+        dx_memcpy_toio32(io_dest, buffer, copy_size);
+        user_src += copy_size;
+        io_dest += copy_size;
         remaining_size -= copy_size;
     }
     kfree(buffer);
@@ -157,9 +264,22 @@ static int dxrt_polling_ack(struct dxdev *dev, int ms)
 {
     int fail_cnt = 0, ret = 0;
     int sleep_ms = max(ms, 1);
+    u32 ack_val;
 
     while (true) {
-        if (dx_msg_read32(dev, ack) == 1)
+        ack_val = dx_msg_read32(dev, ack);
+
+        /* Link-down early bailout: if MMIO read returns all-ones,
+         * config space is likely returning 0xFFFF too.  Exit immediately
+         * instead of spinning for 1000 iterations. */
+        if (unlikely(ack_val == (u32)~0u)) {
+            pr_err(MODULE_NAME "%s: MMIO returned 0xFFFFFFFF "
+                "(link down?), dev %d\n", __func__, dev->id);
+            ret = -ENODEV;
+            break;
+        }
+
+        if (ack_val == 1)
             break;
 
         if (++fail_cnt > ACK_POLLING_THRESHOLD) {
@@ -197,7 +317,7 @@ static void dxrt_msg_to_dev(struct dxdev *dev, dxrt_message_t *msg)
     dx_msg_write32(dev, ack, 0);
 }
 
-/**
+/*
  * dxrt_msg_general - Read/Write data from/to the dxrt device 
  * @dev: The deepx device on kernel
  * @msg: User-space pointer including the data buffer
@@ -220,12 +340,14 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg, struct dxrt_
     } else {
         if (dev->msg) {
             mutex_lock(&dev->msg_lock);
-            // dev->msg->cmd = msg->cmd;
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                goto unlock_msg;
             if (msg->size>0 && msg->size<sizeof(dxrt_device_message_t)) {
-                // dev->msg->size = msg->size;
-                if (dxrt_copy_from_user_io(num, DX_MSG_DATA_ADDR(dev), (void __user*)msg->data, msg->size)) {
+                if (dxrt_copy_from_user_io(num, DXRT_MSG_DATA_ADDR(dev), (void __user*)msg->data, msg->size)) {
                     pr_debug("%d: %s: failed.\n", num, __func__);
-                    return -EFAULT;
+                    ret = -EFAULT;
+                    goto unlock_msg;
                 }
             }
             dxrt_msg_to_dev(dev, msg);
@@ -234,9 +356,10 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg, struct dxrt_
             {
                 u32 dev_msg_size = dx_msg_read32(dev, size);
                 if (dev_msg_size>0 && dev_msg_size<sizeof(dxrt_device_message_t) && ret==0) {
-                    ret = dxrt_copy_to_user_io(num, (void __user*)(msg->data), DX_MSG_DATA_ADDR(dev), dev_msg_size);
+                    ret = dxrt_copy_to_user_io(num, (void __user*)(msg->data), DXRT_MSG_DATA_ADDR(dev), dev_msg_size);
                 }
             }
+unlock_msg:
             mutex_unlock(&dev->msg_lock);
         }
         else
@@ -244,10 +367,23 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg, struct dxrt_
             ret = 0;
         }
     }
+#if IS_ACCELERATOR
+    /*
+     * FW-side cpu_reset is invisible to the PCIe link (LTSSM stays UP),
+     * so the dx_dma link-health worker never fires DOWN/UP and dxrtd
+     * keeps a stale session that will never receive matching responses
+     * from the freshly-booted firmware.  Synthesize recovery here, AFTER
+     * the ack has been read back to userspace, so the caller's ioctl
+     * returns success first and then immediately sees DX_RECOVERY_STARTED
+     * on the event queue.
+     */
+    if (ret == 0 && msg->cmd == DXRT_CMD_PCIE && msg->sub_cmd == DX_PCIE_CPU_RESET)
+        dxrt_kick_cpu_reset_recovery(dev);
+#endif
     return ret;
 }
 
-/**
+/*
  * dxrt_identify_device - Read data from the dxrt device
  * @dev: The deepx device on kernel
  * @msg: User-space pointer including the data buffer
@@ -325,7 +461,7 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg, struct d
         } else { 
             if (dev->msg) {
                 ret = dxrt_msg_general(dev, msg, ctx);
-                if (ret<0) return -1;
+                if (ret<0) return ret;
                 if (copy_from_user(&info, (void __user*)(msg->data), sizeof(info))) {
                     pr_err("%d: %s failed to copy data from user space.\n", num, __func__);
                     return -EFAULT;
@@ -354,7 +490,6 @@ static int dxrt_identify_device(struct dxdev* dev, dxrt_message_t *msg, struct d
         }
         return ret;
     }
-    // return ret;
 }
 
 static void disable_queue(struct dxdev* dev, req_queue_t queue)
@@ -381,7 +516,7 @@ static void disable_queue(struct dxdev* dev, req_queue_t queue)
         break;
     }
 }
-/**
+/*
  * dxrt_schedule - Send scheduler datas to the dxrt device
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -439,7 +574,7 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fil
             pr_debug("%d: %s: sub_cmd:%d, bound:%d, queue:%d\n", num, __func__, msg->sub_cmd, data.bound, data.queue);
             if (ret == 0) {
                 if (dev->msg) {
-                    void __iomem *data_base = DX_MSG_DATA_ADDR(dev);
+                    void __iomem *data_base = DXRT_MSG_DATA_ADDR(dev);
                     mutex_lock(&dev->msg_lock);
                     dxrt_msg_to_dev(dev, msg);
                     writel(data.bound, data_base);
@@ -454,7 +589,7 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fil
     return ret;
 }
 
-/**
+/*
  * dxrt_write_mem - Write data to the dxrt device
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -496,7 +631,7 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fi
             dev->mem_addr,
             dev->mem_size
         );
-        if (ch>MAX_PCIE_CH_NUM) {
+        if (ch > MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
             return -EINVAL;
         }
@@ -532,8 +667,6 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fi
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            //sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);
-            //caches_clean_inval_pou(meminfo.data + meminfo.offset, meminfo.data + meminfo.offset + meminfo.size);//virtual address
             ret = 0;
         }
         else
@@ -549,7 +682,17 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fi
                     USER_SPACE_BUF, 0);
                 if (size != meminfo.size)
                 {
-                    pr_err("Pcie write error!(%ld)\n", size);
+                    u64 ep = meminfo.base + meminfo.offset;
+
+                    pr_err("Pcie write error!(%ld): Host->EP host=0x%llx ep=0x%llx..0x%llx size=0x%x ch=%u valid=0x%llx..0x%llx\n",
+                        size,
+                        meminfo.data,
+                        ep,
+                        dxrt_addr_end(ep, meminfo.size),
+                        meminfo.size,
+                        ch,
+                        dev->mem_addr,
+                        dxrt_addr_end(dev->mem_addr, dev->mem_size));
                     ret = -ECOMM;
                 }
             } else {
@@ -560,7 +703,9 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fi
     return ret;
 }
 
-static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req, dxrt_queue_t *queue, struct mutex *lock, int q_num)
+static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req,
+                                    dxrt_queue_t __iomem *queue,
+                                    struct mutex *lock, int q_num)
 {
     int ret = 0, num = dev->id;
 
@@ -593,7 +738,9 @@ static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req, 
     return ret;
 }
 
-static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req, dxrt_queue_t *queue, struct mutex *lock, int q_num)
+static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req,
+                                     dxrt_queue_t __iomem *queue,
+                                     struct mutex *lock, int q_num)
 {
     int ret = 0, num = dev->id;
     if (req->input.data) {
@@ -613,12 +760,12 @@ static int dxrt_write_req_to_dev_acc(struct dxdev* dev, dxrt_request_acc_t *req,
         pr_debug("%s:Input Data is null.\n", __func__);
     }
     if (ret == 0) {
-        dxrt_npu_run_requset_acc(dev, req, queue, lock, q_num);
+        ret = dxrt_npu_run_requset_acc(dev, req, queue, lock, q_num);
     }
     return ret;
 }
 
-/**
+/*
  * dxrt_write_input 
  *  - Write input data to the dxrt device and model meta-datas insert queue
  * @dev: The deepx device on kernel structure
@@ -640,6 +787,7 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_
 {
     int ret = -1, num = dev->id;
     pr_debug("%d: %s\n", num, __func__);
+    (void)ctx;
     if (dev->type == DX_ACC) {
         dxrt_request_acc_t req;
         if (msg->data!=NULL) {
@@ -717,7 +865,7 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_
     }
 }
 
-/**
+/*
  * dxrt_npu_run_request 
  *  - Write model meta-datas insert queue
  * @dev: The deepx device on kernel structure
@@ -737,8 +885,8 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_
 static int dxrt_npu_run_request(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_file_ctx *ctx)
 {
     int ret = -1, num = dev->id;
-    (void)ctx;
     pr_debug("%d: %s\n", num, __func__);
+    (void)ctx;
     if (dev->type == DX_ACC) {
         dxrt_request_acc_t req;
         if (msg->data!=NULL) {
@@ -798,14 +946,13 @@ static int dxrt_npu_run_request(struct dxdev* dev, dxrt_message_t *msg, struct d
         }
         return ret;
     } else {
-        int ret = -1;
         /* TODO */
-        return ret;
+        return -1;
     }
 }
 
 
-/**
+/*
  * dxrt_npu_run_response 
  *  - Pop device response data from queue
  * @dev: The deepx device on kernel structure
@@ -826,7 +973,6 @@ static int dxrt_npu_run_response_v1(struct dxdev* dev, dxrt_message_t *msg, stru
     if (dev->type == DX_ACC) {
         dx_pcie_response_t response = {0};
         int ret = -1;
-        unsigned int mask = 0;
         uint32_t ch;
         if (msg->data!=NULL)
         {
@@ -834,37 +980,50 @@ static int dxrt_npu_run_response_v1(struct dxdev* dev, dxrt_message_t *msg, stru
                 pr_err( MODULE_NAME "%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch>MAX_PCIE_CH_NUM) {
+            if (ch >= DX_PCIE_RESP_NUM) {
                 pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }
+            if (ctx && atomic_read(&ctx->terminating))
+                return -ECANCELED;
+retry:
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                return ret;
             if (atomic_read(&dev->response_pending[ch]) == 0) {
                 pr_debug(MODULE_NAME "%d: %s, ch%d: start to wait.\n", num, __func__, ch);
-                mask = dx_pcie_interrupt(num, ch);
+                ret = wait_event_interruptible(dev->response_wq[ch],
+                    atomic_read(&dev->response_pending[ch]) > 0 ||
+                    atomic_read(&dev->recovering) ||
+                    (ctx && atomic_read(&ctx->terminating)) ||
+                    dxrt_dev_state_errno(dev));
+                if (ret == -ERESTARTSYS)
+                    return -ERESTARTSYS;
+                if (ctx && atomic_read(&ctx->terminating))
+                    return -ECANCELED;
+                ret = dxrt_dev_state_errno(dev);
+                if (ret)
+                    return ret;
                 pr_debug(MODULE_NAME "%d: %s, ch%d: wake up.\n", num, __func__, ch);
-            } else {
-                dx_pcie_interrupt_clear(num, ch);
-                mask = 1;
             }
-            if (mask==1) {
-                if ((ret = dx_pcie_dequeue_response(num, ch, &response)) != 0) {
-                    ret = -ENODATA;
-                }
-                if (ret == 0) {
-                    atomic_dec(&dev->response_pending[ch]);
-                    ret = dxrt_copy_resp_to_user_acc(dev, msg, &response);
-                }
+            if (ctx && atomic_read(&ctx->terminating))
+                return -ECANCELED;
+            ret = dx_pcie_dequeue_response(num, ch, &response);
+            if (ret != 0) {
+                atomic_dec_if_positive(&dev->response_pending[ch]);
+                goto retry;
             }
+            atomic_dec_if_positive(&dev->response_pending[ch]);
+            ret = dxrt_copy_resp_to_user_acc(dev, msg, &response);
         }
         return ret;
     } else {
-        int ret = -1;
         /* TODO */
-        return ret;
+        return -1;
     }
 }
 
-/**
+/*
  * dxrt_npu_run_response_v2 - Wait for and retrieve NPU inference response (V2)
  * @dev: The deepx device structure
  * @msg: User-space message containing channel info and response buffer
@@ -872,7 +1031,7 @@ static int dxrt_npu_run_response_v1(struct dxdev* dev, dxrt_message_t *msg, stru
  *
  * This function waits for an inference response on the specified channel.
  * It supports graceful termination when the file descriptor is closed.
- * The response contains proc_id from firmware for multi-process routing.
+ * The response contains proc_id from firmware for user-space routing.
  *
  * Return: 0 on success,
  *        -EFAULT    if copy_from/to_user fails
@@ -898,7 +1057,7 @@ static int dxrt_npu_run_response_v2(struct dxdev *dev, dxrt_message_t *msg,
                 pr_err(MODULE_NAME "%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch > MAX_PCIE_CH_NUM) {
+            if (ch >= DX_PCIE_RESP_NUM) {
                 pr_err(MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }
@@ -909,15 +1068,16 @@ static int dxrt_npu_run_response_v2(struct dxdev *dev, dxrt_message_t *msg,
                 return -ECANCELED;
             }
 
-            /* Reject immediately if recovery is in progress */
-            if (atomic_read(&dev->recovering))
-                return -ENODATA;
+retry:
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                return ret;
 
-            wait_ret = wait_event_interruptible(
-                dev->response_wq[ch],
+            wait_ret = wait_event_interruptible(dev->response_wq[ch],
                 atomic_read(&dev->response_pending[ch]) > 0 ||
-                    atomic_read(&dev->recovering) ||
-                    (ctx && atomic_read(&ctx->terminating)));
+                atomic_read(&dev->recovering) ||
+                dxrt_dev_state_errno(dev) ||
+                (ctx && atomic_read(&ctx->terminating)));
 
             if (wait_ret == -ERESTARTSYS) {
                 pr_debug("%d: %s: interrupted by signal\n", num, __func__);
@@ -930,32 +1090,32 @@ static int dxrt_npu_run_response_v2(struct dxdev *dev, dxrt_message_t *msg,
                 return -ECANCELED;
             }
 
-            /* Check recovery after wakeup — response queues were cleared */
-            if (atomic_read(&dev->recovering)) {
-                pr_debug("%d: %s: recovery in progress\n", num, __func__);
-                return -ENODATA;
-            }
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                return ret;
 
-            /* FIFO dequeue - response contains proc_id from firmware */
-            if ((ret = dx_pcie_dequeue_response(num, ch, &response)) != 0) {
+            ret = dx_pcie_dequeue_response(num, ch, &response);
+            if (ret != 0) {
                 ret = -ENODATA;
             }
             if (ret == 0) {
-                atomic_dec(&dev->response_pending[ch]);
+                atomic_dec_if_positive(&dev->response_pending[ch]);
                 pr_debug("%d: %s: ch %d, proc_id %d, req_id %d done\n",
                     num, __func__, ch, response.proc_id, response.req_id);
                 ret = dxrt_copy_resp_to_user_acc(dev, msg, &response);
+            } else {
+                atomic_dec_if_positive(&dev->response_pending[ch]);
+                goto retry;
             }
         }
         return ret;
     } else {
-        int ret = -1;
         /* TODO */
-        return ret;
+        return -1;
     }
 }
 
-/**
+/*
  * dxrt_read_output 
  *  - Read output data from the dxrt device and pop device response data from queue
  * @dev: The deepx device on kernel structure
@@ -980,7 +1140,6 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
         dx_pcie_response_t response = {0};
         int ret = -1;
         int wait_ret;
-        // unsigned long flags;
         uint32_t ch;
         if (msg->data!=NULL)
         {
@@ -988,30 +1147,37 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
                 pr_err( MODULE_NAME "%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch>MAX_PCIE_CH_NUM) {
+            if (ch >= DX_PCIE_RESP_NUM) {
                 pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
             }
             if (ctx && atomic_read(&ctx->terminating))
                 return -ECANCELED;
-            if (atomic_read(&dev->recovering))
-                return -ENODATA;
-            wait_ret = wait_event_interruptible(
-                dev->response_wq[ch],
+retry_output:
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                return ret;
+            wait_ret = wait_event_interruptible(dev->response_wq[ch],
                 atomic_read(&dev->response_pending[ch]) > 0 ||
-                    atomic_read(&dev->recovering) ||
-                    (ctx && atomic_read(&ctx->terminating)));
+                atomic_read(&dev->recovering) ||
+                dxrt_dev_state_errno(dev) ||
+                (ctx && atomic_read(&ctx->terminating)));
             if (wait_ret == -ERESTARTSYS)
                 return -ERESTARTSYS;
             if (ctx && atomic_read(&ctx->terminating))
                 return -ECANCELED;
-            if (atomic_read(&dev->recovering))
-                return -ENODATA;
-            if ((ret = dx_pcie_dequeue_response(num, ch, &response)) != 0) {
+            ret = dxrt_dev_state_errno(dev);
+            if (ret)
+                return ret;
+            ret = dx_pcie_dequeue_response(num, ch, &response);
+            if (ret != 0) {
                 ret = -ENODATA;
             }
             if (ret == 0) {
-                atomic_dec(&dev->response_pending[ch]);
+                atomic_dec_if_positive(&dev->response_pending[ch]);
+            } else {
+                atomic_dec_if_positive(&dev->response_pending[ch]);
+                goto retry_output;
             }
             if (ret == 0 && response.req_id>0)
             {
@@ -1039,7 +1205,7 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
         return ret;
     } else {
         dxnpu_t *npu = dev->npu;
-        // dxrt_response_t response;
+        dxrt_response_t response;
         int ret = -1;
         unsigned long flags;
         if (msg->data!=NULL) {
@@ -1048,6 +1214,8 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
                 ret = wait_event_interruptible(npu->irq_wq,
                     npu->irq_event==1 || atomic_read(&ctx->terminating));
                 pr_debug(MODULE_NAME "%d: %s: wake up.\n", num, __func__);
+                if (ret)
+                    return ret;
                 if (atomic_read(&ctx->terminating))
                     return -ECANCELED;
                 spin_lock_irqsave(&npu->irq_event_lock, flags);
@@ -1059,10 +1227,7 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
                 if (!list_empty(&dev->responses.list)) {
                     dxrt_response_list_t *entry = list_first_entry(&dev->responses.list, dxrt_response_list_t, list);
                     pr_debug(MODULE_NAME "%d: %s: %d\n", num, __func__, entry->response.req_id);
-                    if (copy_to_user((void __user*)msg->data, &entry->response, sizeof(dxrt_response_t))) {
-                        pr_err( MODULE_NAME "%d: %s: memcpy failed.\n", num, __func__);
-                        return -EFAULT;
-                    }
+                    response = entry->response;
                     list_del(&entry->list);
                     kfree(entry);
                     ret = 0;
@@ -1072,12 +1237,16 @@ static int dxrt_read_output(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_
                 }
                 spin_unlock_irqrestore(&dev->responses_lock, flags);
             }
+            if (ret == 0 && copy_to_user((void __user*)msg->data, &response, sizeof(response))) {
+                pr_err( MODULE_NAME "%d: %s: memcpy failed.\n", num, __func__);
+                ret = -EFAULT;
+            }
         }
         return ret;
     }
 }
 
-/**
+/*
  * dxrt_terminate_event - Wakeup wait event.
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1119,7 +1288,7 @@ static int dxrt_terminate_event(struct dxdev* dev, dxrt_message_t* msg, struct d
     }
 }
 
-/**
+/*
  * dxrt_terminate - Wakeup output event.
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1135,9 +1304,8 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fi
     int num = dev->id;
     pr_debug(MODULE_NAME "%d: %s\n", num, __func__);
     if (dev->type == DX_ACC)
-    {        
+    {
         unsigned int mask = 0;
-        // unsigned long flags;
         uint32_t ch;
         if (msg->data!=NULL)
         {
@@ -1145,17 +1313,13 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fi
                 pr_debug("%d: %s: failed.\n", num, __func__);
                 return -EFAULT;
             }
-            if (ch<0 || ch>MAX_PCIE_CH_NUM) {
+            if (ch > MAX_PCIE_CH_NUM) {
                 pr_debug("%d: %s: invalid channel.\n", num, __func__);
                 return -EINVAL;
-            }  
+            }
             pr_debug("%d:%d %s, %d\n", num, current->tgid, __func__, ch);
             mask = dx_pcie_interrupt_wakeup(num, ch);
         }
-        // spin_lock_irqsave(&dev->error_lock, flags);
-        // dev->error = 99;
-        // wake_up_interruptible(&dev->error_wq);
-        // spin_unlock_irqrestore(&dev->error_lock, flags);
         return mask;
     }
     else
@@ -1178,7 +1342,7 @@ static int dxrt_terminate(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fi
     }
 }
 
-/**
+/*
  * dxrt_read_mem - Read data from the dxrt device
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1218,7 +1382,7 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fil
             dev->mem_addr,
             dev->mem_size
         );
-        if (ch>MAX_PCIE_CH_NUM) {
+        if (ch > MAX_PCIE_CH_NUM) {
             pr_err( MODULE_NAME "%d: %s: invalid channel.\n", num, __func__);
             return -EINVAL;
         }
@@ -1251,7 +1415,17 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fil
                     ch,
                     USER_SPACE_BUF); /*TODO*/
                 if (size != meminfo.size) {
-                    pr_err("PCIe read error!(%ld)\n", size);
+                    u64 ep = meminfo.base + meminfo.offset;
+
+                    pr_err("PCIe read error!(%ld): EP->Host ep=0x%llx..0x%llx host=0x%llx size=0x%x ch=%u valid=0x%llx..0x%llx\n",
+                        size,
+                        ep,
+                        dxrt_addr_end(ep, meminfo.size),
+                        meminfo.data,
+                        meminfo.size,
+                        ch,
+                        dev->mem_addr,
+                        dxrt_addr_end(dev->mem_addr, dev->mem_size));
                     return -ECOMM;
                 }
             } else {
@@ -1262,7 +1436,7 @@ static int dxrt_read_mem(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_fil
     return 0;
 }
 
-/**
+/*
  * dxrt_cpu_cache_flush - Execute cpu cache flush
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1302,8 +1476,6 @@ static int dxrt_cpu_cache_flush(struct dxdev* dev, dxrt_message_t* msg, struct d
         }
 #if IS_STANDALONE        
         if (dev->type == DX_STD) {
-            //sbi_l2cache_flush(meminfo.base + meminfo.offset, meminfo.size);//physical address
-            //caches_clean_inval_pou(meminfo.data + meminfo.offset, meminfo.data + meminfo.offset + meminfo.size);//virtual address
         }
 #endif         
     }
@@ -1313,7 +1485,7 @@ static int dxrt_cpu_cache_flush(struct dxdev* dev, dxrt_message_t* msg, struct d
 
 static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
 {
-    int ret = -1, num = dev->id;
+    int ret = 0, num = dev->id;
     (void)ctx;
     pr_info("%d: %s: %llx\n", num, __func__, (uint64_t)msg->data);
     if (dev->type == DX_STD)
@@ -1322,9 +1494,12 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_f
     }
     else
     {
-        // pr_info("--> %p\n", dev->msg);
-
         mutex_lock(&dev->msg_lock);
+        ret = dxrt_dev_state_errno(dev);
+        if (ret) {
+            mutex_unlock(&dev->msg_lock);
+            return ret;
+        }
         if (msg->size>0 && msg->size<sizeof(dxrt_device_message_t))
         {
             char *buffer = kmalloc(msg->size, GFP_KERNEL);
@@ -1338,7 +1513,7 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_f
                 mutex_unlock(&dev->msg_lock);
                 return -EFAULT;
             }
-            dx_memcpy_toio32(DX_MSG_DATA_ADDR(dev), buffer, msg->size);
+            dx_memcpy_toio32(DXRT_MSG_DATA_ADDR(dev), buffer, msg->size);
             kfree(buffer);
         }
         dxrt_msg_to_dev(dev, msg);
@@ -1348,12 +1523,12 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_f
             u32 dev_msg_size = dx_msg_read32(dev, size);
             if (dev_msg_size>0 && dev_msg_size<sizeof(dxrt_device_message_t))
             {
-                ret = dxrt_copy_to_user_io(num, (void __user*)msg->data, DX_MSG_DATA_ADDR(dev), dev_msg_size);
+                ret = dxrt_copy_to_user_io(num, (void __user*)msg->data, DXRT_MSG_DATA_ADDR(dev), dev_msg_size);
             }
         }
         mutex_unlock(&dev->msg_lock);
     }
-    return 0;
+    return ret;
 }
 
 static int dxrt_get_log(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
@@ -1372,9 +1547,52 @@ static int dxrt_get_log(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file
     return ret;
 }
 
+/*
+ * dxrt_fw_image_is_legacy - Detect a firmware image older than 2.7.0.
+ *
+ * The FW update payload begins with dx_fw_header_t; its ASCII version string
+ * ("A.B.C") sits at DX_FW_HDR_VER_OFFSET.  Firmware < 2.7.0 does not publish the
+ * DLMSG boot-aware readiness block, so post-update recovery must skip the
+ * MAILBOX_READY edge gate and rely on PING alone.
+ *
+ * @data: user-space pointer to the start of the FW image
+ * @size: number of bytes available at @data
+ *
+ * Return: true  if the parsed version is < DX_FW_DLMSG_MIN_VER,
+ *         false if the version is >= DX_FW_DLMSG_MIN_VER or cannot be parsed
+ *               (safe default keeps the existing edge-detection path).
+ */
+static bool dxrt_fw_image_is_legacy(const void __user *data, uint32_t size)
+{
+    char ver[DX_FW_HDR_VER_LEN + 1];
+    unsigned int v_maj = 0, v_min = 0, v_patch = 0;
+
+    if (!data || size < DX_FW_HDR_VER_OFFSET + DX_FW_HDR_VER_LEN)
+        return false;
+
+    if (copy_from_user(ver, (const char __user *)data + DX_FW_HDR_VER_OFFSET,
+                       DX_FW_HDR_VER_LEN))
+        return false;
+    ver[DX_FW_HDR_VER_LEN] = '\0';
+
+    if (sscanf(ver, "%u.%u.%u", &v_maj, &v_min, &v_patch) != 3)
+        return false;
+
+    /*
+     * Compare the (major, minor, patch) tuple against DX_FW_DLMSG_MIN_VER
+     * (2.7.0) directly rather than a packed decimal so multi-digit minor or
+     * patch fields (e.g. 2.6.10) are classified correctly.
+     */
+    if (v_maj != (DX_FW_DLMSG_MIN_VER / 100))
+        return v_maj < (DX_FW_DLMSG_MIN_VER / 100);
+    if (v_min != ((DX_FW_DLMSG_MIN_VER / 10) % 10))
+        return v_min < ((DX_FW_DLMSG_MIN_VER / 10) % 10);
+    return v_patch < (DX_FW_DLMSG_MIN_VER % 10);
+}
+
 static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
 {
-    int ret, num = dev->id;
+    int ret = 0, num = dev->id;
     (void)ctx;
     if (dev->type == DX_STD) {
         ret = 0;
@@ -1391,28 +1609,46 @@ static int dxrt_update_firmware(struct dxdev* dev, dxrt_message_t* msg, struct d
         );
 
         if (dev->msg) {
+            bool reset_expected = !(msg->sub_cmd & FWUPDATE_DEV_UNRESET);
+
             if (msg->data!=NULL) {
-                ssize_t size = dx_sgdma_write((char *)meminfo.data,
+                ssize_t written = dx_sgdma_write((char *)meminfo.data,
                     meminfo.base + meminfo.offset,
                     meminfo.size,
                     num,
                     0, /*TODO*/
                     false,
                     USER_SPACE_BUF, 0);
-                if (size != meminfo.size) {
-                    pr_err("Pcie write error!(%ld)\n", size);
+                if (written != meminfo.size) {
+                    pr_err("Pcie write error!(%ld)\n", written);
                     ret = -1;
                 }
             }
-            mutex_lock(&dev->msg_lock);
-            dxrt_msg_to_dev(dev, msg);
-            dx_pcie_notify_msg_to_device(num);
-            ret = dxrt_polling_ack(dev, 250);
-            if (ret==0) {
-                ret = (int)readl(DX_MSG_DATA_ADDR(dev));
+            if (ret == 0) {
+                mutex_lock(&dev->msg_lock);
+                dxrt_msg_to_dev(dev, msg);
+                dx_pcie_notify_msg_to_device(num);
+                ret = dxrt_polling_ack(dev, 250);
+                if (ret==0) {
+                    ret = (int)readl(DXRT_MSG_DATA_ADDR(dev));
+                }
+#if IS_ACCELERATOR
+                if (ret == 0 && reset_expected) {
+                    if (dxrt_fw_image_is_legacy(
+                            (const void __user *)msg->data, msg->size))
+                        dxrt_kick_fw_update_recovery_nodlmsg(dev);
+                    else
+                        dxrt_kick_fw_update_recovery(dev);
+                }
+#endif
+                mutex_unlock(&dev->msg_lock);
+                if (ret == 0)
+                    pr_info(MODULE_NAME "%d: %s: done%s.\n", num, __func__,
+                        reset_expected ? " (FW reboot recovery started)" : "");
+                else
+                    pr_err(MODULE_NAME "%d: %s: failed (ret=%d).\n",
+                        num, __func__, ret);
             }
-            mutex_unlock(&dev->msg_lock);
-            pr_info(MODULE_NAME "%d: %s: done.\n", num, __func__);
         } else {
             ret = 0;
         }
@@ -1446,7 +1682,7 @@ static int dxrt_write_firmware(int num, dxrt_message_t* msg, dma_addr_t dma_addr
     return ret;
 }
 
-/**
+/*
  * dxrt_upload_firmware - Upload firmware file to device
  * 
  * Return: 0 on success,
@@ -1514,7 +1750,7 @@ static int dxrt_upload_firmware(struct dxdev* dev, dxrt_message_t* msg, struct d
     return ret;
 }
 
-/**
+/*
  * dxrt_reset_device - Reset device
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1531,7 +1767,7 @@ static int dxrt_upload_firmware(struct dxdev* dev, dxrt_message_t* msg, struct d
 */
 static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
 {
-    int ret, num = dev->id;
+    int ret = 0, num = dev->id;
     (void)ctx;
     if (dev->type == DX_STD) {
         ret = 0;
@@ -1539,11 +1775,15 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
         if (dev->msg) {
             mutex_lock(&dev->msg_lock);
             if (msg->size>0 && msg->size<sizeof(dxrt_device_message_t)) {
-                ret = dxrt_copy_from_user_io(num, DX_MSG_DATA_ADDR(dev), msg->data, msg->size);
+                ret = dxrt_copy_from_user_io(num, DXRT_MSG_DATA_ADDR(dev),
+                    (void __user *)msg->data, msg->size);
+                if (ret)
+                    goto unlock_msg;
             }
             dxrt_msg_to_dev(dev, msg);
             dx_pcie_notify_msg_to_device(num);
             mdelay(100);
+unlock_msg:
             mutex_unlock(&dev->msg_lock);
         } else {
             ret = 0;
@@ -1552,7 +1792,7 @@ static int dxrt_reset_device(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
     return ret;
 }
 
-/**
+/*
  * dxrt_handle_event - Report event to user (only accelator device)
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1607,7 +1847,7 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
     return 0;
 }
 
-/**
+/*
  * dxrt_handle_event_v2 - Report event to user with termination support (only accelerator device)
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1615,7 +1855,6 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
  *
  * This function is executed by the ioctl command.
  * V2 version supports graceful termination via close().
- * Also handles PROC_EXIT events from the proc_exit_queue.
  * 
  * Return: 0 on success,
  *        -EFAULT    if an error occurs during the copy(user <-> kernel)
@@ -1629,7 +1868,6 @@ static int dxrt_handle_event_v2(struct dxdev *dev, dxrt_message_t *msg,
     dx_pcie_dev_event_t dev_event;
     struct deepx_pcie_info info;
     int wait_ret;
-    pid_t exit_proc_id;
 
     if (ctx && atomic_read(&ctx->terminating))
         return -ECANCELED;
@@ -1660,11 +1898,9 @@ retry_after_recovery:
         num, current->tgid, __func__, dev->error);
 
     /* Wait for event with termination and recovery check */
-    /* Check regular events, proc_exit events, and recovery flag */
     wait_ret = wait_event_interruptible(
         dev->event_wq,
         dx_pcie_is_event_pending(num) ||
-            (dx_pcie_is_proc_exit_pending(num) > 0) ||
             atomic_read(&dev->recovering) ||
             (ctx && atomic_read(&ctx->terminating)));
     if (wait_ret == -ERESTARTSYS)
@@ -1675,24 +1911,6 @@ retry_after_recovery:
      * instead of returning -ECANCELED to user-space. */
     if (atomic_read(&dev->recovering))
         goto retry_after_recovery;
-
-    /* Check for PROC_EXIT event first (priority) */
-    if (dx_pcie_dequeue_proc_exit_event(num, &exit_proc_id) == 0) {
-        memset(&dev_event, 0, sizeof(dev_event));
-        dev_event.event_type = DXRT_EVENT_PROC_EXIT;
-        dev_event.dx_rt_proc_exit.proc_id = exit_proc_id;
-        pr_debug(MODULE_NAME "%d: %s: proc_exit event, proc_id=%d (caller=%d)\n",
-            num, __func__, exit_proc_id, current->tgid);
-
-        if (msg->data != NULL) {
-            if (copy_to_user((void __user *)msg->data, &dev_event,
-                     sizeof(dx_pcie_dev_event_t))) {
-                pr_err("%d: %s failed.\n", num, __func__);
-                return -EFAULT;
-            }
-        }
-        return 0;
-    }
 
     /* Handle regular events */
     dx_pcie_dequeue_event_response(num, &dev_event);
@@ -1733,7 +1951,7 @@ retry_after_recovery:
     return 0;
 }
 
-/**
+/*
  * dxrt_handle_rt_drv_info_sub - Get device driver version
  * @dev: The deepx device on kernel structure
  * @msg: User-space pointer including the data buffer
@@ -1794,7 +2012,190 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg, s
     return ret;
 }
 
-/**
+/*
+ * dxrt_wait_fw_reboot_complete - Wait for FW to complete bootloader-level reboot.
+ * @dev: The deepx device on kernel
+ * @msg: User-space ioctl message buffer (recovery cmd payload)
+ * @ctx: File context (unused)
+ *
+ * Background: The DXRT_CMD_RECOVERY command triggers a full FW bootloader
+ * reboot (romcode → bootloader → FreeRTOS), not just an internal soft reset.
+ * The mailbox becomes unavailable during this reboot, so we cannot use the
+ * traditional ack-wait approach.
+ *
+ * Detection model (edge on mailbox_ready, no auxiliary signal):
+ *   - FW handle_recovery() clears MAILBOX_READY (and friends) BEFORE jumping
+ *     to bootloader, and holds the cleared state through bootloader + RTOS
+ *     init until the new FW finishes setup and re-publishes MAILBOX_READY.
+ *   - So a genuine reboot is observable as a TRUE -> FALSE -> TRUE edge on
+ *     dx_dlmsg_mailbox_ready() within the recovery timeout.
+ *   - Persistent counters are NOT consulted: cold-boot may wipe such memory,
+ *     making them unreliable.  ready_flags is the single source of truth.
+ *
+ * Steps:
+ *   1. Send the recovery cmd as a fire-and-forget notify (mailbox + doorbell).
+ *   2. Phase A — observe MAILBOX_READY drop to FALSE within ACK_WINDOW.
+ *      Failure here means FW never acted on the cmd (cmd lost / FW deaf).
+ *   3. Phase B — observe MAILBOX_READY return to TRUE within remaining time.
+ *      Failure here means FW began rebooting but did not complete.
+ *   4. On success: kick the readiness worker and propagate state.
+ *
+ * Return: 0 on success (FW boot complete, PING ok)
+ *        -ETIMEDOUT if FW does not observably ack or does not finish reboot
+ *        -ERESTARTSYS if interrupted by signal
+ */
+#define DXRT_FW_CMD_ACK_WINDOW_MS   2000u
+
+static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
+                                        dxrt_message_t *msg,
+                                        struct dxrt_file_ctx *ctx)
+{
+    int num = dev->id;
+    unsigned long total_deadline;
+    unsigned long ack_deadline;
+    bool saw_drop = false;
+    bool ready = false;
+    int ret = 0;
+
+    (void)ctx;
+
+    /* Send recovery cmd as a one-shot notify (no ack wait).
+     * The ack will never come because FW will restart immediately. */
+    if (dev->msg) {
+        mutex_lock(&dev->msg_lock);
+        if (msg->size > 0 && msg->size < sizeof(dxrt_device_message_t)) {
+            if (dxrt_copy_from_user_io(num, DXRT_MSG_DATA_ADDR(dev),
+                    (void __user *)msg->data, msg->size)) {
+                pr_warn(MODULE_NAME "%d: %s: payload copy failed (ignored, FW reboots regardless)\n",
+                    num, __func__);
+            }
+        }
+        dxrt_msg_to_dev(dev, msg);
+        dx_pcie_notify_msg_to_device(num);
+        mutex_unlock(&dev->msg_lock);
+    }
+
+    pr_info(MODULE_NAME "%d: %s: FW reboot cmd sent, watching MAILBOX_READY edge (ack_window=%ums, total=%ums)\n",
+        num, __func__, DXRT_FW_CMD_ACK_WINDOW_MS,
+        dxrt_dlmsg_ready_timeout_ms);
+
+    if (!dev->dl) {
+        /* No DLMSG region mapped (older FW / DX_STD path):
+         * fall back to fire-and-forget; the readiness worker will
+         * surface any failure. */
+        ready = true;
+        goto post_wait;
+    }
+
+    total_deadline = jiffies + msecs_to_jiffies(dxrt_dlmsg_ready_timeout_ms);
+    ack_deadline   = jiffies + msecs_to_jiffies(DXRT_FW_CMD_ACK_WINDOW_MS);
+    if (time_after(ack_deadline, total_deadline))
+        ack_deadline = total_deadline;
+
+    /* Phase A: observe MAILBOX_READY drop (FW acknowledged & started reboot). */
+    for (;;) {
+        if (!dx_dlmsg_mailbox_ready(dev->dl)) {
+            saw_drop = true;
+            break;
+        }
+        if (time_after_eq(jiffies, ack_deadline))
+            break;
+        if (msleep_interruptible(20)) {
+            ret = -ERESTARTSYS;
+            goto post_wait;
+        }
+    }
+
+    if (!saw_drop)
+        goto post_wait;
+
+    pr_info(MODULE_NAME "%d: %s: FW reboot in progress (MAILBOX_READY cleared), waiting for ready\n",
+        num, __func__);
+
+    /* Phase B: observe MAILBOX_READY return (FW finished reboot & re-published). */
+    for (;;) {
+        if (dx_dlmsg_mailbox_ready(dev->dl)) {
+            ready = true;
+            break;
+        }
+        if (time_after_eq(jiffies, total_deadline))
+            break;
+        if (msleep_interruptible(20)) {
+            ret = -ERESTARTSYS;
+            goto post_wait;
+        }
+    }
+
+post_wait:
+    if (ready) {
+        pr_info(MODULE_NAME "%d: %s: FW boot complete\n", num, __func__);
+        /* The device memory window and DMA channel count are invariant
+         * across recovery.  Keep the cached values from the initial
+         * IDENTIFY and only re-check FW mailbox liveness before returning. */
+        atomic_set(&dev->dev_state, DXRT_STATE_TRANSPORT_OK);
+        dx_pcie_set_init_completed(num);
+        cancel_delayed_work(&dev->recovery_ready_work);
+        schedule_delayed_work(&dev->recovery_ready_work, 0);
+
+        /* Block until recovery_ready_work completes.  recovery_ready_work owns the
+         * final dev_state transition (READY / FW_HANG / PERM_FAIL) and
+         * the recovering=0 clear; we must read that outcome AFTER flush
+         * and propagate it to the ioctl return value.  Step 9 in the
+         * caller will then refrain from overwriting the terminal state. */
+        flush_delayed_work(&dev->recovery_ready_work);
+
+        {
+            dxrt_dev_state_t final_state = atomic_read(&dev->dev_state);
+            switch (final_state) {
+            case DXRT_STATE_READY:
+                ret = 0;
+                break;
+            case DXRT_STATE_PERM_FAIL:
+                pr_err(MODULE_NAME "%d: %s: recovery_ready_work landed in PERM_FAIL\n",
+                    num, __func__);
+                ret = -ENODEV;
+                break;
+            case DXRT_STATE_FW_HANG:
+                pr_err(MODULE_NAME "%d: %s: recovery_ready_work landed in FW_HANG\n",
+                    num, __func__);
+                ret = -EIO;
+                break;
+            default:
+                pr_warn(MODULE_NAME "%d: %s: unexpected post-readiness state=%d\n",
+                    num, __func__, final_state);
+                ret = -EAGAIN;
+                break;
+            }
+        }
+    } else if (ret != -ERESTARTSYS) {
+        if (!saw_drop) {
+            /* Phase A failure: MAILBOX_READY never dropped within the ack
+             * window -> FW did not act on the recovery cmd.  Most likely
+             * the doorbell did not reach the FW MessageTask (e.g. stale
+             * iATU after link-flap, or FW deaf for other reasons). */
+            pr_err(MODULE_NAME "%d: %s: FW did not acknowledge cmd within %ums (MAILBOX_READY never cleared, ready_flags=0x%x) — cmd lost or FW deaf\n",
+                num, __func__,
+                DXRT_FW_CMD_ACK_WINDOW_MS,
+                dev->dl ? dx_dlmsg_ready_flags(dev->dl) : 0u);
+        } else {
+            /* Phase B failure: FW started reboot but did not finish in
+             * time.  Could be bootloader / RTOS init stall. */
+            pr_err(MODULE_NAME "%d: %s: FW reboot did not finish within %ums (MAILBOX_READY stayed cleared, ready_flags=0x%x)\n",
+                num, __func__,
+                dxrt_dlmsg_ready_timeout_ms,
+                dev->dl ? dx_dlmsg_ready_flags(dev->dl) : 0u);
+        }
+        /* FW state is uncertain, but the memory window metadata is an
+         * invariant device property.  Keep the cache and rely on dev_state
+         * gating to block normal ioctls until recovery succeeds. */
+        dx_pcie_set_init_completed(num);
+        ret = -ETIMEDOUT;
+    }
+
+    return ret;
+}
+
+/*
  * dxrt_recovery_device - Driver and firmware recovery in unusual situations
  * @dev: The deepx device on kernel
  * @msg: User-space pointer including the data buffer
@@ -1811,11 +2212,54 @@ static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg, struct d
 {
     int ret = 0;
     int i, num = dev->id;
+    dxrt_dev_state_t state;
     (void)ctx;
     if (dev->type == DX_STD) {
         /* TODO */
     } else {
+        /*
+         * Multi-process gate.
+         *
+         * Under N concurrent clients a link-flap can race with mid-flight
+         * DMA: one client hits -EIO/-ETIMEDOUT and asks the service to
+         * recover via DXRT_CMD_RECOVERY, while the health-worker/link-
+         * event bridge is ALREADY orchestrating a proper recovery (or
+         * about to).  If we run the full reset sequence here anyway we
+         *   - hammer recovery_mutex (blocking the bridge),
+         *   - try to talk to FW over a dead mailbox (polling_ack returns
+         *     0xFFFFFFFF -> -ENODEV),
+         *   - and the service, seeing -ENODEV, loops back here every 2s,
+         * producing the hundreds-of-lines "recovery failed (ret=-19)"
+         * storm we observed in the link_health_inf_mp test.
+         *
+         * Rule: if dev_state is RECOVERING/TRANSPORT_OK, the bridge is
+         * driving transport recovery. Bail out with -EAGAIN so the service
+         * backs off instead of thundering. FW_HANG/WAITING_USER are allowed
+         * to enter this manual recovery path.
+         */
+        state = atomic_read(&dev->dev_state);
+        if (state == DXRT_STATE_RECOVERING ||
+            state == DXRT_STATE_TRANSPORT_OK) {
+            pr_info_ratelimited(MODULE_NAME
+                "%d: %s: skipped (dev_state=%d, bridge is handling recovery)\n",
+                num, __func__, state);
+            return -EAGAIN;
+        }
+
         pr_info(MODULE_NAME "%d: %s: starting recovery\n", num, __func__);
+
+        mutex_lock(&dev->recovery_mutex);
+
+        state = atomic_read(&dev->dev_state);
+        if (state == DXRT_STATE_RECOVERING ||
+            state == DXRT_STATE_TRANSPORT_OK) {
+            mutex_unlock(&dev->recovery_mutex);
+            return -EAGAIN;
+        }
+
+        atomic_set(&dev->dev_state, DXRT_STATE_RECOVERING);
+        atomic_set(&dev->last_recovery_reason,
+            DX_RECOVERY_REASON_FW_TIMEOUT);
 
         /* 1. Set recovering flag early — blocks new requests
          *    and enables waiter threads to detect recovery wakeup */
@@ -1833,19 +2277,21 @@ static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg, struct d
             pr_warn(MODULE_NAME "%d: %s: DMA channel reset error (%d)\n",
                 num, __func__, ret);
 
+        if (ret == -EAGAIN) {
+            /* recovering=1 and dev_state=RECOVERING are already set above;
+             * leave them so the link-event bridge can drive the rest. */
+            mutex_unlock(&dev->recovery_mutex);
+            return ret;
+        }
+
         /* 4. Clear PCIe response queues */
         dx_pcie_clear_response_queue(num);
 
         /* 4b. Clear stale event queue to prevent spurious events post-recovery */
         dx_pcie_clear_event_response(num);
 
-        /* 4c. Clear proc_exit queue — stale exit events from terminated
-         *     processes are no longer relevant after full recovery. */
-        dx_pcie_clear_proc_exit_queue(num);
-
         /* 5. Reset response_pending counters */
-        for (i = 0; i <= MAX_PCIE_CH_NUM; i++)
-            atomic_set(&dev->response_pending[i], 0);
+        dxrt_clear_all_pending(dev);
 
         /* 6. Disable and re-enable HW request queues (under mutex to
          *    prevent collision with concurrent request submission) */
@@ -1886,17 +2332,20 @@ static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg, struct d
          *    memory mailbox is gone, so dxrt_msg_general would timeout
          *    waiting for an ack that will never come.
          *    After SBR, FW re-initialization is handled by the boot
-         *    sequence (romcode → bootloader → FreeRTOS). */
+         *    sequence (romcode → bootloader → FreeRTOS).
+         *
+         *    Non-SBR (ret==0) branch — the FW-side semantics of
+         *    DXRT_CMD_RECOVERY changed to a full bootloader-level
+         *    reboot of the device.  Delegate to dxrt_wait_fw_reboot_complete()
+         *    which sends the cmd and blocks until RTOS publishes
+         *    boot-completion via DLMSG. */
         if (ret == 1) {
             pr_info(MODULE_NAME "%d: %s: PCIe SBR was performed, skipping FW notify\n",
                 num, __func__);
 
-            /* SBR reset the entire endpoint including FW.
-             * Invalidate cached device memory range so stale values
-             * don't cause false address validation failures.
-             * The next DXRT_CMD_IDENTIFY will refresh them from FW. */
-            dev->mem_addr = 0;
-            dev->mem_size = 0;
+            /* SBR reset the entire endpoint including FW.  The device
+             * memory window and DMA channel count are invariant, so keep
+             * the initial IDENTIFY metadata cached in the RT driver. */
 
             /* Trigger dxrt_device_init() on the next ioctl call
              * so that dev->msg, dev->dl, dev->request_queue etc.
@@ -1905,12 +2354,28 @@ static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg, struct d
 
             ret = 0;
         } else if (ret == 0) {
-            ret = dxrt_msg_general(dev, msg, ctx);
+            ret = dxrt_wait_fw_reboot_complete(dev, msg, ctx);
         }
         /* else ret < 0: DMA reset failed, skip FW notify */
 
-        /* 9. Clear recovering flag — normal operation resumes */
+        /* 9. Clear recovering flag — normal operation resumes.
+         *
+         * If step 8 went through dxrt_wait_fw_reboot_complete() and
+         * recovery_ready_work ran, the work itself already set the terminal
+         * dev_state (READY / FW_HANG / PERM_FAIL) and cleared
+         * recovering=0.  Do NOT overwrite a terminal state here:
+         * overriding FW_HANG/PERM_FAIL with READY would mask a real
+         * failure and let userspace continue against a broken FW.
+         * Only finalize state when we're still in a transition state
+         * (RECOVERING / TRANSPORT_OK), e.g. when DMA reset failed early
+         * or DLMSG wait timed out before recovery_ready_work was scheduled. */
         atomic_set(&dev->recovering, 0);
+        state = atomic_read(&dev->dev_state);
+        if (state == DXRT_STATE_RECOVERING ||
+            state == DXRT_STATE_TRANSPORT_OK) {
+            atomic_set(&dev->dev_state,
+                ret == 0 ? DXRT_STATE_READY : DXRT_STATE_WAITING_USER);
+        }
 
         /* Wake up event and response waiters that are blocking on
          * !recovering.  Step 7 above wakes them while recovering is
@@ -1922,6 +2387,8 @@ static int dxrt_recovery_device(struct dxdev* dev, dxrt_message_t* msg, struct d
 
         pr_info(MODULE_NAME "%d: %s: recovery %s (ret=%d)\n",
             num, __func__, ret ? "failed" : "done", ret);
+
+        mutex_unlock(&dev->recovery_mutex);
     }
     return ret;
 }
@@ -1933,6 +2400,17 @@ static int dxrt_handle_drv_info(struct dxdev* dev, dxrt_message_t* msg, struct d
 
 int message_handler_general(struct dxdev *dx, dxrt_message_t *msg, struct dxrt_file_ctx *ctx)
 {
+    dxrt_dev_state_t state;
+    int ret;
+
+    if (!dx || !msg || msg->cmd >= DXRT_CMD_MAX || !message_handler[msg->cmd])
+        return -EINVAL;
+
+    state = atomic_read(&dx->dev_state);
+    ret = dxrt_dev_state_errno(dx);
+    if (ret && !dxrt_cmd_allowed_while_not_ready(msg->cmd, state))
+        return ret;
+
     return message_handler[msg->cmd](dx, msg, ctx);
 }
 

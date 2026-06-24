@@ -9,27 +9,32 @@
 #include "dxrt_drv_npu.h"
 #include "dxrt_drv.h"
 
+static inline volatile void __iomem *npu_reg_addr(volatile void __iomem *base, uint32_t addr)
+{
+    return (volatile u8 __iomem *)base + addr;
+}
+
 inline void npu_reg_write(volatile void __iomem *base, uint32_t addr, uint32_t val)
 {
     //pr_debug("write: %x, %x\n", addr, val);
-    iowrite32(val, base + addr);
+    iowrite32(val, npu_reg_addr(base, addr));
 }
 inline void npu_reg_write_mask(volatile void __iomem *base, uint32_t addr, uint32_t val, uint32_t mask, uint32_t bit_offset)
 {
-    uint32_t read_val = ioread32(base + addr);
+    uint32_t read_val = ioread32(npu_reg_addr(base, addr));
     read_val &= ~mask;
     read_val |= (val << bit_offset) & mask;
     //pr_debug("write_mask: %x, %x\n", addr, read_val);
-    iowrite32(read_val, base + addr);
+    iowrite32(read_val, npu_reg_addr(base, addr));
 }
 inline uint32_t npu_reg_read(volatile void __iomem *base, uint32_t addr)
 {
     //pr_debug("read: %x\n", addr);
-    return ioread32(base + addr);
+    return ioread32(npu_reg_addr(base, addr));
 }
 inline uint32_t npu_reg_read_mask(volatile void __iomem *base, uint32_t addr, uint32_t mask, uint32_t bit_offset)
 {
-    uint32_t read_val = ioread32(base + addr);
+    uint32_t read_val = ioread32(npu_reg_addr(base, addr));
     //pr_debug("read_mask: %x, %x, %x\n", addr, mask, bit_offset);
     return (read_val & mask) >> bit_offset;
 }
@@ -91,7 +96,7 @@ static irqreturn_t npu_irq_handler(int irq, void *data)
     dxnpu_t *npu = (dxnpu_t*)data;    
     dxrt_response_t *response = npu->response;
     volatile void __iomem *reg = npu->reg_base;
-    uint32_t filter_num, model_type;
+    uint32_t model_type;
     pr_debug("npu%d irq: %x\n", npu->id, READ_SYSTEM_IRQ_STATUS(reg)); // this log causes worse latency.
 
     // clear IRQ
@@ -127,7 +132,7 @@ static irqreturn_t npu_irq_handler(int irq, void *data)
 }
 int dx_v3_npu_init(dxnpu_t *npu)
 {
-    int ret, i;
+    int ret;
     volatile void __iomem *reg;
     pr_debug("%s\n", __func__);
     /* NPU Control Register */
@@ -147,7 +152,7 @@ int dx_v3_npu_init(dxnpu_t *npu)
         return -ENOMEM;
     }
     npu->reg_sys = (volatile npu_reg_sys_t*)npu->reg_base;
-    npu->reg_dma = (volatile npu_reg_dma_t*)(npu->reg_base + 0x10000);
+    npu->reg_dma = (volatile npu_reg_dma_t*)((u8 __iomem *)npu->reg_base + 0x10000);
     reg = npu->reg_base;
     /* IRQ */
     WRITE_SYSTEM_IRQ_STATUS(reg, 0xC0000000);//this register is read only, but this code can automatically clear IRQ
@@ -197,8 +202,6 @@ int dx_v3_npu_prepare_inference(dxnpu_t *npu)
 }
 int dx_v3_npu_run(dxnpu_t *npu, void *data)
 {
-    unsigned long flags;
-    int ready = 0;
     dxrt_request_t *req = (dxrt_request_t*)data;    
     volatile void __iomem *reg = npu->reg_base;
     pr_debug("%s: %d\n", __func__, req->req_id);

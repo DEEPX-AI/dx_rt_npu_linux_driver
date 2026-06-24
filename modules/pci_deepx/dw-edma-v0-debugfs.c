@@ -286,14 +286,14 @@ static void dw_edma_debugfs_regs(void)
 
 static int dx_pcie_bandwidth_show(struct seq_file *s, void *unused)
 {
-#ifdef DMA_PERF_MEASURE
-	char * buffer = show_pcie_profile();
+	if (!g_perf_enabled) {
+		seq_puts(s, "Performance measurement disabled. Enable via sysfs: perf_enable\n");
+	} else {
+		char *buffer = show_pcie_profile();
 
-	if ( buffer != NULL)
-		seq_printf(s, "%s", buffer);
-#else
-	seq_puts(s, "Performance measurement disabled. Build with -f perf to enable.\n");
-#endif
+		if (buffer != NULL)
+			seq_printf(s, "%s", buffer);
+	}
 	seq_putc(s, '\n');
 
 	return 0;

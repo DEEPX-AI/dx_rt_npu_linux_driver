@@ -315,6 +315,13 @@ if [[ ${RELOAD_AFTER_INSTALL} -eq 1 && -z ${_command} ]]; then
     exit 0
 fi
 
+# Validate install preconditions before invoking 'make install' so that a
+# failed check cannot leave a partially installed module tree behind.
+if [[ ${_command} == "install" ]]; then
+    check_root_permission "$@"
+    check_dkms_package_conflict
+fi
+
 # make build
 logmsg "\n *** Build : ${_command} ***"
 if [[ ${_command} == "sparse" ]]; then
@@ -335,12 +342,6 @@ fi
 
 # install
 if [[ ${_command} == "install" ]]; then
-    # Check root permission
-    check_root_permission "$@"
-    
-    # Check for DKMS package conflict
-    check_dkms_package_conflict
-    
     update_depmod
     install_modprobe_conf "${_modconf}"
 

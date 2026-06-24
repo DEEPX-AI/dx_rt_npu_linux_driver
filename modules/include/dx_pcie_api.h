@@ -43,7 +43,7 @@ struct deepx_pcie_info {
 };
 
 /* PCIe EXternal API */
-void dx_sgdma_init(int dev_id);
+int dx_sgdma_init(int dev_id);
 void dx_sgdma_deinit(int dev_id);
 int dx_pcie_reset_dma_channels(int dev_id);
 ssize_t dx_sgdma_write(char *dest, u64 src, size_t count, int dev_id, int dma_ch, bool npu_run, enum mem_type type, dma_addr_t dma_addr);
@@ -60,7 +60,6 @@ void __iomem *dx_pcie_get_response_queue(u32 dev_id, int dma_ch);
 int dx_pcie_clear_response_queue(u32 dev_id);
 int dx_pcie_is_response_queue_empty(u32 dev_id, int dma_ch);
 int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* response);
-int dx_pcie_cleanup_responses_for_proc(u32 dev_id, uint32_t proc_id);
 uint32_t dx_pcie_get_dev_num(void);
 u64 dx_pcie_get_download_region(int dev_id);
 u32 dx_pcie_get_download_size(int dev_id);
@@ -70,11 +69,24 @@ void dx_pcie_set_init_completed(int dev_id);
 void dx_pcie_dequeue_event_response(u32 dev_id, dx_pcie_dev_event_t* response);
 int dx_pcie_is_event_pending(u32 dev_id);
 void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code);
-void dx_pcie_enqueue_proc_exit_event(u32 dev_id, pid_t proc_id);
-int dx_pcie_dequeue_proc_exit_event(u32 dev_id, pid_t *proc_id);
-int dx_pcie_is_proc_exit_pending(u32 dev_id);
-void dx_pcie_clear_proc_exit_queue(u32 dev_id);
-void dx_pcie_clear_proc_exit_for_pid(u32 dev_id, pid_t proc_id);
+void dx_pcie_enqueue_recovery_event(u32 dev_id, uint32_t subcode,
+				    uint32_t reason,
+				    uint32_t recovery_count,
+				    uint32_t recovery_fail_count,
+				    uint32_t dev_state);
+/*
+ * dx_pcie_enqueue_abort_event - Enqueue an ERROR event carrying an
+ * err_code plus DMA channel-status snapshot.  Originally used for
+ * true DMA aborts; reused by the RT module's link-flap path with
+ * err_code=ERR_PCIE_LINK_DOWN_CH<n> (== ERR_PCIE_DMA_CH<n>_ABORT)
+ * and zeroed status fields so legacy user-space sees a familiar
+ * abort shape while new handlers can distinguish link-flap via
+ * the parallel RECOVERY event.
+ */
+void dx_pcie_enqueue_abort_event(u32 dev_id, uint32_t err_code,
+				 uint32_t dma_err_status,
+				 const uint32_t *wr_ch_sts,
+				 const uint32_t *rd_ch_sts);
 void dx_pcie_clear_event_response(u32 dev_id);
 void dx_pcie_get_driver_info(struct deepx_pcie_info *info, int dev_id);
 void dx_pcie_notify_msg_to_device(u32 dev_id);
@@ -85,5 +97,12 @@ void dx_pcie_register_response_callback(u32 dev_id, dx_pcie_response_cb_t cb, vo
 void dx_pcie_unregister_response_callback(u32 dev_id);
 void dx_pcie_register_event_callback(u32 dev_id, dx_pcie_event_cb_t cb, void *data);
 void dx_pcie_unregister_event_callback(u32 dev_id);
+
+/* Link-state event callback — fires when link-health worker
+ * detects an EP-initiated link drop / restore. */
+void dx_pcie_register_link_event_callback(u32 dev_id,
+					  dx_pcie_link_event_cb_t cb,
+					  void *data);
+void dx_pcie_unregister_link_event_callback(u32 dev_id);
 
 #endif /*_DX_PCIE_API_H*/

@@ -13,6 +13,6 @@
 
 /* PCIe internal API */
 extern void dx_cdev_sgdma_init(struct dx_dma_cdev *xcdev);
-extern ssize_t dx_sgdma_write_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t count, int npu_id, bool npu_run);
+extern ssize_t dx_sgdma_write_user(struct dw_edma *dw, const char __user *buf, u64 pos, size_t count, int npu_id, bool npu_run);
 extern ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t count, int npu_id);
 #endif

@@ -136,7 +136,7 @@ case "$1" in
         # 6. Create Modprobe configuration file
         MODPROBE_CONF="/etc/modprobe.d/dx_dma.conf"
         echo "Creating modprobe configuration for module load order..."
-        echo "softdep dx_dma pre: dxrt_driver post:" > "$MODPROBE_CONF"
+        echo "softdep dx_dma post: dxrt_driver" > "$MODPROBE_CONF"
 
         # 7. Update initramfs
         echo "Updating initramfs..."
@@ -173,7 +173,11 @@ case "$1" in
         
         # 10. Load the modules (skip if old modules are still loaded — reboot required)
         if [ "$MODULES_STILL_LOADED" = true ]; then
-            echo "Skipping module loading — old modules still in memory. Reboot to activate new version."
+            echo "Skipping module loading - old driver modules are still active."
+            echo "The newly installed modules will be used after reboot."
+            if lsmod | grep -q "^dx_dma" && ! lsmod | grep -q "^dxrt_driver"; then
+                echo "Note: dx_dma is currently loaded without dxrt_driver; reboot is required to correct the active driver stack." >&2
+            fi
         else
             echo "Loading modules..."
             modprobe dx_dma || {

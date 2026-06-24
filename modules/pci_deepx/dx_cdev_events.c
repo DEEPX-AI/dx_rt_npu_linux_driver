@@ -16,8 +16,6 @@
 #include "dx_pcie_api.h"
 #endif
 
-// #define DX_PCIE_DBG_WAIT_QUE
-
 /*
  * character device file operations for events
  */
@@ -75,12 +73,12 @@ static ssize_t char_events_read(struct file *file, char __user *buf,
 	return 4;
 }
 
-static unsigned int char_events_poll(struct file *file, poll_table *wait)
+static __poll_t char_events_poll(struct file *file, poll_table *wait)
 {
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)file->private_data;
 	struct dx_dma_user_irq *user_irq;
 	unsigned long flags;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 	int rv;
 
 	dbg_sg("[%s] name:%s, idx:%d\n",
@@ -88,18 +86,18 @@ static unsigned int char_events_poll(struct file *file, poll_table *wait)
 
 	rv = dx_cdev_check(__func__, xcdev, 0);
 	if (rv < 0)
-		return rv;
+		return EPOLLERR;
 	user_irq = xcdev->user_irq;
 	if (!user_irq) {
 		pr_info("xcdev 0x%p, user_irq NULL.\n", xcdev);
-		return -EINVAL;
+		return EPOLLERR;
 	}
 
 	poll_wait(file, &user_irq->events_wq, wait);
 
 	spin_lock_irqsave(&user_irq->events_lock, flags);
 	if (user_irq->events_irq)
-		mask = POLLIN | POLLRDNORM;	/* readable */
+		mask = EPOLLIN | EPOLLRDNORM;	/* readable */
 
 	spin_unlock_irqrestore(&user_irq->events_lock, flags);
 
@@ -123,6 +121,9 @@ unsigned int dx_pcie_interrupt(int dev_id, int irq_id)
 	struct dx_dma_user_irq *user_irq;
 	unsigned long flags;
 	unsigned int mask = 0;
+
+	if (!dw)
+		return 0;
 
 	if (dw->nr_irqs == 1) {
 		user_irq = &dw->irq[0].user_irqs[irq_id];
@@ -150,6 +151,9 @@ void dx_pcie_interrupt_clear(int dev_id, int irq_id)
 	struct dx_dma_user_irq *user_irq;
 	unsigned long flags;
 
+	if (!dw)
+		return;
+
 	if (dw->nr_irqs == 1) {
 		user_irq = &dw->irq[0].user_irqs[irq_id];
 	} else {
@@ -163,34 +167,14 @@ void dx_pcie_interrupt_clear(int dev_id, int irq_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_interrupt_clear);
 
-#ifdef DX_PCIE_DBG_WAIT_QUE
-/** Used in tsk->state:
- #define TASK_RUNNING			0x0000
- #define TASK_INTERRUPTIBLE		0x0001
- #define TASK_UNINTERRUPTIBLE	0x0002
- */
-static void show_wait_queue_list(wait_queue_head_t *wq)
-{
-	wait_queue_entry_t *entry;
-	struct task_struct *task;
-
-	list_for_each_entry(entry, &wq->head, entry) {
-		task = entry->private;
-		if (task) {
-			pr_info("Task TGID: %d, State: %d\n", task->tgid, task->__state);
-		} else {
-			pr_info("Entry with no task\n");
-		}
-	}
-}
-#endif
-
 void dx_pcie_interrupt_event(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
 	struct dx_dma_user_irq *event_irq;
 	unsigned long flags;
-	unsigned int mask = 0;
+
+	if (!dw)
+		return;
 
 	if (dw->nr_irqs == 1) {
 		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
@@ -202,10 +186,8 @@ void dx_pcie_interrupt_event(int dev_id)
 	dbg_irq("%s:%d wake irq : %d[%p, %p]\n", __func__, current->tgid, event_irq->events_irq, &event_irq->events_irq, &event_irq->events_wq);
 
 	spin_lock_irqsave(&event_irq->events_lock, flags);
-	if (event_irq->events_irq) {
-		mask = event_irq->events_irq;
+	if (event_irq->events_irq)
 		event_irq->events_irq = 0;
-	}
 	spin_unlock_irqrestore(&event_irq->events_lock, flags);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_interrupt_event);
@@ -216,6 +198,9 @@ unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 	struct dx_dma_user_irq *event_irq;
 	unsigned long flags;
 
+	if (!dw)
+		return -ENODEV;
+
 	if (dw->nr_irqs == 1) {
 		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
 	} else {
@@ -225,9 +210,6 @@ unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id)
 	spin_lock_irqsave(&(event_irq->events_lock), flags);
 	if (!event_irq->events_irq) {
 		event_irq->events_irq = 2;
-#ifdef DX_PCIE_DBG_WAIT_QUE
-		show_wait_queue_list(&(event_irq->events_wq));
-#endif
 		wake_up_interruptible(&(event_irq->events_wq));
 	}
 	spin_unlock_irqrestore(&(event_irq->events_lock), flags);
@@ -243,6 +225,9 @@ unsigned int dx_pcie_interrupt_event_wakeup(int dev_id)
 	struct dx_dma_user_irq *event_irq;
 	unsigned long flags;
 
+	if (!dw)
+		return -ENODEV;
+
 	if (dw->nr_irqs == 1) {
 		event_irq = &dw->irq[0].user_irqs[dw->event_irq_idx];
 	} else {
@@ -252,9 +237,6 @@ unsigned int dx_pcie_interrupt_event_wakeup(int dev_id)
 	spin_lock_irqsave(&(event_irq->events_lock), flags);
 	if (!event_irq->events_irq) {
 		event_irq->events_irq = 2;
-#ifdef DX_PCIE_DBG_WAIT_QUE
-		show_wait_queue_list(&(event_irq->events_wq));
-#endif
 		wake_up_interruptible(&(event_irq->events_wq));
 	}
 	spin_unlock_irqrestore(&(event_irq->events_lock), flags);
@@ -274,9 +256,9 @@ void dx_cdev_event_init(struct dx_dma_cdev *xcdev, u8 idx)
 		dbg_init("[One Handler] User IRQ is registerd about index:%d, dma irqs:%d\n", idx, s_idx);
 		xcdev->user_irq = &(xcdev->xpdev->dw->irq[0].user_irqs[idx]);
 	} else {
-		if (check_event_id(idx)) {
+		if (check_event_id(xcdev->xpdev->dw, idx)) {
 			dbg_init("[Multi Handler] User IRQ is registerd about index:%d, dma irqs:%d\n", idx, s_idx);
-			pos = get_pos_user_irqs(idx);
+			pos = get_pos_user_irqs(xcdev->xpdev->dw, idx);
 			if (pos == -1) {
 				pr_err("Please Check user irqs [idx:%d, pos:%d]\n", idx, pos);
 			}

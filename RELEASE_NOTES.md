@@ -1,4 +1,18 @@
 # RELEASE_NOTES
+## v2.5.0 / 2026-06-23
+### 1. Changed
+- Improved device connection and reconnection handling to enhance resilience during temporary connectivity instability.
+- Optimized data flow for large-scale data transfers to improve operational consistency under high-load environments.
+
+### 2. Fixed
+- Fixed an issue where the device failed to return to a normal state after a firmware update.
+- Resolved module installation and loading errors that occurred in certain hardware environments.
+
+### 3. Added
+- Added automatic recovery logic for critical runtime error scenarios.
+- Expanded device identification support to recognize a wider range of hardware variants.
+- Added a background preparation path to reduce latency during large-volume transfers.
+
 ## v2.4.1 / 2026-04-13
 
 ### 1. Changed

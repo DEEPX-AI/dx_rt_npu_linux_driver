@@ -6,6 +6,9 @@ ccflags-y += -I $(src)/../include
 
 ccflags-y += $(CCFLAGS)
 
+# Always compile perf measurement code (runtime-gated via sysfs)
+ccflags-y += -DDMA_PERF_MEASURE
+
 ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
 ccflags-y += -DCONFIG_DX_AI_ACCEL_RT=1
 endif
@@ -14,13 +17,11 @@ ifeq ($(BUILD_DEFAULT_DBG), log)
 ccflags-y += -DDX_DEBUG_ENABLE
 else ifeq ($(BUILD_DEFAULT_DBG), perf)
 ccflags-y += -DDX_DEBUG_FS
-ccflags-y += -DDMA_PERF_MEASURE
 else ifeq ($(BUILD_DEFAULT_DBG), debugfs)
 ccflags-y += -DDX_DEBUG_FS
 else ifeq ($(BUILD_DEFAULT_DBG), dump_desc)
 ccflags-y += -DDUMP_DESC_TABLE
 else ifeq ($(BUILD_DEFAULT_DBG), test)
-ccflags-y += -DDMA_PERF_MEASURE
 ccflags-y += -DDX_DEBUG_FS
 ccflags-y += -DDX_DMA_TEST
 obj-m += test/dw_edma_kunit.o
@@ -40,7 +41,8 @@ endif
 dx_dma-y := dw-edma-pcie.o dw-edma-core.o dw-edma-v0-core.o \
 		dw-edma-v0-debugfs.o dw-edma-thread.o dx_util.o \
 		dx_cdev.o dx_sgdma_cdev.o dx_cdev_ctrl.o \
-		dx_cdev_events.o dx_sgdma.o dw-edma-mem.o 
+		dx_cdev_events.o dx_sgdma.o dw-edma-mem.o \
+		dx_dma_sysfs.o dx_link_health.o
 
 ifneq ($(filter -DRPI_DEBUG_BUILD=1,$(ccflags-y)),)
 ccflags-y += -I $(src)/utils/rpi

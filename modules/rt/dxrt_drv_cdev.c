@@ -45,6 +45,7 @@ static int dxrt_dev_open(struct inode *i, struct file *f)
     struct dxdev *dx;
     struct dxrt_file_ctx *ctx;
     int num = iminor(f->f_inode);
+    int ret;
 
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
 
@@ -55,24 +56,21 @@ static int dxrt_dev_open(struct inode *i, struct file *f)
         return -ENOMEM;
 
     ctx->dx = dx;
-    ctx->tgid = current->tgid;
     atomic_set(&ctx->terminating, 0);
 
-    f->private_data = ctx;
-
     if (dx->type == DX_ACC) {
-        dx_sgdma_init(num);
-        /*
-         * Clear stale PROC_EXIT events only for THIS process's tgid.
-         * A previous incarnation of the same pid may have left a stale
-         * exit event. Do NOT clear all proc_exit events — other processes'
-         * exit events must be preserved for the service to consume.
-         */
-        dx_pcie_clear_proc_exit_for_pid(dx->id, current->tgid);
+        ret = dx_sgdma_init(num);
+        if (ret) {
+            pr_warn_ratelimited(MODULE_NAME "%d: %s: SGDMA init failed (%d)\n",
+                num, __func__, ret);
+            kfree(ctx);
+            return ret;
+        }
     } else {
         dx->npu->irq_event = 0; /* irq init */
     }
 
+    f->private_data = ctx;
     dx->response.req_id = 0;
     return 0;
 }
@@ -137,35 +135,6 @@ static int dxrt_dev_release(struct inode *i, struct file *f)
 
     if (dx->type == DX_ACC) {
         dx_sgdma_deinit(num);
-        /* Cleanup pending responses for this process.
-         * Skip during recovery — recovery already clears all queues,
-         * and concurrent cleanup could operate on stale entries. */
-        if (ctx && !atomic_read(&dx->recovering)) {
-            int cleaned;
-            int queue_count;
-
-            cleaned = dx_pcie_cleanup_responses_for_proc(dx->id, ctx->tgid);
-            if (cleaned > 0)
-                pr_debug("%s: cleaned %d responses for proc %d\n",
-                    __func__, cleaned, ctx->tgid);
-
-            /*
-             * Notify Service about process exit via event.
-             * Service can receive this via DXRT_CMD_EVENT_V2.
-             */
-            dx_pcie_enqueue_proc_exit_event(dx->id, ctx->tgid);
-            queue_count = dx_pcie_is_proc_exit_pending(dx->id);
-            wake_up_interruptible(&dx->event_wq);
-            dx_pcie_interrupt_event_wakeup(dx->id);
-            pr_debug("%s: proc %d exit event queued (queue_count=%d)\n",
-                __func__, ctx->tgid, queue_count);
-        } else if (ctx) {
-            /* During recovery, still enqueue proc_exit but skip response cleanup */
-            dx_pcie_enqueue_proc_exit_event(dx->id, ctx->tgid);
-            wake_up_interruptible(&dx->event_wq);
-            pr_debug("%s: proc %d exit during recovery\n",
-                __func__, ctx->tgid);
-        }
     }
 
     kfree(ctx);
@@ -195,48 +164,22 @@ static int dxrt_dev_flush(struct file *f, fl_owner_t id)
 
 static ssize_t dxrt_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off)
 {
-    // unsigned long flags;
     struct dxrt_file_ctx *ctx = f->private_data;
     struct dxdev *dx = ctx ? ctx->dx : NULL;
 
     if (!dx)
         return -ENODEV;
-    // dxrt_response_list_t *entry;
-    // dxrt_response_list_t *responses = &dx->responses;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
 
-#if 0
-    if(list_empty(&responses->list)) {
-        pr_debug( "%s: read(): list empty\n", f->f_path.dentry->d_iname);
-        return 0;
-    }
-    spin_lock_irqsave(&dx->responses_lock, flags);
-    entry = list_first_entry(&responses->list, dxrt_response_list_t, list);
-    spin_unlock_irqrestore(&dx->responses_lock, flags);
-    if(!entry)
-    {
-        pr_err( "%s: queue empty\n", f->f_path.dentry->d_iname);
-        return -EINVAL;
-    }
-    if(copy_to_user(buf, &entry->response, sizeof(dxrt_response_t))) {
-        pr_err( "%s: failed to copy response\n", f->f_path.dentry->d_iname);
-        return -EFAULT;
-    }
-    pr_debug( "%s: %s: response %d\n", f->f_path.dentry->d_iname, __func__, entry->response.req_id);
-    list_del(&entry->list);
-    kfree(entry);
-#else
     if(copy_to_user(buf, &dx->response, sizeof(dxrt_response_t))) {
         pr_err( "%s: failed to copy response\n", f->f_path.dentry->d_iname);
         return -EFAULT;
     }
-#endif
     return sizeof(dxrt_response_t);
 }
 static ssize_t dxrt_dev_write(struct file *f, const char __user *buf, size_t len,
     loff_t *off)
 {
-    // unsigned long flags;
     struct dxrt_file_ctx *ctx = f->private_data;
     struct dxdev *dx = ctx ? ctx->dx : NULL;
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
@@ -294,16 +237,16 @@ static int dxrt_dev_mmap(struct file *f, struct vm_area_struct *vma)
     }
     return ret;
 }
-static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
+static __poll_t dxrt_dev_poll(struct file *f, poll_table *wait)
 {
     struct dxrt_file_ctx *ctx = f->private_data;
     struct dxdev *dx = ctx ? ctx->dx : NULL;
     // int num = iminor(f->f_inode);
-    unsigned int mask = 0;
+    __poll_t mask = 0;
     unsigned long flags;
 
     if (!dx)
-        return POLLERR;
+        return EPOLLERR;
 
     pr_debug( "%s: %s\n", f->f_path.dentry->d_iname, __func__);
     if(dx->type==DX_STD)
@@ -313,7 +256,7 @@ static unsigned int dxrt_dev_poll(struct file *f, poll_table *wait)
         spin_lock_irqsave(&npu->irq_event_lock, flags);
         if(npu->irq_event)
         {
-            mask = POLLIN | POLLRDNORM;
+            mask = EPOLLIN | EPOLLRDNORM;
             npu->irq_event = 0;
         }
         spin_unlock_irqrestore(&npu->irq_event_lock, flags);
@@ -367,7 +310,34 @@ static long dxrt_dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
             if(msg.cmd >=0 && msg.cmd < DXRT_CMD_MAX)
             {
                 pr_debug( MODULE_NAME "%d: message %d\n", num, msg.cmd);
+                /*
+                 * Stale-MMIO guard + lazy (re-)init are merged here so the
+                 * hot path (inference RUN_REQ / RUN_RESP_V2) does NOT pay
+                 * for dx_pcie_get_message_area() on every ioctl.  That
+                 * helper takes a spin_lock_irqsave + linked-list walk
+                 * (shared with the PCIe ISR), which adds ~1-2us per frame
+                 * at 18k+ FPS — a measurable regression.
+                 *
+                 * Safety: every path that can invalidate dx->msg etc.
+                 * (SBR / hot-unplug / AER full_reinit / link-up after
+                 * silent link-down) goes through dx_pcie_set_init_completed()
+                 * before any new ioctl can arrive.  So gating the guard
+                 * behind init_completed catches every real recovery
+                 * boundary while staying off the steady-state fast path.
+                 */
                 if (dx_pcie_test_and_clear_init_completed(dx->id)) {
+                    if (dx->type != DX_STD && dx->msg &&
+                        !dx_pcie_get_message_area(dx->id)) {
+                        pr_err(MODULE_NAME "%d: PCI device gone — clearing stale MMIO pointers\n", num);
+                        dx->msg = NULL;
+                        dx->log = NULL;
+                        dx->dl = NULL;
+                        dx->request_queue = NULL;
+                        dx->request_queue1 = NULL;
+                        dx->request_queue2 = NULL;
+                        dx->request_high_queue = NULL;
+                        return -ENODEV;
+                    }
                     dxrt_device_init(dx);
                 }
                 return message_handler_general(dx, &msg, ctx);
@@ -419,17 +389,15 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     if ((ret = cdev_add(&dxdev->cdev, drv->dev_num + id, 1)) < 0)
     {
         pr_err( "%s: failed to add character device\n", __func__);
-        device_destroy(drv->dev_class, drv->dev_num);
-        class_destroy(drv->dev_class);
-        unregister_chrdev_region(drv->dev_num, drv->num_devices);
+        kfree(dxdev);
         return NULL;
     }
 
     if (IS_ERR(dxdev->dev = device_create(drv->dev_class, NULL, drv->dev_num + id, NULL, MODULE_NAME"%d", id)))
     {
         pr_err( "%s: failed to create device\n", __func__);
-        class_destroy(drv->dev_class);
-        unregister_chrdev_region(drv->dev_num, drv->num_devices);
+        cdev_del(&dxdev->cdev);
+        kfree(dxdev);
         return NULL;
     }
     dxdev->dev->dma_mask = (u64 *)&dmamask;
@@ -451,8 +419,18 @@ static struct dxdev* create_dxrt_device(int id, struct dxrt_driver *drv, struct 
     spin_lock_init(&dxdev->responses_lock);
     spin_lock_init(&dxdev->error_lock);
     mutex_init(&dxdev->msg_lock);
+    mutex_init(&dxdev->recovery_mutex);
     atomic_set(&dxdev->recovering, 0);
     atomic_set(&dxdev->recovery_epoch, 0);
+#if IS_ACCELERATOR
+    dxrt_recovery_state_init(dxdev);
+    if (dxrt_sysfs_attach(dxdev) != 0)
+        pr_warn(MODULE_NAME "%d: sysfs attach failed (non-fatal)\n", id);
+    /* Register PCIe ISR→RT callbacks eagerly so link/response/event
+     * notifications flow even when userspace never opens /dev/dxrtN
+     * (e.g. automated recovery tests that only read sysfs). */
+    dxrt_device_init_early(dxdev);
+#endif
 #if IS_STANDALONE
     if (dxdev->type == DX_STD) {
         dxdev->request_handler = kthread_run(
@@ -473,6 +451,9 @@ static void remove_dxrt_device(struct dxrt_driver *drv, struct dxdev* dxdev)
      * with a dangling dxdev pointer (wake_up_interruptible on freed memory). */
     dx_pcie_unregister_response_callback(dxdev->id);
     dx_pcie_unregister_event_callback(dxdev->id);
+    dx_pcie_unregister_link_event_callback(dxdev->id);
+    dxrt_sysfs_detach(dxdev);
+    dxrt_recovery_state_deinit(dxdev);
 #endif
     device_destroy(drv->dev_class, drv->dev_num + dxdev->id);
     cdev_del(&dxdev->cdev);
@@ -549,6 +530,11 @@ int dxrt_driver_cdev_init(struct dxrt_driver *drv)
         drv->devices[i] = create_dxrt_device(i, drv, &dxrt_cdev_fops);
         if(drv->devices[i]==NULL)
         {
+            /* Rollback: destroy already-created devices in reverse order */
+            while (--i >= 0)
+                remove_dxrt_device(drv, drv->devices[i]);
+            class_destroy(drv->dev_class);
+            unregister_chrdev_region(drv->dev_num, drv->num_devices);
             return -1;
         }
     }
