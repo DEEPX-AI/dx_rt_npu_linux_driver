@@ -52,21 +52,25 @@ typedef struct dx_pcie_profiler_t {
 } dx_pcie_profiler_t;
 
 /* PCIE NUM / DMA CHANNEL NUM / READ/WRITE Channel*/
-// extern dx_pcie_profiler_t g_pcie_prof[16][4][2][PCIE_PERF_MAX_T];
+extern dx_pcie_profiler_t g_pcie_prof[16][4][2][PCIE_PERF_MAX_T];
+extern bool g_perf_enabled;
 
 extern struct dw_edma *dx_dev_list_get(int dev_id);
 
 extern char *show_pcie_profile(void);
+extern char *show_pcie_internal_stats(void);
 extern void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int ch_n);
-#if defined(DMA_PERF_MEASURE)
+extern void dx_pcie_perf_clear_internal_stats(void);
 extern void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
 extern void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
+extern void dx_pcie_perf_record_helper_acquire(int dev_n, int rounds,
+                                               int channel, bool success);
+extern void dx_pcie_perf_record_helper_llm_copy(int dev_n, uint64_t ns,
+                                                int ret);
+extern void dx_pcie_perf_record_pool_alloc(int dev_n, uint32_t requested,
+                                           uint32_t allocated, uint64_t ns);
 extern void get_start_time(ktime_t *s);
 extern uint64_t get_elapsed_time_ns(ktime_t s);
-#else
-extern void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
-extern void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);
-#endif
 
 extern int dx_pci_rebar_get_current_size(struct pci_dev *pdev, int bar);
 extern u64 dx_pci_rebar_size_to_bytes(int size);

@@ -74,32 +74,68 @@ int dx_sgdma_cdev_open(struct inode *inode, struct file *filp) {
 	struct dx_dma_cdev *xcdev;
 	struct dw_edma *dw;
 	unsigned long flags;
-	int count;
+	int ret;
+	u16 h2c_max;
 
-	char_open(inode, filp);
+	ret = char_open(inode, filp);
+	if (ret)
+		return ret;
 	xcdev = (struct dx_dma_cdev *)filp->private_data;
 	dw = xcdev->xpdev->dw;
+	if (atomic_read(&dw->dev_state) == DX_DEV_REMOVING)
+		return -ENODEV;
+	if (atomic_read(&dw->dev_state) != DX_DEV_LIVE ||
+	    atomic_read(&dw->link_state) != DX_LINK_UP ||
+	    atomic_read(&dw->background_recovery_paused)) {
+		pr_warn_ratelimited("[%s] dev %d: DMA cdev open rejected while not ready (dev_state=%d link_state=%d paused=%d)\n",
+			__func__, dw->idx, atomic_read(&dw->dev_state),
+			atomic_read(&dw->link_state),
+			atomic_read(&dw->background_recovery_paused));
+		return -EAGAIN;
+	}
 
 	spin_lock_irqsave(&xcdev->lock, flags);
 	xcdev->f_count++;
-	count = xcdev->f_count;
 	spin_unlock_irqrestore(&xcdev->lock, flags);
 
 	dbg_sg("[%s][%s][%s] Device_#%d NPU_#%d called!(count:%d)\n", __func__,
 		!xcdev->write ? "W" : "R",
 		xcdev->sys_device->kobj.name,
 		dw->idx, xcdev->npu_id,
-		count);
+		xcdev->f_count);
 	/* TODO - Check device busy */
 
 	/* DMA Channel allocation */
 	if (xcdev->write) {
-		dw_edma_dma_allocation(dw->rd_dma_id, xcdev->npu_id, &dw->wr_dma_chan[xcdev->npu_id]);
+		if (xcdev->npu_id >= dw->wr_ch_cnt) {
+			pr_err("[%s] dev %d: C2H channel %d is not available (valid: 0-%d)\n",
+				__func__, dw->idx, xcdev->npu_id, dw->wr_ch_cnt - 1);
+			ret = -ENODEV;
+			goto err_open;
+		}
+		ret = dw_edma_dma_allocation(dw->rd_dma_id, xcdev->npu_id,
+					     &dw->wr_dma_chan[xcdev->npu_id]);
 	} else {
-		dw_edma_dma_allocation(dw->wr_dma_id, xcdev->npu_id, &dw->rd_dma_chan[xcdev->npu_id]);
+		h2c_max = min_t(u16, dw->rd_ch_cnt, DX_H2C_DATA_CH_CNT);
+		if (xcdev->npu_id >= h2c_max) {
+			pr_err("[%s] dev %d: H2C channel %d is helper-reserved (valid data: 0-%d)\n",
+				__func__, dw->idx, xcdev->npu_id, h2c_max - 1);
+			ret = -ENODEV;
+			goto err_open;
+		}
+		ret = dw_edma_dma_allocation(dw->wr_dma_id, xcdev->npu_id,
+					     &dw->rd_dma_chan[xcdev->npu_id]);
 	}
+	if (ret)
+		goto err_open;
 
 	return 0;
+
+err_open:
+	spin_lock_irqsave(&xcdev->lock, flags);
+	xcdev->f_count--;
+	spin_unlock_irqrestore(&xcdev->lock, flags);
+	return ret;
 }
 
 /* when last close() is called */
@@ -151,7 +187,7 @@ ssize_t dx_sgdma_cdev_write(struct file *filp, const char __user *buf, size_t co
 	struct dw_edma *dw = xcdev->xpdev->dw;
 	size_t ret;
 
-	ret = dx_sgdma_write_user(dw, (char *)buf, (u64)*pos, count, xcdev->npu_id, false);
+	ret = dx_sgdma_write_user(dw, buf, (u64)*pos, count, xcdev->npu_id, false);
 
 	return ret;
 }
@@ -162,7 +198,7 @@ ssize_t dx_sgdma_cdev_read(struct file *filp, char __user *buf, size_t count, lo
 	struct dw_edma *dw = xcdev->xpdev->dw;
 	size_t ret;
 
-	ret = dx_sgdma_read_user(dw, (char *)buf, (u64)*pos, count, xcdev->npu_id);
+	ret = dx_sgdma_read_user(dw, buf, (u64)*pos, count, xcdev->npu_id);
 
 	return ret;
 }

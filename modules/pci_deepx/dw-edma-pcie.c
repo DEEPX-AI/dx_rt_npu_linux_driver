@@ -11,6 +11,7 @@
 #include <linux/pci.h>
 #include <linux/device.h>
 #include <linux/msi.h>
+#include <linux/irq.h>
 #include <linux/bitfield.h>
 #include <linux/aer.h>
 #include <linux/delay.h>
@@ -23,6 +24,9 @@
 #include "dx_util.h"
 #include "dx_lib.h"
 #include "dw-edma-thread.h"
+#include "dx_dma_sysfs.h"
+#include "dx_link_health.h"
+#include "dx_message.h"
 #include "version.h"
 
 #ifdef RPI_DEBUG_BUILD
@@ -40,10 +44,18 @@
 	#endif
 #endif
 
-#define DX_PCI_VENDOR_ID					0x1FF4
-#define DX_PCI_DEVICE_ID					0x0
-#define DX_PCI_SUB_VENDOR_ID				0x1FF4
-#define DX_PCI_SUB_DEVICE_ID				0x0
+#define DX_PCI_VENDOR_ID		0x1FF4
+#define DX_PCI_LEGACY_DEVICE_ID		0x0
+#define DX_M1_PCI_DEVICE_ID		0x0100
+#define DX_M1M_PCI_DEVICE_ID		0x0110
+#define DX_H1_PCI_DEVICE_ID		0x0101
+#define DX_H1M_PCI_DEVICE_ID		0x0111
+#define DX_PCI_SUB_VENDOR_ID		0x1FF4
+#define DX_PCI_LEGACY_SUB_DEVICE_ID	0x0
+#define DX_M1_PCI_SUB_DEVICE_ID		0x0100
+#define DX_M1M_PCI_SUB_DEVICE_ID	0x0110
+#define DX_H1_PCI_SUB_DEVICE_ID		0x0101
+#define DX_H1M_PCI_SUB_DEVICE_ID	0x0111
 
 #define USER_BAR_NUM					3
 
@@ -205,8 +217,10 @@ static const struct dw_edma_pcie_data dx_pcie_data_v3 = {
 
 static void dx_pcie_set_pdata_by_rev(struct dw_edma_pcie_data *pdata, u8 rev, u8 prog)
 {
-	uint64_t high_addr;
 	if (rev == 1) {
+#ifndef SRAM_DESC_TABLE
+		uint64_t high_addr;
+
 		switch (prog) {
 			case DX_PCIE_IF_MODE_0:
 				high_addr = 6;
@@ -222,7 +236,6 @@ static void dx_pcie_set_pdata_by_rev(struct dw_edma_pcie_data *pdata, u8 rev, u8
 				break;
 		}
 		high_addr <<= 32;
-#ifndef SRAM_DESC_TABLE
 		pdata->desc_addr       = (0x04000000 | high_addr);
 		pdata->download_region = (0x03F00000 | high_addr);
 #endif
@@ -239,6 +252,68 @@ static int dw_edma_pcie_irq_vector(struct device *dev, unsigned int nr)
 static const struct dx_edma_core_ops dw_edma_pcie_core_ops = {
 	.irq_vector = dw_edma_pcie_irq_vector,
 };
+
+static int dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
+						int used_irqs, int allocated_irqs)
+{
+	struct irq_data *irq_data;
+	u32 expected_mask = 0;
+	u32 mask;
+	u16 control;
+	int pos, mask_pos, max_irqs;
+	int i, irq;
+
+	if (allocated_irqs <= used_irqs)
+		return 0;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+	if (!pos) {
+		pci_warn(pdev, "MSI capability not found for unused vector masking\n");
+		return -ENODEV;
+	}
+
+	pci_read_config_word(pdev, pos + PCI_MSI_FLAGS, &control);
+	if (!(control & PCI_MSI_FLAGS_MASKBIT)) {
+		pci_warn(pdev, "MSI per-vector masking is not supported\n");
+		return -EOPNOTSUPP;
+	}
+	max_irqs = 1 << FIELD_GET(PCI_MSI_FLAGS_QMASK, control);
+	if (allocated_irqs > max_irqs)
+		return -EINVAL;
+
+	for (i = used_irqs; i < allocated_irqs; i++) {
+		irq = pci_irq_vector(pdev, i);
+		if (irq < 0)
+			return irq;
+
+		irq_data = irq_get_irq_data(irq);
+		if (!irq_data)
+			return -EINVAL;
+
+		pci_msi_mask_irq(irq_data);
+		expected_mask |= BIT(i);
+	}
+	for (i = allocated_irqs; i < max_irqs; i++)
+		expected_mask |= BIT(i);
+
+	mask_pos = (control & PCI_MSI_FLAGS_64BIT) ?
+		PCI_MSI_MASK_64 : PCI_MSI_MASK_32;
+	pci_read_config_dword(pdev, pos + mask_pos, &mask);
+	mask |= expected_mask;
+	pci_write_config_dword(pdev, pos + mask_pos, mask);
+	pci_read_config_dword(pdev, pos + mask_pos, &mask);
+	if ((mask & expected_mask) != expected_mask) {
+		pci_warn(pdev,
+			 "unused MSI vector mask readback failed (expected=0x%08x, current=0x%08x)\n",
+			 expected_mask, mask);
+		return -EIO;
+	}
+
+	pci_info(pdev, "masked unused MSI vectors [%d-%d] (mask=0x%08x)\n",
+		 used_irqs, max_irqs - 1, mask);
+
+	return 0;
+}
 
 static void dw_edma_pcie_get_vsec_dma_data(struct pci_dev *pdev,
 					   struct dw_edma_pcie_data *pdata)
@@ -300,7 +375,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	struct dw_edma *dw;
 	int err, nr_irqs;
 	int i, mask, bar_size;
-	int total_irqs;
+	int total_irqs, multi_irqs;
 	u8 revision_id, prog_if;
 
 	dbg_init("pdev : %p name[%s].\n", pdev, pci_name(pdev));
@@ -381,11 +456,56 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	dw->dx_ver = pdata->version;
 	pci_err(pdev, "dw->dx_ver: %d\n", dw->dx_ver);
 	set_user_irq_vec_table(dw);
-	total_irqs = vsec_data.dma_irqs + get_nr_user_irqs();
+	total_irqs = vsec_data.dma_irqs + get_nr_user_irqs(dw);
 
 	/* IRQs allocation */
 	pci_dbg(pdev, "Total IRQ number with including npu handler: %d\n", total_irqs);
-	nr_irqs = pci_alloc_irq_vectors(pdev, 1, total_irqs, PCI_IRQ_MSI);
+#ifdef RPI_BUILD
+    /* BCM2712 (RPi CM5) brcmstb MSI controller allocates MSI vectors with
+     * unaligned base data (e.g. data=0xc with MME=3 gives base=8, not 0xc).
+     * The EP RTL generates data=(base & ~mask)|vector per PCI spec, but the
+     * host expects data=base+vector — mismatch silently drops NPU done MSIs.
+     * Force single MSI: all events muxed via SRAM SW IRQ block (dx_sw_irq). */
+    nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+    pci_info(pdev, "RPi: forcing single MSI mode (brcmstb multi-MSI data misalignment)\n");
+#else
+	if (total_irqs > 1) {
+		multi_irqs = 1;
+		while (multi_irqs < total_irqs)
+			multi_irqs <<= 1;
+
+		nr_irqs = pci_alloc_irq_vectors(pdev, multi_irqs, multi_irqs,
+					       PCI_IRQ_MSI);
+		if (nr_irqs == multi_irqs) {
+			err = dw_edma_pcie_mask_unused_msi_vectors(pdev,
+								       total_irqs, nr_irqs);
+			if (err) {
+				pci_warn(pdev,
+					 "failed to mask unused MSI vectors (err=%d), fallback to single MSI\n",
+					 err);
+				pci_free_irq_vectors(pdev);
+				nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+			} else {
+				pci_info(pdev, "multi MSI enabled (%d required, %d allocated)\n",
+					 total_irqs, nr_irqs);
+			}
+		} else {
+			if (nr_irqs > 0) {
+				pci_warn(pdev,
+					 "partial MSI allocation (%d/%d vectors, %d required), fallback to single MSI\n",
+					 nr_irqs, multi_irqs, total_irqs);
+				pci_free_irq_vectors(pdev);
+			} else {
+				pci_warn(pdev,
+					 "multi MSI allocation failed (%d vectors, %d required, err=%d), fallback to single MSI\n",
+					 multi_irqs, total_irqs, nr_irqs);
+			}
+			nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+		}
+	} else {
+		nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+	}
+#endif
 	if (nr_irqs < 1) {
 		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%d)\n", nr_irqs);
 		return -EPERM;
@@ -393,7 +513,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		pci_err(pdev, "With only a single interrupt handler, "
 			"the device performance might be slower compared to a multi-interrupt environment\n");
 	}
-	dw->event_irq_idx = get_nr_user_irqs() - 1;
+	dw->event_irq_idx = get_nr_user_irqs(dw) - 1;
 	pci_dbg(pdev, "Error irq index: %d\n", dw->event_irq_idx);
 
 	/* Check BAR0 size */
@@ -403,12 +523,14 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		if (vsec_data.version == 2) {
 			if (bar_size !=  BAR0_MEM_SIZE) {
 				pci_err(pdev, "size of a BAR is not matched(%d)\n", bar_size);
-				return -ENOMEM;
+				err = -ENOMEM;
+				goto err_irq_vectors;
 			}
 		} else if (vsec_data.version == 3) {
 			if (bar_size !=  BAR0_MEM_SIZE_M1) {
 				pci_err(pdev, "size of a BAR is not matched(%d)\n", bar_size);
-				return -ENOMEM;
+				err = -ENOMEM;
+				goto err_irq_vectors;
 			}
 		}
 	}
@@ -425,8 +547,10 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	dw->rd_ch_cnt = vsec_data.rd_ch_cnt;
 
 	dw->rg_region.vaddr = pcim_iomap_table(pdev)[vsec_data.rg.bar];
-	if (!dw->rg_region.vaddr)
-		return -ENOMEM;
+	if (!dw->rg_region.vaddr) {
+		err = -ENOMEM;
+		goto err_irq_vectors;
+	}
 
 	dw->rg_region.vaddr += vsec_data.rg.off;
 	dw->rg_region.paddr = pdev->resource[vsec_data.rg.bar].start;
@@ -443,7 +567,8 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		iatu->vaddr = pcim_iomap_table(pdev)[vsec_data.iatu.bar];
 		if (!iatu->vaddr) {
 			pci_err(pdev, "iATU BAR#%d mapping fail!\n", vsec_data.iatu.bar);
-			return -ENOMEM;
+			err = -ENOMEM;
+			goto err_irq_vectors;
 		}
 		iatu->vaddr += vsec_data.iatu.off;
 		iatu->paddr = pdev->resource[vsec_data.iatu.bar].start;
@@ -458,7 +583,8 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		npu->vaddr = pcim_iomap_table(pdev)[vsec_data.users[i].bar];
 		if (!npu->vaddr) {
 			pci_err(pdev, "USER BAR#%d mapping Fail!\n", vsec_data.users[i].bar);
-			return -ENOMEM;
+			err = -ENOMEM;
+			goto err_irq_vectors;
 		}
 		npu->vaddr	+=	vsec_data.users[i].off;
 		npu->paddr	=	pdev->resource[vsec_data.users[i].bar].start;
@@ -473,8 +599,10 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		struct dx_edma_block *ll_block = &vsec_data.ll_wr[i];
 
 		ll_region->vaddr = pcim_iomap_table(pdev)[ll_block->bar];
-		if (!ll_region->vaddr)
-			return -ENOMEM;
+		if (!ll_region->vaddr) {
+			err = -ENOMEM;
+			goto err_irq_vectors;
+		}
 
 		ll_region->vaddr += ll_block->off;
 		ll_region->paddr = dw->dma_desc_base_addr;
@@ -488,8 +616,10 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		struct dx_edma_block *ll_block = &vsec_data.ll_rd[i];
 
 		ll_region->vaddr = pcim_iomap_table(pdev)[ll_block->bar];
-		if (!ll_region->vaddr)
-			return -ENOMEM;
+		if (!ll_region->vaddr) {
+			err = -ENOMEM;
+			goto err_irq_vectors;
+		}
 
 		ll_region->vaddr += ll_block->off;
 		ll_region->paddr = dw->dma_desc_base_addr;
@@ -546,18 +676,34 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	pci_dbg(pdev, "Nr. IRQs:\t%u\n", dw->nr_irqs);
 
-	/* Validating if PCI interrupts were enabled */
-	if (!pci_dev_msi_enabled(pdev)) {
-		pci_err(pdev, "enable interrupt failed\n");
-		return -EPERM;
+	{
+		int msi_pos;
+		u16 msi_control = 0;
+
+		msi_pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+		if (!msi_pos) {
+			pci_warn(pdev, "MSI capability not found\n");
+		} else if (pci_read_config_word(pdev, msi_pos + PCI_MSI_FLAGS,
+						 &msi_control)) {
+			pci_warn(pdev, "failed to read MSI control register\n");
+		} else {
+			pci_info(pdev, "MSI config space: %s (control=0x%04x), pci_dev_msi_enabled=%s\n",
+				 (msi_control & PCI_MSI_FLAGS_ENABLE) ? "Enable" : "Disable",
+				 msi_control,
+				 pci_dev_msi_enabled(pdev) ? "true" : "false");
+		}
 	}
 
 	dw->irq = devm_kcalloc(dev, nr_irqs, sizeof(*dw->irq), GFP_KERNEL);
-	if (!dw->irq)
-		return -ENOMEM;
+	if (!dw->irq) {
+		err = -ENOMEM;
+		goto err_irq_vectors;
+	}
 
 	/* Detect device number */
-	dx_dev_list_add(chip->dw);
+	err = dx_dev_list_add(chip->dw);
+	if (err)
+		goto err_irq_vectors;
 
 	/* Initialize per-device mutexes before any code path can contend.
 	 * dw is devm_kzalloc'd (zeroed) — without explicit mutex_init the
@@ -570,7 +716,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	err = dx_dma_probe(chip);
 	if (err) {
 		pci_err(pdev, "eDMA probe failed(%d)\n", err);
-		return err;
+		goto err_dev_list_remove;
 	}
 
 	/* Saving data structure reference */
@@ -579,16 +725,38 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	/* Create Cdev */
 	err = xpdev_create_interfaces(chip);
 	if (err)
-		return err;
+		goto err_dma_remove;
 
 	dw_edma_thread_init(chip->dw->idx);
 	chip->dw->init_completed = true;
-	atomic_set(&chip->dw->alive, 1);
-	atomic_set(&chip->dw->sbr_in_progress, 0);
+
+	/* Initialize link health monitoring before going LIVE */
+	dx_link_health_init(chip->dw);
+
+	atomic_set(&chip->dw->dev_state, DX_DEV_LIVE);
+
+	/* Save PCI config state for link health recovery.
+	 * pci_restore_state() in edma_restore uses this saved state
+	 * to reprogram BARs, MSI, command register after link-down. */
+	pci_save_state(pdev);
+
+	/* Start health worker after LIVE — must be last */
+	dx_link_health_start(chip->dw);
 
 	pci_err(pdev, "[%s] Probe Done!!\n", __func__);
 
 	return 0;
+
+err_dma_remove:
+	pci_set_drvdata(pdev, NULL);
+	dx_dma_remove(chip);
+
+err_dev_list_remove:
+	dx_dev_list_remove(chip->dw);
+
+err_irq_vectors:
+	pci_free_irq_vectors(pdev);
+	return err;
 }
 
 static void dx_dma_pcie_remove(struct pci_dev *pdev)
@@ -600,8 +768,12 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 
 	/* Mark device as going away — callers from dxrt_driver
 	 * (dx_sgdma_deinit, dx_pcie_reset_dma_channels) check this
-	 * flag before touching dw->wr_lock to avoid use-after-free. */
-	atomic_set(&chip->dw->alive, 0);
+	 * state before touching dw->wr_lock to avoid use-after-free. */
+	atomic_set(&chip->dw->dev_state, DX_DEV_REMOVING);
+
+	/* Stop health worker synchronously before resource teardown.
+	 * cancel_delayed_work_sync waits for in-flight worker to finish. */
+	dx_link_health_stop(chip->dw);
 
 	/* Stopping eDMA driver */
 	err = dx_dma_remove(chip);
@@ -620,11 +792,25 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 	dw_edma_thread_exit(chip->dw->idx);
 }
 
+static void dx_dma_quiesce_channels(struct dw_edma *dw);
+static int dx_dma_reinit_hw(struct pci_dev *pdev, struct dw_edma *dw);
+
 #ifdef CONFIG_PM_SLEEP
 static int dx_pcie_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	pci_err(pdev, "Power Managerment to enter suspend\n");
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
+	pci_info(pdev, "PM suspend: quiescing DMA and pausing recovery\n");
+
+	if (!chip || !chip->dw)
+		return 0;
+
+	atomic_set(&chip->dw->background_recovery_paused, 1);
+	dx_dma_quiesce_channels(chip->dw);
+	cancel_delayed_work_sync(&chip->dw->health_work);
+	cancel_work_sync(&chip->dw->recovery_work);
+	pci_save_state(pdev);
 
 	return 0;
 }
@@ -633,9 +819,26 @@ static int dx_pcie_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+	int ret;
 
-	pci_err(pdev, "Power Managerment to enter resume\n");
-	dw_iatu_default_config_set(chip->dw);
+	pci_info(pdev, "PM resume: restoring PCI and eDMA state\n");
+
+	if (!chip || !chip->dw)
+		return 0;
+
+	ret = dx_dma_reinit_hw(pdev, chip->dw);
+	atomic_set(&chip->dw->background_recovery_paused, 0);
+	if (ret) {
+		pci_err(pdev,
+			"PM resume: reinit_hw failed (%d), health worker will retry\n",
+			ret);
+		if (atomic_read(&chip->dw->link_health_enabled))
+			schedule_delayed_work(&chip->dw->health_work, 0);
+		return ret;
+	}
+
+	dx_link_health_start(chip->dw);
+	pci_info(pdev, "PM resume: done\n");
 
 	return 0;
 }
@@ -643,33 +846,187 @@ static int dx_pcie_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(dx_pcie_pm_ops, dx_pcie_suspend, dx_pcie_resume);
 #endif /* CONFIG_PM_SLEEP */
 
+/*
+ * dx_dma_quiesce_channels - Quiesce all DMA channels before reset
+ *
+ * Common helper for both AER error_detected and reset_prepare paths.
+ * Sets dev_state to AER_RESET, bumps recovery_epoch, sets hw_err on
+ * every channel and wakes any sleeping transfer threads so they exit
+ * immediately with -EIO instead of waiting for timeout.
+ */
+static void dx_dma_quiesce_channels(struct dw_edma *dw)
+{
+	int i;
+
+	/* Block new submissions */
+	atomic_set(&dw->dev_state, DX_DEV_AER_RESET);
+
+	/* Bump epoch so in-flight threads detect stale context */
+	atomic_inc(&dw->recovery_epoch);
+
+	/* Full barrier: epoch + dev_state visible before hw_err / wq reads */
+	smp_mb();
+
+	/* Stop shadow prebuild work before resetting channel state. */
+	if (dw->shadow_wq)
+		flush_workqueue(dw->shadow_wq);
+
+	/* Stop eDMA engine HW */
+	dw_edma_v0_core_off(dw);
+
+	/* Wake all sleeping transfer threads via hw_err */
+	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++) {
+		struct dw_edma_chan *chan = &dw->chan[i];
+		wait_queue_head_t *wq;
+
+		WRITE_ONCE(chan->hw_err, true);
+		wq = READ_ONCE(chan->transfer_wq);
+		if (wq)
+			wake_up(wq);
+	}
+
+	/* Notify RT module so in-flight ioctls are woken with -ENODATA and
+	 * response queues are cleared.  Without this, AER / sysfs-reset
+	 * would not propagate into the RT module -> ioctl hang. */
+	dx_pcie_notify_link_event(dw->idx, DX_PCIE_LINK_EV_DOWN);
+}
+
+/*
+ * dx_dma_reinit_hw - Reinitialize PCIe + DMA HW after reset
+ *
+ * Delegates to dx_dma_full_reinit() which does the full register
+ * reprogramming sequence (PCI restore, iATU, engine_en, IMWR,
+ * ch_pwr_en, MSI cache, link validation) and notifies the RT
+ * module via LINK_EV_UP.  This keeps AER / sysfs-reset and
+ * link-health paths in sync.
+ */
+static int dx_dma_reinit_hw(struct pci_dev *pdev, struct dw_edma *dw)
+{
+	(void)pdev;
+	return dx_dma_full_reinit(dw);
+}
+
 static pci_ers_result_t dx_dma_pcie_error_detected(struct pci_dev *pdev,
 						 pci_channel_state_t error)
 {
-	pci_err(pdev, ">> %s:%d\n", __func__, error);
-	/* TODO */
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
+	pci_err(pdev, ">> %s: error=%d\n", __func__, error);
+
+	if (!chip || !chip->dw)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	atomic_set(&chip->dw->background_recovery_paused, 1);
+	if (error == pci_channel_io_normal) {
+		dx_dma_quiesce_channels(chip->dw);
+	} else {
+		dx_dma_quiesce_for_link_down(chip->dw);
+	}
+
+	/* Drain background recovery after AER_RESET is visible so workers
+	 * cannot re-arm themselves during reset handling. */
+	cancel_delayed_work_sync(&chip->dw->health_work);
+	cancel_work_sync(&chip->dw->recovery_work);
+
+	if (error == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
 	return PCI_ERS_RESULT_NEED_RESET;
 }
 
 static pci_ers_result_t dx_dma_pcie_error_slot_reset(struct pci_dev *pdev)
 {
-	pci_ers_result_t result = PCI_ERS_RESULT_RECOVERED;
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
 	pci_err(pdev, ">> %s\n", __func__);
-	/* TODO */
-	return result;
+
+	if (!chip || !chip->dw)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	/* Re-enable the device after slot reset */
+	if (pci_enable_device(pdev)) {
+		pci_err(pdev, "Cannot re-enable device after reset\n");
+		return PCI_ERS_RESULT_DISCONNECT;
+	}
+
+	if (dx_dma_reinit_hw(pdev, chip->dw) < 0) {
+		pci_err(pdev, "reinit_hw failed after slot_reset\n");
+		return PCI_ERS_RESULT_DISCONNECT;
+	}
+
+	return PCI_ERS_RESULT_RECOVERED;
 }
 
 static void dx_dma_pcie_error_resume(struct pci_dev *pdev)
 {
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
 	pci_err(pdev, ">> %s\n", __func__);
-	/* TODO */
+
+	if (!chip || !chip->dw)
+		return;
+
+	/*
+	 * reinit_hw already set dev_state = LIVE in slot_reset.
+	 * resume is a no-op unless slot_reset was not called.
+	 */
+	if (atomic_read(&chip->dw->dev_state) != DX_DEV_LIVE)
+		atomic_set(&chip->dw->dev_state, DX_DEV_LIVE);
+	atomic_set(&chip->dw->background_recovery_paused, 0);
+
+	/* Restart health worker after AER recovery if user enabled it. */
+	dx_link_health_start(chip->dw);
 }
 
+/*
+ * reset_prepare / reset_done — called by the kernel's pci_reset_function()
+ * path, e.g. when userspace writes to /sys/bus/pci/devices/XXXX/reset.
+ * Unlike AER callbacks, these are invoked for any kernel-initiated reset
+ * (FLR, bus reset via sysfs, etc.) regardless of whether AER is enabled.
+ */
+static void dx_dma_pcie_reset_prepare(struct pci_dev *pdev)
+{
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
+	pci_err(pdev, ">> %s\n", __func__);
+
+	if (!chip || !chip->dw)
+		return;
+
+	atomic_set(&chip->dw->background_recovery_paused, 1);
+	dx_dma_quiesce_channels(chip->dw);
+	cancel_delayed_work_sync(&chip->dw->health_work);
+	cancel_work_sync(&chip->dw->recovery_work);
+	pci_save_state(pdev);
+}
+
+static void dx_dma_pcie_reset_done(struct pci_dev *pdev)
+{
+	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+
+	pci_err(pdev, ">> %s\n", __func__);
+
+	if (!chip || !chip->dw)
+		return;
+
+	if (dx_dma_reinit_hw(pdev, chip->dw) < 0)
+		pci_err(pdev, "reinit_hw failed after reset_done\n");
+	atomic_set(&chip->dw->background_recovery_paused, 0);
+
+	/* Restart health worker after reset recovery if user enabled it. */
+	dx_link_health_start(chip->dw);
+}
+
+static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev) __attribute__((unused));
 static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev)
 {
-	pci_ers_result_t result = PCI_ERS_RESULT_RECOVERED;
-	pci_err(pdev, ">> %s\n", __func__);
-	return result;
+	/*
+	 * Unregistered (kernel default .mmio_enabled == NULL returns
+	 * PCI_ERS_RESULT_RECOVERED already).  Retained for future
+	 * diagnostic hook-in; re-add to dx_dma_err_handler if needed.
+	 */
+	(void)pdev;
+	return PCI_ERS_RESULT_RECOVERED;
 }
 
 #ifdef CONFIG_PCI_IOV
@@ -698,33 +1055,96 @@ static int dx_dma_pcie_sriov_configure(struct pci_dev *pdev, int num_vfs)
 static void dx_dma_pcie_shutdown(struct pci_dev *pdev)
 {
 	struct dw_edma_chip *chip = pci_get_drvdata(pdev);
+	struct dw_edma *dw;
+	enum dx_link_state link_state;
+	u16 command = 0;
+	int ret;
+	bool mmio_safe;
+
 	if (!chip || !chip->dw) {
 		pci_err(pdev, "Invalid chip data during shutdown\n");
 		return;
 	}
+
+	dw = chip->dw;
+	pci_info(pdev, "shutdown: quiescing DMA and stopping background workers\n");
+	WRITE_ONCE(dw->shutting_down, true);
+	atomic_set(&dw->background_recovery_paused, 1);
+	dx_link_health_stop(dw);
+	link_state = dx_pcie_check_link_health(dw);
+	ret = pci_read_config_word(pdev, PCI_COMMAND, &command);
+	mmio_safe = link_state == DX_LINK_UP &&
+		    ret == PCIBIOS_SUCCESSFUL &&
+		    (command & PCI_COMMAND_MEMORY);
+	if (mmio_safe)
+		dx_dma_quiesce_channels(dw);
+	else
+		dx_dma_quiesce_for_link_down(dw);
+
 	#ifdef RPI_BUILD
-	if(chip->dw->dx_ver == 3) {
-		writel(1, ((void*)(chip->dw->dx_msg->notify + EP_IRQ_RPI_SHUTDOWN_OFFSET)));
+	if (mmio_safe && dw->dx_ver == 3) {
+		if (dw->dx_msg && dw->dx_msg->notify) {
+			void __iomem *notify = (u8 __iomem *)dw->dx_msg->notify +
+				EP_IRQ_RPI_SHUTDOWN_OFFSET;
+
+			writel(1, notify);
+			readl(notify);
+		} else {
+			pci_warn(pdev, "RPI shutdown notify skipped: dx_msg not initialized\n");
+		}
+	} else if (!mmio_safe) {
+		pci_warn(pdev,
+			 "RPI shutdown notify skipped: MMIO unsafe (link_state=%d, command=0x%04x, ret=%d)\n",
+			 link_state, command, ret);
 	}
 	pci_err(pdev, ">> %s: RPI Shutdown\n", __func__);
 	#endif
+	pci_clear_master(pdev);
+	pci_disable_device(pdev);
 	pci_err(pdev, ">> %s: Standard Shutdown\n", __func__);
 }
 
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, DX_PCI_DEVICE_ID, DX_PCI_SUB_VENDOR_ID, DX_PCI_SUB_DEVICE_ID), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	/* TODO: Below should be removed after 2512 FW Release */
-	{ PCI_DEVICE(DX_PCI_VENDOR_ID, DX_PCI_DEVICE_ID), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) }, 
-	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 0x0001), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	/* TODO: deprecation in 261231 */
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
+		DX_PCI_LEGACY_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
+		DX_PCI_LEGACY_DEVICE_ID, 
+		DX_PCI_SUB_VENDOR_ID, 
+		DX_PCI_LEGACY_SUB_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	/* M1 / M1M / H1[M1] / H1[M1M] */
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
+		DX_M1_PCI_DEVICE_ID, 
+		DX_PCI_SUB_VENDOR_ID, 
+		DX_M1_PCI_SUB_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
+		DX_M1M_PCI_DEVICE_ID, 
+		DX_PCI_SUB_VENDOR_ID, 
+		DX_M1M_PCI_SUB_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
+		DX_H1_PCI_DEVICE_ID, 
+		DX_PCI_SUB_VENDOR_ID, 
+		DX_H1_PCI_SUB_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
+	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
+		DX_H1M_PCI_DEVICE_ID, 
+		DX_PCI_SUB_VENDOR_ID, 
+		DX_H1M_PCI_SUB_DEVICE_ID
+		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, dx_dma_pcie_id_table);
 
 static const struct pci_error_handlers dx_dma_err_handler = {
 	.error_detected = dx_dma_pcie_error_detected,
-	.mmio_enabled	= dx_dma_pcie_error_mmio_enabled,
 	.slot_reset 	= dx_dma_pcie_error_slot_reset,
-	.resume 		= dx_dma_pcie_error_resume,
+	.resume 	= dx_dma_pcie_error_resume,
+	.reset_prepare	= dx_dma_pcie_reset_prepare,
+	.reset_done	= dx_dma_pcie_reset_done,
 };
 
 static struct pci_driver dx_dma_pcie_driver = {
@@ -736,9 +1156,9 @@ static struct pci_driver dx_dma_pcie_driver = {
 	.err_handler	= &dx_dma_err_handler,
 #ifdef CONFIG_PM_SLEEP
 	.driver		= {
-		pm: &dx_pcie_pm_ops,
+		.pm	= &dx_pcie_pm_ops,
 	},
-#endif /* CONFIG_PM_SLEEP */
+#endif
 #ifdef CONFIG_PCI_IOV
 	.sriov_configure = dx_dma_pcie_sriov_configure,
 #endif
@@ -754,13 +1174,21 @@ static int dx_dma_mod_init(void)
 		return rv;
 	dw_edma_thread_probe();
 
-	return pci_register_driver(&dx_dma_pcie_driver);
+	rv = pci_register_driver(&dx_dma_pcie_driver);
+	if (rv < 0) {
+		dx_cdev_cleanup();
+		return rv;
+	}
+
+	dx_dma_sysfs_create(&dx_dma_pcie_driver);
+	return 0;
 }
 
 static void dx_dma_mod_exit(void)
 {
 	/* unregister this driver from the PCI bus driver */
 	dbg_init("pci_unregister_driver.\n");
+	dx_dma_sysfs_remove(&dx_dma_pcie_driver);
 	pci_unregister_driver(&dx_dma_pcie_driver);
 	dx_cdev_cleanup();
 }

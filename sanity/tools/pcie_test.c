@@ -91,14 +91,14 @@ static int g_fd = -1;
 static dxrt_device_info_t g_dev_info;
 
 /* Utility functions */
-void print_header(const char *title) {
+static void print_header(const char *title) {
     printf("\n");
     printf("================================================================================\n");
     printf("  %s\n", title);
     printf("================================================================================\n");
 }
 
-void print_result(const char *test_name, int success) {
+static void print_result(const char *test_name, int success) {
     if (success) {
         printf("[%s✓%s] %s\n", COLOR_GREEN, COLOR_RESET, test_name);
     } else {
@@ -106,7 +106,7 @@ void print_result(const char *test_name, int success) {
     }
 }
 
-void print_info(const char *format, ...) {
+static void print_info(const char *format, ...) {
     va_list args;
     printf("%s[INFO]%s ", COLOR_BLUE, COLOR_RESET);
     va_start(args, format);
@@ -115,7 +115,7 @@ void print_info(const char *format, ...) {
     printf("\n");
 }
 
-void print_error(const char *format, ...) {
+static void print_error(const char *format, ...) {
     va_list args;
     printf("%s[ERROR]%s ", COLOR_RED, COLOR_RESET);
     va_start(args, format);
@@ -124,17 +124,8 @@ void print_error(const char *format, ...) {
     printf("\n");
 }
 
-void print_warning(const char *format, ...) {
-    va_list args;
-    printf("%s[WARN]%s ", COLOR_YELLOW, COLOR_RESET);
-    va_start(args, format);
-    vprintf(format, args);
-    va_end(args);
-    printf("\n");
-}
-
 /* Test functions */
-int test_open_device(const char *dev_path) {
+static int test_open_device(const char *dev_path) {
     print_header("Test 1: Open Device");
     
     g_fd = open(dev_path, O_RDWR);
@@ -149,7 +140,7 @@ int test_open_device(const char *dev_path) {
     return 0;
 }
 
-int test_identify_device(void) {
+static int test_identify_device(void) {
     print_header("Test 2: Identify Device (DXRT_CMD_IDENTIFY_DEVICE)");
     
     dxrt_message_t msg;
@@ -187,7 +178,7 @@ int test_identify_device(void) {
     return 0;
 }
 
-int test_write_memory(void) {
+static int test_write_memory(void) {
     print_header("Test 3: Write Memory (DXRT_CMD_WRITE_MEM)");
     
     if (g_dev_info.mem_size == 0) {
@@ -205,7 +196,7 @@ int test_write_memory(void) {
     }
     
     // Fill with test pattern
-    for (int i = 0; i < TEST_DATA_SIZE / sizeof(uint32_t); i++) {
+    for (size_t i = 0; i < TEST_DATA_SIZE / sizeof(uint32_t); i++) {
         test_data[i] = (i % 2) ? TEST_PATTERN_1 : TEST_PATTERN_2;
     }
     
@@ -242,7 +233,7 @@ int test_write_memory(void) {
     return 0;
 }
 
-int test_read_memory(void) {
+static int test_read_memory(void) {
     print_header("Test 4: Read Memory (DXRT_CMD_READ_MEM)");
     
     if (g_dev_info.mem_size == 0) {
@@ -290,11 +281,11 @@ int test_read_memory(void) {
     
     // Verify data
     int errors = 0;
-    for (int i = 0; i < TEST_DATA_SIZE / sizeof(uint32_t); i++) {
+    for (size_t i = 0; i < TEST_DATA_SIZE / sizeof(uint32_t); i++) {
         uint32_t expected = (i % 2) ? TEST_PATTERN_1 : TEST_PATTERN_2;
         if (read_data[i] != expected) {
             if (errors < 10) {  // Print first 10 errors
-                print_error("Data mismatch at index %d: expected 0x%08x, got 0x%08x",
+                print_error("Data mismatch at index %zu: expected 0x%08x, got 0x%08x",
                     i, expected, read_data[i]);
             }
             errors++;
@@ -314,14 +305,14 @@ int test_read_memory(void) {
     return 0;
 }
 
-void cleanup(void) {
+static void cleanup(void) {
     if (g_fd >= 0) {
         close(g_fd);
         g_fd = -1;
     }
 }
 
-void print_usage(const char *prog_name) {
+static void print_usage(const char *prog_name) {
     printf("Usage: %s [device_path]\n", prog_name);
     printf("\n");
     printf("Options:\n");

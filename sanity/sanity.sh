@@ -10,11 +10,19 @@
 
 LOG_DIR="result"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/sanity_check_result_$(date +'%Y%m%d_%H%M%S').log"
-DMESG_FILE="$LOG_DIR/dmesg_$(date +'%Y%m%d_%H%M%S').log"
-PCIE_INFO_FILE="$LOG_DIR/pcie_$(date +'%Y%m%d_%H%M%S').log"
+TS="$(date +'%Y%m%d_%H%M%S')"
+LOG_FILE="$LOG_DIR/sanity_check_result_${TS}.log"
+DMESG_FILE="$LOG_DIR/dmesg_${TS}.log"
+DMESG_FILTERED_FILE="$LOG_DIR/dmesg_filtered_${TS}.log"
+PCIE_INFO_FILE="$LOG_DIR/pcie_${TS}.log"
+SYSINFO_FILE="$LOG_DIR/sysinfo_${TS}.log"
+DRVINFO_FILE="$LOG_DIR/drvinfo_${TS}.log"
+NPUSTATE_FILE="$LOG_DIR/npustate_${TS}.log"
+BUNDLE_FILE="$LOG_DIR/dxrt_issue_bundle_${TS}.tar.gz"
 
 DX_VENDOR_ID="1ff4"
+# Supported device IDs: M1_LEGACY=0x0000 M1=0x0100 M1M=0x0110 H1[M1]=0x0101 H1[M1M]=0x0111 
+DX_SUPPORTED_DEV_IDS="0000 0100 0110 0101 0111"
 RT_DRV_KO="dxrt_driver"
 PCIE_DRV_KO="dx_dma"
 
@@ -37,15 +45,19 @@ function ExtractString() {
 }
 
 function GetPCIeId() {
-    local temp=$(lspci -n | grep "$1" | tr ' ' '\n' | grep "[0-9]:*\.")
+    local vendor="$1"
     local ext_temp=''
-    if [ "$temp" != "" ]; then
-        for id in ${temp}; do
-            ext_temp+=$(ExtractString "${id}")
-            ext_temp+=" "
-        done
-        pci_id+=$(echo $ext_temp)
-    fi
+    for dev_id in $DX_SUPPORTED_DEV_IDS; do
+        local pattern="${vendor}:${dev_id}"
+        local temp=$(lspci -n | grep "$pattern" | tr ' ' '\n' | grep "[0-9]:*\.")
+        if [ "$temp" != "" ]; then
+            for id in ${temp}; do
+                ext_temp+=$(ExtractString "${id}")
+                ext_temp+=" "
+            done
+        fi
+    done
+    pci_id+=$(echo $ext_temp)
 }
 
 # ============================================
@@ -54,11 +66,25 @@ function GetPCIeId() {
 
 function SC_PCIeLinkUp() {
     echo "==== PCI Link-up Check ====" | tee -a "$LOG_FILE"
-    local DEV_NUM=$(lspci -n | grep -c "$DX_VENDOR_ID")
+    local DEV_NUM=0
+    for dev_id in $DX_SUPPORTED_DEV_IDS; do
+        local cnt=$(lspci -n | grep -c "${DX_VENDOR_ID}:${dev_id}")
+        DEV_NUM=$((DEV_NUM + cnt))
+    done
     if [ "$DEV_NUM" -gt 0 ]; then
-        echo "[OK] Vendor ID $DX_VENDOR_ID is present in the PCI devices. (num=$DEV_NUM)" | tee -a "$LOG_FILE"
+        echo "[OK] Supported DEEPX devices found. (num=$DEV_NUM)" | tee -a "$LOG_FILE"
+        lspci -n -d ${DX_VENDOR_ID}: | while read -r line; do
+            echo "  $line" | tee -a "$LOG_FILE"
+        done
     else
-        echo "[ERROR] Vendor ID $DX_VENDOR_ID is NOT found in the PCI devices." | tee -a "$LOG_FILE"
+        echo "[ERROR] No supported DEEPX devices found (vendor=$DX_VENDOR_ID, device=$DX_SUPPORTED_DEV_IDS)." | tee -a "$LOG_FILE"
+        local ALL_DX=$(lspci -n | grep -c "$DX_VENDOR_ID")
+        if [ "$ALL_DX" -gt 0 ]; then
+            echo "[INFO] Other DEEPX vendor devices present but not supported by this driver:" | tee -a "$LOG_FILE"
+            lspci -n -d ${DX_VENDOR_ID}: | while read -r line; do
+                echo "  $line" | tee -a "$LOG_FILE"
+            done
+        fi
         return 1
     fi
     return 0
@@ -194,16 +220,160 @@ function SC_DKMS_Check() {
 }
 
 function CaptureDmesg() {
-    sudo dmesg > "$DMESG_FILE"
+    sudo dmesg > "$DMESG_FILE" 2>/dev/null
     echo "dmesg logs saved to: $DMESG_FILE" | tee -a "$LOG_FILE"
+    # Filtered dmesg for quick scan in tickets
+    sudo dmesg 2>/dev/null | grep -iE "dxrt|dx_dma|dx_dma_pcie|pcie|aer|npu|iommu" > "$DMESG_FILTERED_FILE"
+    echo "filtered dmesg saved to: $DMESG_FILTERED_FILE" | tee -a "$LOG_FILE"
 }
 
 function CapturePCIeInfo() {
-    touch $PCIE_INFO_FILE
+    : > "$PCIE_INFO_FILE"
+    {
+        echo "==== lspci topology (-tv) ===="
+        lspci -tv 2>/dev/null
+        echo ""
+        echo "==== lspci -nn (DEEPX devices) ===="
+        lspci -nn -d ${DX_VENDOR_ID}: 2>/dev/null
+        echo ""
+    } >> "$PCIE_INFO_FILE"
     for id in ${pci_id}; do
-        sudo lspci -vvv -s ${id} >> "$PCIE_INFO_FILE"
+        {
+            echo "============================================================"
+            echo "==== PCIe device $id (lspci -vvv) ===="
+            echo "============================================================"
+            sudo lspci -vvv -s ${id} 2>/dev/null
+            echo ""
+            echo "==== Link / AER sysfs ($id) ===="
+            local sysdir="/sys/bus/pci/devices/0000:${id}"
+            for f in current_link_speed current_link_width max_link_speed max_link_width \
+                     aer_dev_correctable aer_dev_fatal aer_dev_nonfatal; do
+                if [[ -r "$sysdir/$f" ]]; then
+                    echo "--- $f ---"
+                    cat "$sysdir/$f" 2>/dev/null
+                fi
+            done
+            echo ""
+        } >> "$PCIE_INFO_FILE"
     done
     echo "PCIe information saved to: $PCIE_INFO_FILE" | tee -a "$LOG_FILE"
+}
+
+function CollectSystemInfo() {
+    echo "==== System Info Collection ====" | tee -a "$LOG_FILE"
+    {
+        echo "==== Date / Host ===="
+        date
+        echo "hostname: $(hostname)"
+        echo "user    : $(whoami)"
+        echo "uptime  : $(uptime)"
+        echo ""
+        echo "==== uname -a ===="
+        uname -a
+        echo ""
+        echo "==== /etc/os-release ===="
+        cat /etc/os-release 2>/dev/null
+        echo ""
+        echo "==== lscpu (head) ===="
+        lscpu 2>/dev/null | head -25
+        echo ""
+        echo "==== Memory (free -h) ===="
+        free -h 2>/dev/null
+        echo ""
+        echo "==== Kernel cmdline ===="
+        cat /proc/cmdline 2>/dev/null
+        echo ""
+        echo "==== IOMMU status (dmesg) ===="
+        sudo dmesg 2>/dev/null | grep -iE "iommu|dmar|amd-vi" | head -20
+        echo ""
+        echo "==== CPU governor ===="
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            [[ -r "$f" ]] && echo "$f: $(cat "$f")"
+        done | head -8
+    } > "$SYSINFO_FILE" 2>&1
+    echo "system info saved to: $SYSINFO_FILE" | tee -a "$LOG_FILE"
+}
+
+function CollectDriverInfo() {
+    echo "==== Driver / FW Info Collection ====" | tee -a "$LOG_FILE"
+    {
+        echo "==== modinfo $RT_DRV_KO ===="
+        modinfo $RT_DRV_KO 2>/dev/null
+        echo ""
+        echo "==== modinfo $PCIE_DRV_KO ===="
+        modinfo $PCIE_DRV_KO 2>/dev/null
+        echo ""
+        echo "==== Module parameters: $RT_DRV_KO ===="
+        local pdir="/sys/module/${RT_DRV_KO}/parameters"
+        if [[ -d "$pdir" ]]; then
+            for p in "$pdir"/*; do
+                [[ -r "$p" ]] && echo "$(basename "$p") = $(cat "$p" 2>/dev/null)"
+            done
+        else
+            echo "(module not loaded)"
+        fi
+        echo ""
+        echo "==== Module parameters: $PCIE_DRV_KO ===="
+        pdir="/sys/module/${PCIE_DRV_KO}/parameters"
+        if [[ -d "$pdir" ]]; then
+            for p in "$pdir"/*; do
+                [[ -r "$p" ]] && echo "$(basename "$p") = $(cat "$p" 2>/dev/null)"
+            done
+        else
+            echo "(module not loaded)"
+        fi
+        echo ""
+        echo "==== lsmod (DEEPX related) ===="
+        lsmod | grep -E "^(dxrt_driver|dx_dma|pcie_vnpu_dx)" 2>/dev/null
+        echo ""
+        echo "==== release.ver files ===="
+        local sd="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+        for f in "$sd/release.ver" "$sd/modules/pci_deepx/release.ver" "$sd/modules/pci_xilinx/release.ver"; do
+            [[ -r "$f" ]] && echo "$f: $(cat "$f")"
+        done
+    } > "$DRVINFO_FILE" 2>&1
+    echo "driver info saved to: $DRVINFO_FILE" | tee -a "$LOG_FILE"
+}
+
+function CollectNPUState() {
+    echo "==== NPU Runtime State Collection ====" | tee -a "$LOG_FILE"
+    {
+        echo "==== /sys/class/dxrt/* ===="
+        for d in /sys/class/dxrt/dxrt*; do
+            [[ -d "$d" ]] || continue
+            echo "--- $d ---"
+            ls -la "$d" 2>/dev/null
+            if [[ -d "$d/recovery" ]]; then
+                echo "--- $d/recovery ---"
+                for f in "$d/recovery"/*; do
+                    [[ -r "$f" ]] && echo "$(basename "$f") = $(cat "$f" 2>/dev/null | head -5)"
+                done
+            fi
+        done
+        echo ""
+        echo "==== /proc/interrupts (DEEPX MSI) ===="
+        grep -E "dxrt|dx_dma|pcie-vnpu" /proc/interrupts 2>/dev/null
+        echo ""
+        echo "==== /proc/devices (char) ===="
+        awk '/^Character/{f=1;next}/^Block/{f=0}f' /proc/devices | grep -iE "dxrt|dx"
+    } > "$NPUSTATE_FILE" 2>&1
+    echo "npu state saved to: $NPUSTATE_FILE" | tee -a "$LOG_FILE"
+}
+
+function MakeBundle() {
+    local files=()
+    for f in "$LOG_FILE" "$DMESG_FILE" "$DMESG_FILTERED_FILE" "$PCIE_INFO_FILE" \
+             "$SYSINFO_FILE" "$DRVINFO_FILE" "$NPUSTATE_FILE"; do
+        [[ -f "$f" ]] && files+=("$f")
+    done
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "[WARN] No log files to bundle." | tee -a "$LOG_FILE"
+        return 1
+    fi
+    tar czf "$BUNDLE_FILE" "${files[@]}" 2>/dev/null
+    echo "" | tee -a "$LOG_FILE"
+    echo "** Issue bundle created: $BUNDLE_FILE" | tee -a "$LOG_FILE"
+    echo "** Attach this file when filing a ticket." | tee -a "$LOG_FILE"
 }
 
 function SC_PCIeTest() {
@@ -257,24 +427,43 @@ function SC_PCIeTest() {
     fi
     
     # Run pcie_test and capture output
-    echo "[INFO] Running PCIe ioctl test..." | tee -a "$LOG_FILE"
-    
-    # Capture output and exit code properly
-    local TEST_OUTPUT
-    TEST_OUTPUT=$("$PCIE_TEST_BIN" 2>&1)
-    local TEST_EXIT_CODE=$?
-    
-    # Always save full output to log file
-    echo "$TEST_OUTPUT" >> "$LOG_FILE"
-    
+    echo "[INFO] Running PCIe ioctl test (repeat=${REPEAT_COUNT})..." | tee -a "$LOG_FILE"
+
+    local pass_cnt=0
+    local fail_cnt=0
+    local fail_attempts=""
+    local last_exit=0
+    local TEST_OUTPUT=""
+
+    for ((i=1; i<=REPEAT_COUNT; i++)); do
+        TEST_OUTPUT=$("$PCIE_TEST_BIN" 2>&1)
+        last_exit=$?
+        {
+            echo "---- pcie_test attempt $i/$REPEAT_COUNT (exit=$last_exit) ----"
+            echo "$TEST_OUTPUT"
+        } >> "$LOG_FILE"
+        if [[ $last_exit -eq 0 ]]; then
+            pass_cnt=$((pass_cnt+1))
+        else
+            fail_cnt=$((fail_cnt+1))
+            fail_attempts+="$i(exit=$last_exit) "
+        fi
+    done
+
+    local TEST_EXIT_CODE=0
+    if [[ $fail_cnt -gt 0 ]]; then
+        TEST_EXIT_CODE=$last_exit
+    fi
+
     # Check test results
     if [[ $TEST_EXIT_CODE -eq 0 ]]; then
-        echo "[OK] PCIe communication test PASSED" | tee -a "$LOG_FILE"
+        echo "[OK] PCIe communication test PASSED (${pass_cnt}/${REPEAT_COUNT})" | tee -a "$LOG_FILE"
     else
-        # On failure, show detailed output to screen
+        # On failure, show last attempt output to screen
         echo "$TEST_OUTPUT"
         echo ""
-        echo "[ERROR] PCIe communication test FAILED (exit code: $TEST_EXIT_CODE)" | tee -a "$LOG_FILE"
+        echo "[ERROR] PCIe communication test FAILED (${fail_cnt}/${REPEAT_COUNT}) - failed attempts: ${fail_attempts}" | tee -a "$LOG_FILE"
+        echo "[ERROR] Last exit code: $TEST_EXIT_CODE" | tee -a "$LOG_FILE"
         
         # Detailed error based on exit code
         case $TEST_EXIT_CODE in
@@ -314,22 +503,65 @@ function SC_PCIeTest() {
 # ============================================
 
 function show_usage() {
-    echo "Usage: sudo ./sanity_check.sh"
+    echo "Usage: sudo ./sanity_check.sh [OPTIONS]"
     echo ""
-    echo "This script checks the DEEPX driver installation and status:"
+    echo "This script checks the DEEPX driver installation and status,"
+    echo "and collects context information useful for issue triage:"
     echo "  - PCIe device link-up"
     echo "  - Device files (/dev/dxrt*)"
     echo "  - Kernel modules (dxrt_driver, dx_dma)"
     echo "  - Driver installation (legacy, DKMS)"
+    echo "  - PCIe ioctl communication test"
+    echo "  - System info, driver/FW info, NPU runtime state (always collected)"
+    echo "  - dmesg, PCIe detail, issue bundle (tar.gz) -- collected on FAIL"
+    echo ""
+    echo "Options:"
+    echo "  -l, --collect-logs    Also collect dmesg/PCIe logs and create bundle"
+    echo "                        on PASS (for internal development use)"
+    echo "  -r, --repeat N        Repeat PCIe ioctl test N times to catch"
+    echo "                        intermittent failures (default: 1)"
+    echo "  -h, --help            Show this help message"
     echo ""
     echo "Results are saved to: $LOG_DIR/"
 }
 
-# Check if help is requested
-if [[ "$1" == "help" || "$1" == "-h" || "$1" == "--help" ]]; then
-    show_usage
-    exit 0
-fi
+# Parse options
+COLLECT_LOGS=0
+REPEAT_COUNT=1
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        help|-h|--help)
+            show_usage
+            exit 0
+            ;;
+        -l|--collect-logs)
+            COLLECT_LOGS=1
+            shift
+            ;;
+        -r|--repeat)
+            shift
+            if [[ -z "$1" || ! "$1" =~ ^[0-9]+$ || "$1" -lt 1 ]]; then
+                echo "Error: --repeat requires a positive integer"
+                exit 1
+            fi
+            REPEAT_COUNT=$1
+            shift
+            ;;
+        --repeat=*)
+            REPEAT_COUNT="${1#*=}"
+            if [[ ! "$REPEAT_COUNT" =~ ^[0-9]+$ || "$REPEAT_COUNT" -lt 1 ]]; then
+                echo "Error: --repeat requires a positive integer"
+                exit 1
+            fi
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
 
 # Check root permission
 if [[ $(id -u) -ne 0 ]]; then
@@ -338,9 +570,20 @@ if [[ $(id -u) -ne 0 ]]; then
 fi
 
 # Start sanity check
+echo "============================================================================" | tee "$LOG_FILE"
+echo "==== Driver Sanity Check - $(date) ====" | tee -a "$LOG_FILE"
+echo "Host        : $(hostname)" | tee -a "$LOG_FILE"
+echo "User        : $(whoami)" | tee -a "$LOG_FILE"
+echo "Kernel      : $(uname -r) ($(uname -m))" | tee -a "$LOG_FILE"
+if [[ -r /etc/os-release ]]; then
+    echo "OS          : $(. /etc/os-release; echo "$PRETTY_NAME")" | tee -a "$LOG_FILE"
+fi
+RT_VER=$(modinfo -F version $RT_DRV_KO 2>/dev/null)
+DMA_VER=$(modinfo -F version $PCIE_DRV_KO 2>/dev/null)
+echo "Driver ver  : ${RT_DRV_KO}=${RT_VER:-N/A}  ${PCIE_DRV_KO}=${DMA_VER:-N/A}" | tee -a "$LOG_FILE"
+echo "Repeat      : ${REPEAT_COUNT}" | tee -a "$LOG_FILE"
+echo "Log file    : $(pwd)/$LOG_FILE" | tee -a "$LOG_FILE"
 echo "============================================================================" | tee -a "$LOG_FILE"
-echo "==== Driver Sanity Check - $(date) ====" | tee "$LOG_FILE"
-echo "Log file location: $(pwd)/$LOG_FILE" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Run all checks
@@ -360,6 +603,13 @@ SC_DKMS_Check
 SC_PCIeTest
 PCIE_TEST_STATUS=$?
 
+# Always collect triage context (system / driver / NPU state)
+echo "" | tee -a "$LOG_FILE"
+echo "==== Issue Triage Context Collection ====" | tee -a "$LOG_FILE"
+CollectSystemInfo
+CollectDriverInfo
+CollectNPUState
+
 # Summary
 echo "" | tee -a "$LOG_FILE"
 echo "============================================================================" | tee -a "$LOG_FILE"
@@ -367,16 +617,25 @@ echo "==========================================================================
 if [[ $VENDOR_STATUS -ne 0 || $DEV_STATUS -ne 0 || $DRIVER_STATUS -ne 0 || $PCIE_TEST_STATUS -ne 0 ]]; then
     echo "** Sanity check FAILED! Check logs at: $(pwd)/$LOG_FILE" | tee -a "$LOG_FILE"
     echo "** Please report this result to DEEPX with logs" | tee -a "$LOG_FILE"
-    
+
     CaptureDmesg
     CapturePCIeInfo
-    
+    MakeBundle
+
     echo "============================================================================" | tee -a "$LOG_FILE"
     exit 1
 else
     echo "** Sanity check PASSED!" | tee -a "$LOG_FILE"
     echo "** Driver is properly installed and running." | tee -a "$LOG_FILE"
     echo "** PCIe communication test: All ioctl commands verified successfully." | tee -a "$LOG_FILE"
+
+    if [[ $COLLECT_LOGS -eq 1 ]]; then
+        echo "** Collecting full logs (--collect-logs)" | tee -a "$LOG_FILE"
+        CaptureDmesg
+        CapturePCIeInfo
+        MakeBundle
+    fi
+
     echo "============================================================================" | tee -a "$LOG_FILE"
     exit 0
 fi

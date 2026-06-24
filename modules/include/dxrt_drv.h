@@ -24,6 +24,7 @@
 #include <linux/kthread.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/atomic.h>
@@ -41,6 +42,9 @@
 #endif
 
 #define MODULE_NAME "dxrt"
+
+#define DXRT_MSG_DATA_ADDR(dev) \
+    DX_FIELD_ADDR((dev)->msg, dxrt_device_message_t, data)
 
 /* Default PCIe channel count used across the driver */
 #ifndef MAX_PCIE_CH_NUM
@@ -63,9 +67,25 @@ typedef enum {
     DXRT_EVENT_ERROR,
     DXRT_EVENT_NOTIFY_THROT,
     DXRT_EVENT_RECOVERY,
-    DXRT_EVENT_PROC_EXIT,      /* Process closed the device (contains proc_id) */
     DXRT_EVENT_NUM,
 } dxrt_event_t;
+
+/*
+ * Device-level operational state — tracked per dxdev, exposed via
+ * /sys/class/dxrt/dxrtN/recovery/link_state.  Separate from the PCIe
+ * transport's dx_link_state (held by dw_edma) because the transport
+ * may be healthy while FW is hung, and vice versa.
+ *
+ * See: docs/recovery/RECOVERY_IMPLEMENTATION_PLAN.md §1
+ */
+typedef enum {
+    DXRT_STATE_READY        = 0, /* normal operation                          */
+    DXRT_STATE_RECOVERING   = 1, /* transport-level recovery in flight        */
+    DXRT_STATE_TRANSPORT_OK = 2, /* link restored, readiness probe pending   */
+    DXRT_STATE_FW_HANG      = 3, /* readiness probe timed out — needs reset  */
+    DXRT_STATE_WAITING_USER = 4, /* FW cmd timeout — user decision required   */
+    DXRT_STATE_PERM_FAIL    = 5, /* retry threshold exceeded                  */
+} dxrt_dev_state_t;
 
 typedef enum _dxrt_error_t {
     ERR_NONE      = 0,
@@ -82,6 +102,15 @@ typedef enum _dxrt_error_t {
     ERR_PCIE_DMA_CH0_ABORT = 400,
     ERR_PCIE_DMA_CH1_ABORT,
     ERR_PCIE_DMA_CH2_ABORT,
+    /*
+     * Historical aliases for older link-down reporting.  Link-health
+     * recovery now reports link flaps via DX_EVENT_TYPE_RECOVERY with
+     * reason=DX_RECOVERY_REASON_LINK_FLAP instead of emitting these
+     * DMA-abort-shaped ERROR events.
+     */
+    ERR_PCIE_LINK_DOWN_CH0 = ERR_PCIE_DMA_CH0_ABORT,
+    ERR_PCIE_LINK_DOWN_CH1 = ERR_PCIE_DMA_CH1_ABORT,
+    ERR_PCIE_LINK_DOWN_CH2 = ERR_PCIE_DMA_CH2_ABORT,
     ERR_DEVICE_ERR        = 1000,
 } dxrt_error_t;
 
@@ -296,6 +325,29 @@ typedef enum {
     FWUPDATE_FORCE       = BIT(2),
 } dxrt_fwupdate_sub_cmd_t;
 
+/*
+ * FW image header (dx_fw_header_t) field locations needed by the driver to
+ * auto-detect the target firmware version before the DMA download.  We do not
+ * include the firmware header definition here; only the byte offset and length
+ * of the ASCII version string ("A.B.C") are required.
+ *
+ * dx_fw_header_t layout (see dx_fw .../plat/include/dx_header.h):
+ *   signature[16]                            @ 0x00
+ *   dx_fw_image_info_t images[8] (8 * 24)    @ 0x10
+ *   length, board_type, ddr_type (3 * 4)     @ 0xd0
+ *   char fw_ver[16]                          @ 0xdc
+ */
+#define DX_FW_HDR_VER_OFFSET   (0xdcU) /* byte offset of fw_ver[] in image */
+#define DX_FW_HDR_VER_LEN      (16U)   /* length of fw_ver[] in image      */
+
+/*
+ * Minimum firmware version that publishes the DLMSG boot-aware readiness
+ * block.  Encoded as A*100 + B*10 + C (matches dxdev.fw_ver), e.g. 2.7.0 = 270.
+ * Older images never set MAILBOX_READY, so post-update recovery must skip the
+ * mailbox-ready edge gate for them.
+ */
+#define DX_FW_DLMSG_MIN_VER    (270U)  /* FW 2.7.0 */
+
 #define DXRT_IOCTL_MAGIC     'D'
 typedef enum {
     DXRT_IOCTL_MESSAGE = _IOW(DXRT_IOCTL_MAGIC, 0, dxrt_message_t),
@@ -335,6 +387,44 @@ typedef enum {
     DW_DEV_MAX  = 4,
 } dw_dev_t;
 
+/*
+ * Boot-Aware Readiness extension (DLMSG bytes 0x20-0x3F).
+ *
+ * The lower 0x20 bytes are owned by ROM / 2nd-boot.  The upper 0x20
+ * bytes are reserved for RTOS-published readiness signals so the
+ * host can passively gate any mailbox traffic until FreeRTOS has
+ * actually brought the message path up.  All fields are written by
+ * the EP (RTOS) and read-only on the host.
+ *
+ * Writer ordering (RTOS side):
+ *   1. Zero ready_flags on early RTOS boot / PERST.
+ *   2. Set ready_magic = DX_DLMSG_READY_MAGIC and ready_version.
+ *   3. After message_init() / event group / IRQ enable, set the
+ *      individual flags then OR in MAILBOX_READY *last*.
+ *
+ * Reader (host) MUST validate ready_magic + ready_version before
+ * trusting any other field.
+ *
+ * The driver detects FW reboot purely via a TRUE -> FALSE -> TRUE
+ * edge on the MAILBOX_READY bit, so no persistent counter is required
+ * to survive cold-boot memory wipe.
+ */
+#define DX_DLMSG_READY_MAGIC    (0x52454144u) /* "READ" */
+#define DX_DLMSG_READY_VERSION  (1u)
+
+/* ready_flags bits */
+#define DX_DLMSG_READY_RTOS_BOOTED        BIT(0)
+#define DX_DLMSG_READY_PCIE_IRQ_READY     BIT(1)
+#define DX_DLMSG_READY_MESSAGE_TASK_READY BIT(2)
+#define DX_DLMSG_READY_MAILBOX_READY      BIT(3)
+
+/*
+ * Host gate: only MAILBOX_READY is the contract bit (set LAST by FW after
+ * all init steps). Other ready bits remain visible via dx_dlmsg_ready_flags()
+ * for diagnostics, but must NOT gate mailbox sends.
+ */
+#define DX_DLMSG_READY_REQUIRED   DX_DLMSG_READY_MAILBOX_READY
+
 typedef struct {
     uint8_t      magic[DX_DLMSG_MASIC_S]; /* 0x00 */
     uint32_t     mode;                    /* 0x08 */
@@ -346,6 +436,16 @@ typedef struct {
     uint32_t     dl_addr_s;               /* 0x14 */
     uint32_t     dl_addr_e;               /* 0x18 */
     uint32_t     bar_magic;               /* 0x1C */
+    /* ---- RTOS-published readiness (0x20..0x3F) ---- */
+    uint32_t     ready_magic;             /* 0x20 = DX_DLMSG_READY_MAGIC */
+    uint16_t     ready_version;           /* 0x24 */
+    uint16_t     ready_resv0;             /* 0x26 */
+    uint32_t     ready_flags;             /* 0x28 */
+    uint32_t     heartbeat;               /* 0x2C : optional, RTOS-maintained */
+    uint32_t     ready_resv1;             /* 0x30 */
+    uint32_t     ready_resv2;             /* 0x34 */
+    uint32_t     ready_resv3;             /* 0x38 */
+    uint32_t     ready_resv4;             /* 0x3C */
 } __attribute__ ((packed,aligned(4))) dx_download_msg;
 
 /**********************/
@@ -390,18 +490,18 @@ struct dxdev {
     uint32_t num_dma_ch;
     dxnpu_t *npu;
     // pcie : TODO
-    dxrt_device_message_t *msg;
+    dxrt_device_message_t __iomem *msg;
     struct mutex msg_lock;
-    uint32_t *log;
-    dx_download_msg *dl;
+    uint32_t __iomem *log;
+    dx_download_msg __iomem *dl;
 
     struct list_head sched;
     spinlock_t       sched_lock;
 
-    dxrt_queue_t *request_queue;        /* normal priority / queue0 */
-    dxrt_queue_t *request_queue1;       /* normal priority / queue1 */
-    dxrt_queue_t *request_queue2;       /* normal priority / queue2 */
-    dxrt_queue_t *request_high_queue;   /* high priority */
+    dxrt_queue_t __iomem *request_queue;        /* normal priority / queue0 */
+    dxrt_queue_t __iomem *request_queue1;       /* normal priority / queue1 */
+    dxrt_queue_t __iomem *request_queue2;       /* normal priority / queue2 */
+    dxrt_queue_t __iomem *request_high_queue;   /* high priority */
     struct mutex request_queue_mutex;
     struct mutex request_queue1_mutex;
     struct mutex request_queue2_mutex;
@@ -430,7 +530,21 @@ struct dxdev {
     dxrt_notify_throt_t notify;
     atomic_t recovering;            /* Recovery in progress flag */
     atomic_t recovery_epoch;        /* Monotonic counter: increments each recovery */
+    struct mutex recovery_mutex;    /* Serializes concurrent recovery requests */
     spinlock_t error_lock;
+
+    /* ---- Recovery state machine (see RECOVERY_OVERVIEW.md) ---- */
+    atomic_t dev_state;                 /* dxrt_dev_state_t */
+    atomic_t recovery_count;            /* cumulative successful full_reinits */
+    atomic_t recovery_fail_count;       /* cumulative failed recovery attempts */
+    atomic_t last_recovery_reason;      /* enum dx_recovery_reason */
+    u64  last_recovery_jiffies;         /* u64 on all archs; 64-bit atomicity not required (monotonic, advisory) */
+    /* Recovery readiness worker — runs after LINK_EV_UP / CPU_RESET to
+     * probe FW mailbox liveness before returning to READY. */
+    struct delayed_work recovery_ready_work;
+    /* PERM_FAIL sliding-window bookkeeping */
+    unsigned long perm_fail_window_start;
+    u32          perm_fail_count_in_window;
 };
 
 struct dxrt_driver {
@@ -443,7 +557,6 @@ struct dxrt_driver {
 
 struct dxrt_file_ctx {
     struct dxdev *dx;
-    pid_t tgid;
     atomic_t terminating;
 };
 
@@ -454,6 +567,36 @@ void dxrt_driver_cdev_deinit(struct dxrt_driver *drv);
 int dxrt_is_request_list_empty(dxrt_request_list_t *requests, spinlock_t *lock);
 int message_handler_general(struct dxdev *dx, dxrt_message_t *msg, struct dxrt_file_ctx *ctx);
 void dxrt_device_init(struct dxdev* dev);
+void dxrt_device_init_early(struct dxdev *dev);
+void dxrt_bind_pcie_resources(struct dxdev *dev, bool clear_queues);
+void dxrt_clear_all_pending(struct dxdev *dev);
+
+extern bool dxrt_fault_inject_skip_addr_check;
+
+/* ---- Recovery state / sysfs ---- */
+#if IS_ACCELERATOR
+int  dxrt_sysfs_attach(struct dxdev *dev);
+void dxrt_sysfs_detach(struct dxdev *dev);
+void dxrt_recovery_state_init(struct dxdev *dev);
+void dxrt_recovery_state_deinit(struct dxdev *dev);
+/* Called from dxrt_drv_message.c on link events to drive state/events. */
+void dxrt_link_event_notify(u32 dev_id, dx_pcie_link_event_t ev, void *data);
+void dxrt_kick_cpu_reset_recovery(struct dxdev *dev);
+void dxrt_kick_fw_update_recovery(struct dxdev *dev);
+void dxrt_kick_fw_update_recovery_nodlmsg(struct dxdev *dev);
+void dxrt_recovery_ready_work_fn(struct work_struct *work);
+/* Module params */
+extern unsigned int dxrt_perm_fail_window_ms;
+extern unsigned int dxrt_perm_fail_max_retries;
+extern bool         dxrt_auto_reset_on_fw_timeout;
+extern unsigned int dxrt_dlmsg_ready_timeout_ms;
+extern unsigned int dxrt_ping_timeout_ms;
+#else
+static inline int  dxrt_sysfs_attach(struct dxdev *dev)  { (void)dev; return 0; }
+static inline void dxrt_sysfs_detach(struct dxdev *dev)  { (void)dev; }
+static inline void dxrt_recovery_state_init(struct dxdev *dev)   { (void)dev; }
+static inline void dxrt_recovery_state_deinit(struct dxdev *dev) { (void)dev; }
+#endif
 /* Queue */
 void dxrt_init_queue(dxrt_queue_t __iomem *q, uint32_t max_count, uint32_t elem_size);
 void dxrt_enable_queue(dxrt_queue_t __iomem *q);
@@ -476,6 +619,41 @@ bool dx_get_flash_ready(dx_download_msg __iomem *msg, int timeout);
 bool dx_get_flash_done(dx_download_msg __iomem *msg);
 int8_t dx_get_boot_step(dx_download_msg __iomem *msg);
 int8_t dx_get_dl_status(dx_download_msg __iomem *msg);
+
+/* Boot-Aware readiness helpers (see DLMSG ready_flags above) */
+bool     dx_dlmsg_ready_valid(dx_download_msg __iomem *msg);
+uint32_t dx_dlmsg_ready_flags(dx_download_msg __iomem *msg);
+bool     dx_dlmsg_mailbox_ready(dx_download_msg __iomem *msg);
+bool     dx_dlmsg_wait_mailbox_ready(dx_download_msg __iomem *msg,
+                                     unsigned int timeout_ms);
+
+/* ---- DXRT_CMD_PCIE subcommands (must match firmware dx_message.h) ---- */
+/* Existing: 0..3 owned by GET_PCIE_INFO/CLEAR_ERR_STAT/LINK_FLAP/AER_INJECT */
+#define DX_PCIE_PING            (4u)
+#define DX_PCIE_CPU_RESET       (5u) /* test-only: FW-side cpu_reset_with_reason */
+
+#define DX_PCIE_PING_MAGIC      (0x50494E47u) /* "PING" */
+#define DX_PCIE_PONG_MAGIC      (0x504F4E47u) /* "PONG" */
+
+/* PING request payload (host -> EP, written into dev->msg->data[]) */
+typedef struct {
+    uint32_t magic;     /* DX_PCIE_PING_MAGIC */
+    uint32_t seq;       /* echoed back by EP */
+    uint32_t flags;     /* reserved, must be 0 */
+    uint32_t resv;
+} __attribute__((packed)) dx_pcie_ping_req_t;
+
+/* PING response payload (EP -> host) */
+typedef struct {
+    uint32_t magic;        /* DX_PCIE_PONG_MAGIC */
+    uint32_t seq;          /* echoed from request */
+    uint32_t ready_flags;  /* same encoding as DLMSG ready_flags */
+    uint32_t resv;
+    uint32_t fw_ver;
+    uint32_t uptime_ms;
+    uint32_t resv0;
+    uint32_t resv1;
+} __attribute__((packed)) dx_pcie_pong_resp_t;
 
 extern dxrt_message_handler message_handler[];
 
@@ -506,11 +684,8 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_enqueue_event_response(...) 0
 #define dx_pcie_dequeue_event_response(...) 0
 #define dx_pcie_clear_event_response(...) 0
-#define dx_pcie_enqueue_proc_exit_event(...) 0
-#define dx_pcie_dequeue_proc_exit_event(...) 0
-#define dx_pcie_is_proc_exit_pending(...) 0
-#define dx_pcie_clear_proc_exit_queue(...) 0
-#define dx_pcie_clear_proc_exit_for_pid(...) do {} while(0)
+#define dx_pcie_enqueue_recovery_event(...) do {} while(0)
+#define dx_pcie_enqueue_abort_event(...) do {} while(0)
 #define dx_pcie_notify_msg_to_device(...) 0
 #define dx_pcie_notify_req_to_device(...) 0
 #define dx_pcie_get_driver_info(...) 0

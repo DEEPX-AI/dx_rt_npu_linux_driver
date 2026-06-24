@@ -34,6 +34,8 @@ dxrt_driver-y := dxrt_drv.o dxrt_drv_cdev.o \
 		dxrt_drv_message.o dxrt_drv_queue.o \
 		dxrt_sched.o dxrt_drv_dl.o
 
+dxrt_driver-$(CONFIG_DX_AI_ACCEL_M1) += dxrt_drv_recovery.o
+
 dxrt_driver-$(CONFIG_DX_AI_STAND_V3) += dxrt_drv_npu.o dxrt_drv_thread.o dxrt_drv_npu_v3.o
 
 obj-$(CONFIG_DX_AI_ACCEL_RT) += dxrt_driver.o

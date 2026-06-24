@@ -40,6 +40,7 @@ override_dh_install:
 		--exclude=".cliff.toml" \
 		--exclude="sonar-project.properties" \
 		--exclude="debian" \
+		--exclude="docs" \
 		--exclude="release" \
 		--exclude="utils" \
 		--exclude="scripts" \
