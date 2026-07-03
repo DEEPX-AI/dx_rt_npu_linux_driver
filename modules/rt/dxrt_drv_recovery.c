@@ -502,9 +502,18 @@ void dxrt_kick_fw_update_recovery(struct dxdev *dev)
  * (no DLMSG ready_flags, no PING/PONG, no bt_step=DX_RTOS).  Use a dedicated
  * reason so the readiness worker skips every readiness probe and instead waits
  * a fixed settle window for the reboot to complete.
+ *
+ * Only reached when dxrt_update_firmware() detected the freshly-flashed image
+ * as legacy, i.e. this is a downgrade.  dlmsg_contract_seen may still be true
+ * from the previously-running modern FW; clear it here so dxrt_fw_mbox_blocked()
+ * stops requiring dx_dlmsg_mailbox_ready() (which the legacy image will never
+ * satisfy) and does not drop every mailbox command post-downgrade.  Caller
+ * (dxrt_update_firmware()) holds dev->msg_lock for this whole call, same as
+ * every other dlmsg_contract_seen access.
  */
 void dxrt_kick_fw_update_recovery_nodlmsg(struct dxdev *dev)
 {
+    dev->dlmsg_contract_seen = false;
     dxrt_kick_fw_reboot_recovery(dev, DX_RECOVERY_REASON_FW_UPDATE_NODLMSG,
         "fw_update_nodlmsg");
 }

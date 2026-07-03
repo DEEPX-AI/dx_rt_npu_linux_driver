@@ -1,4 +1,13 @@
 # RELEASE_NOTES
+## v2.5.1 / 2026-07-03
+
+### 1. Changed
+
+### 2. Fixed
+- Reject in-flight mailbox cmds during FW reboot, harden recovery sleep
+
+### 3. Added
+
 ## v2.5.0 / 2026-06-23
 ### 1. Changed
 - Improved device connection and reconnection handling to enhance resilience during temporary connectivity instability.

@@ -1,3 +1,9 @@
+dxrt-driver-dkms (2.5.1-2) unstable; urgency=medium
+
+  - Reject in-flight mailbox cmds during FW reboot, harden recovery sleep
+
+ -- dx-ci <dci@deepx.ai>  Fri, 03 Jul 2026 18:48:05 +0900
+
 dxrt-driver-dkms (2.5.0-2) unstable; urgency=medium
 
   - Improved device connection and reconnection handling to enhance resilience during temporary connectivity instability.
