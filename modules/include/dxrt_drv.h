@@ -494,6 +494,12 @@ struct dxdev {
     struct mutex msg_lock;
     uint32_t __iomem *log;
     dx_download_msg __iomem *dl;
+    /* One-way latch: set the first time a valid DLMSG readiness block is
+     * observed, proving the running FW implements the boot-aware readiness
+     * contract (FW >= 2.7.0). Legacy FW maps dev->dl but never publishes the
+     * readiness block, so this stays false and the mailbox gate is disabled
+     * for it. Written/read only under msg_lock at the gate call sites. */
+    bool dlmsg_contract_seen;
 
     struct list_head sched;
     spinlock_t       sched_lock;

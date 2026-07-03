@@ -318,6 +318,46 @@ static void dxrt_msg_to_dev(struct dxdev *dev, dxrt_message_t *msg)
 }
 
 /*
+ * dxrt_fw_mbox_blocked - True when it is unsafe to push a mailbox command
+ * to FW because the DLMSG readiness contract reports the mailbox is not up.
+ *
+ * This guards the normal runtime command path against an out-of-band FW
+ * reboot (e.g. an FCT test booting the device while the service is alive):
+ * without this gate the host would write cmd/size and copy payload into the
+ * FW shared mailbox while romcode/bootloader/FreeRTOS are re-initializing,
+ * corrupting the boot and provoking a polling_ack timeout -> recovery storm.
+ *
+ * When no DLMSG region is mapped (FPGA / DX_STD) there is nothing to gate on,
+ * so sends are allowed exactly as before.  The recovery path
+ * (DXRT_CMD_RECOVERY / FW update) deliberately does NOT use this gate because
+ * it must talk to a rebooting device.
+ *
+ * Legacy FW (< 2.7.0) maps the base DLMSG region (so dev->dl is non-NULL) but
+ * never publishes the boot-aware readiness block, so dx_dlmsg_mailbox_ready()
+ * is permanently false for it.  Gating on that alone would drop EVERY mailbox
+ * command with -EBUSY ("FW mailbox not ready ... cmd N dropped" storm) on
+ * legacy firmware.  Only engage the gate once we have positively observed a
+ * valid readiness block at least once (dlmsg_contract_seen latch): that proves
+ * the running FW speaks the DLMSG contract.  The latch is one-way and persists
+ * across FW reboots (the rebooted FW still speaks DLMSG); it is accessed under
+ * dev->msg_lock, which all gate call sites already hold.
+ */
+static inline bool dxrt_fw_mbox_blocked(struct dxdev *dev)
+{
+    if (!dev->dl)
+        return false;
+
+    if (!dev->dlmsg_contract_seen) {
+        if (dx_dlmsg_ready_valid(dev->dl))
+            dev->dlmsg_contract_seen = true;
+        else
+            return false;   /* legacy FW / not yet booted -- never gate */
+    }
+
+    return !dx_dlmsg_mailbox_ready(dev->dl);
+}
+
+/*
  * dxrt_msg_general - Read/Write data from/to the dxrt device 
  * @dev: The deepx device on kernel
  * @msg: User-space pointer including the data buffer
@@ -343,6 +383,12 @@ static int dxrt_msg_general(struct dxdev *dev, dxrt_message_t *msg, struct dxrt_
             ret = dxrt_dev_state_errno(dev);
             if (ret)
                 goto unlock_msg;
+            if (dxrt_fw_mbox_blocked(dev)) {
+                pr_warn_ratelimited(MODULE_NAME "%d: %s: FW mailbox not ready (rebooting?), cmd %u dropped\n",
+                    num, __func__, msg->cmd);
+                ret = -EBUSY;
+                goto unlock_msg;
+            }
             if (msg->size>0 && msg->size<sizeof(dxrt_device_message_t)) {
                 if (dxrt_copy_from_user_io(num, DXRT_MSG_DATA_ADDR(dev), (void __user*)msg->data, msg->size)) {
                     pr_debug("%d: %s: failed.\n", num, __func__);
@@ -576,6 +622,12 @@ static int dxrt_schedule(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fil
                 if (dev->msg) {
                     void __iomem *data_base = DXRT_MSG_DATA_ADDR(dev);
                     mutex_lock(&dev->msg_lock);
+                    if (dxrt_fw_mbox_blocked(dev)) {
+                        pr_warn_ratelimited(MODULE_NAME "%d: %s: FW mailbox not ready (rebooting?), sched sub_cmd %u dropped\n",
+                            num, __func__, msg->sub_cmd);
+                        mutex_unlock(&dev->msg_lock);
+                        return -EBUSY;
+                    }
                     dxrt_msg_to_dev(dev, msg);
                     writel(data.bound, data_base);
                     writel(data.queue, data_base + sizeof(u32));
@@ -1500,6 +1552,12 @@ static int dxrt_soc_custom(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_f
             mutex_unlock(&dev->msg_lock);
             return ret;
         }
+        if (dxrt_fw_mbox_blocked(dev)) {
+            pr_warn_ratelimited(MODULE_NAME "%d: %s: FW mailbox not ready (rebooting?), cmd %u dropped\n",
+                num, __func__, msg->cmd);
+            mutex_unlock(&dev->msg_lock);
+            return -EBUSY;
+        }
         if (msg->size>0 && msg->size<sizeof(dxrt_device_message_t))
         {
             char *buffer = kmalloc(msg->size, GFP_KERNEL);
@@ -2042,7 +2100,6 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg, s
  *
  * Return: 0 on success (FW boot complete, PING ok)
  *        -ETIMEDOUT if FW does not observably ack or does not finish reboot
- *        -ERESTARTSYS if interrupted by signal
  */
 #define DXRT_FW_CMD_ACK_WINDOW_MS   2000u
 
@@ -2100,10 +2157,14 @@ static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
         }
         if (time_after_eq(jiffies, ack_deadline))
             break;
-        if (msleep_interruptible(20)) {
-            ret = -ERESTARTSYS;
-            goto post_wait;
-        }
+        /* Recovery is a bounded (<=5s), device-wide critical operation that
+         * may be invoked from the syscall context of an exiting/killed
+         * process.  A fatal signal pending on the caller would make an
+         * interruptible sleep return instantly, aborting recovery before
+         * the FW reboot edge can be observed.  Use an uninterruptible,
+         * deadline-bounded sleep so NO signal (fatal or benign) can tear
+         * down recovery; the time_after_eq() checks guarantee termination. */
+        msleep(20);
     }
 
     if (!saw_drop)
@@ -2120,10 +2181,8 @@ static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
         }
         if (time_after_eq(jiffies, total_deadline))
             break;
-        if (msleep_interruptible(20)) {
-            ret = -ERESTARTSYS;
-            goto post_wait;
-        }
+        /* Uninterruptible, deadline-bounded: see Phase A rationale. */
+        msleep(20);
     }
 
 post_wait:
@@ -2167,7 +2226,7 @@ post_wait:
                 break;
             }
         }
-    } else if (ret != -ERESTARTSYS) {
+    } else {
         if (!saw_drop) {
             /* Phase A failure: MAILBOX_READY never dropped within the ack
              * window -> FW did not act on the recovery cmd.  Most likely
