@@ -41,6 +41,7 @@ enum DX_DMA_IOC_TYPES {
 	DX_DMA_IOC_INFO,
 	DX_DMA_IOC_OFFLINE,
 	DX_DMA_IOC_ONLINE,
+	DX_DMA_IOC_PERF_GET,
 	DX_DMA_IOC_MAX
 };
 
@@ -69,6 +70,24 @@ struct dx_dma_ioc_info {
 					struct dx_dma_ioc_info)
 #define DX_DMA_IOCOFFLINE	_IO(DX_DMA_IOC_MAGIC, DX_DMA_IOC_OFFLINE)
 #define DX_DMA_IOCONLINE	_IO(DX_DMA_IOC_MAGIC, DX_DMA_IOC_ONLINE)
+
+/* Perf profiling: per-channel phase timings (ns) */
+#define DX_DMA_PERF_MAX_PHASES	12  /* PCIE_PERF_MAX_T */
+struct dx_dma_ioc_perf {
+	struct dx_dma_ioc_base	base;
+	/* input: which channel to query */
+	unsigned char		dev_id;
+	unsigned char		dma_id;		/* engine index (npu_id) */
+	unsigned char		direction;	/* 0=write(H2C), 1=read(C2H) */
+	unsigned char		reserved;
+	/* output: per-phase avg latency (ns) and count */
+	unsigned long long	phase_avg_ns[DX_DMA_PERF_MAX_PHASES];
+	unsigned long long	count;
+	unsigned long long	size;
+};
+
+#define DX_DMA_IOCPERFGET	_IOWR(DX_DMA_IOC_MAGIC, DX_DMA_IOC_PERF_GET, \
+					struct dx_dma_ioc_perf)
 
 #define IOCTL_XDMA_ADDRMODE_SET	_IOW('q', 4, int)
 #define IOCTL_XDMA_ADDRMODE_GET	_IOR('q', 5, int)

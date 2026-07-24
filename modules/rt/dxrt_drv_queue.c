@@ -53,9 +53,8 @@ int dxrt_is_queue_full(dxrt_queue_t __iomem *q)
 
 int dxrt_lock_queue(dxrt_queue_t __iomem *q)
 {
-    int ret = 1;
     writel(DX_QUEUE_HOST_LOCK, &q->lock);
-    return ret;
+    return 1;
 }
 
 #define DXRT_ENQUEUE_TIMEOUT        (1000000) /* 1000ms */
@@ -112,13 +111,23 @@ int dxrt_enqueue(dxrt_queue_t __iomem *q, void *elem)
     u32 elem_size;
 
     pr_debug( "%s: %d\n", __func__, ((dxrt_request_acc_t*)elem)->req_id);
-    if (readl(&q->enable) == 0) return -EINVAL; 
+    if (readl(&q->enable) == 0) return -EINVAL;
 
+    /*
+     * The silent-link-down race (MMIO returns 0xFFFFFFFF) that an
+     * earlier defensive snapshot tried to catch here is already
+     * closed by the recovery FSM: callers gate on
+     * atomic_read(&dev->recovering) before reaching this hot path
+     * (see dxrt_npu_run_requset_acc), and the link-health worker
+     * flips that flag well before any 0xFFFFFFFF read can corrupt
+     * dx_memcpy_toio32's length argument.  Keeping this fast path
+     * minimal — each extra readl on x86 is ~0.5-1us of round-trip.
+     */
     elem_size = readl(&q->elem_size);
 
     rear = readl(&q->rear);
     dx_memcpy_toio32(
-        (void __iomem*)q + buffer_offset + (rear * elem_size),
+        (u8 __iomem *)q + buffer_offset + (rear * elem_size),
         elem,
         elem_size
     );

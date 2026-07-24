@@ -7,6 +7,7 @@
  */
 #include <linux/mutex.h>
 #include <linux/delay.h>
+#include <linux/rcupdate.h>
 
 // #include "dx_cdev_ctrl.h"
 #include "dw-edma-core.h"
@@ -49,17 +50,26 @@ typedef struct _message_ram_table {
 	uint32_t irq_offs;
 	uint32_t dl_offs;
 } message_ram_table;
-message_ram_table ep_ram_info;
+static message_ram_table ep_ram_info;
 
 typedef enum dxresp_lock_t {
     DX_RESP_UNLOCK  = 0,
     DX_RESP_LOCK    = 1,
 } dxresp_lock;
 
+static inline void __iomem *dx_resp_lock_addr(void __iomem *response)
+{
+	return (u8 __iomem *)response + 0x100;
+}
+
+static inline void __iomem *dx_notify_addr(struct dx_pcie_msg *dx_msg, u32 offset)
+{
+	return (u8 __iomem *)dx_msg->notify + offset;
+}
+
 #define RES_POOL_SIZE           (32)
 static uint32_t resp_pool_header[MAX_DEV_NUM][USER_NUM_MAX];
 static dx_pcie_response_list_t resp_pool[MAX_DEV_NUM][USER_NUM_MAX][RES_POOL_SIZE];
-static atomic_t resp_pool_drop_cnt[MAX_DEV_NUM];
 
 /* Callbacks for notifying RT module when responses/events are enqueued */
 static dx_pcie_response_cb_t response_callbacks[MAX_DEV_NUM];
@@ -67,35 +77,62 @@ static void *response_cb_data[MAX_DEV_NUM];
 static dx_pcie_event_cb_t event_callbacks[MAX_DEV_NUM];
 static void *event_cb_data[MAX_DEV_NUM];
 
+/* Link-event callback: RT module registers here to be told when the
+ * link-health worker observes EP-initiated link drop / restore. */
+static dx_pcie_link_event_cb_t link_event_callbacks[MAX_DEV_NUM];
+static void *link_event_cb_data[MAX_DEV_NUM];
+
 void __iomem *dx_pcie_get_message_area(u32 dev_id)
 {
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	void __iomem *reg = dw->npu_region[0].vaddr;
-	return reg + ep_ram_info.base_offs;
+	struct dw_edma *dw;
+
+	if (dev_id >= MAX_DEV_NUM)
+		return NULL;
+	dw = dx_dev_list_get(dev_id);
+	if (!dw)
+		return NULL;
+	return dw->npu_region[0].vaddr + ep_ram_info.base_offs;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_message_area);
 
 void __iomem *dx_pcie_get_log_area(u32 dev_id)
 {
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	void __iomem *reg = dw->npu_region[0].vaddr;
-	return reg + ep_ram_info.log_offs;
+	struct dw_edma *dw;
+
+	if (dev_id >= MAX_DEV_NUM)
+		return NULL;
+	dw = dx_dev_list_get(dev_id);
+	if (!dw)
+		return NULL;
+	return dw->npu_region[0].vaddr + ep_ram_info.log_offs;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_log_area);
 
 void __iomem *dx_pcie_get_dl_area(u32 dev_id)
 {
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	void __iomem *reg = dw->npu_region[0].vaddr;
-	return reg + ep_ram_info.dl_offs;
+	struct dw_edma *dw;
+
+	if (dev_id >= MAX_DEV_NUM)
+		return NULL;
+	dw = dx_dev_list_get(dev_id);
+	if (!dw)
+		return NULL;
+	return dw->npu_region[0].vaddr + ep_ram_info.dl_offs;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_dl_area);
 
 /* priority : high:10 / normal:0,1,2 (queue0,queue1...) */
 void __iomem *dx_pcie_get_request_queue(u32 dev_id, u32 priority)
 {
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	void __iomem *reg = dw->npu_region[0].vaddr;
+	struct dw_edma *dw;
+	void __iomem *reg;
+
+	if (dev_id >= MAX_DEV_NUM)
+		return NULL;
+	dw = dx_dev_list_get(dev_id);
+	if (!dw)
+		return NULL;
+	reg = dw->npu_region[0].vaddr;
 	if (dw->dx_ver == 2) {
 		reg = reg + ep_ram_info.req0_offs;
 	} else {
@@ -124,17 +161,24 @@ EXPORT_SYMBOL_GPL(dx_pcie_get_request_queue);
 
 int dx_pcie_clear_response_queue(u32 dev_id)
 {
-	struct dx_pcie_msg *dx_msg = dx_dev_list_get(dev_id)->dx_msg;
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct dx_pcie_msg *dx_msg;
 	int i;
+
+	if (!dw)
+		return -ENODEV;
+	dx_msg = dw->dx_msg;
 
 	for(i = 0; i < DX_PCIE_RESP_NUM; i++) {
 		dx_pcie_response_list_t *entry, *tmp;
-		spin_lock(&dx_msg->responses_lock[i]);
+		unsigned long flags;
+
+		spin_lock_irqsave(&dx_msg->responses_lock[i], flags);
 		list_for_each_entry_safe(entry, tmp, &dx_msg->responses[i].list, list) {
 			list_del_init(&entry->list);
 		}
 		resp_pool_header[dev_id][i] = 0;
-		spin_unlock(&dx_msg->responses_lock[i]);
+		spin_unlock_irqrestore(&dx_msg->responses_lock[i], flags);
 	}
 	return 0;
 }
@@ -143,7 +187,11 @@ EXPORT_SYMBOL_GPL(dx_pcie_clear_response_queue);
 int dx_pcie_is_response_queue_empty(u32 dev_id, int dma_ch)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
+
+	if (!dw)
+		return 1;
+	dx_msg = dw->dx_msg;
 
 	if(list_empty(&dx_msg->responses[dma_ch].list))
 		return 1;
@@ -156,14 +204,20 @@ void dx_pcie_enqueue_response(u32 dev_id, int dma_ch)
 {
 	unsigned long flags;
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	dx_pcie_response_list_t *entry;
 	uint32_t *header;
+	uint32_t proc_id;
 	dx_pcie_response_cb_t cb;
+	void *cb_data;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
 
 	spin_lock_irqsave(&dx_msg->responses_lock[dma_ch], flags);
 	header = &resp_pool_header[dev_id][dma_ch];
-	writel(DX_RESP_LOCK, ((void*)dx_msg->response[dma_ch]+0x100));
+	writel(DX_RESP_LOCK, dx_resp_lock_addr(dx_msg->response[dma_ch]));
 	(*header) %= RES_POOL_SIZE;
 	entry = &resp_pool[dev_id][dma_ch][(*header)++];
 
@@ -171,23 +225,30 @@ void dx_pcie_enqueue_response(u32 dev_id, int dma_ch)
 	 * remove it from the list before reuse. Without this, list_add_tail on an
 	 * already-linked node corrupts the doubly-linked list and causes kernel panic. */
 	if (!list_empty(&entry->list)) {
-		int drop_total = atomic_inc_return(&resp_pool_drop_cnt[dev_id]);
-		pr_warn("%s: dev_id %d, ch %d, pool[%d] overwritten (unconsumed resp req_id %d, total_drops %d)\n",
-			__func__, dw->idx, dma_ch, (*header) - 1, entry->response.req_id, drop_total);
+		pr_warn("%s: dev_id %d, ch %d, pool[%d] overwritten (unconsumed resp req_id %d)\n",
+			__func__, dw->idx, dma_ch, (*header) - 1, entry->response.req_id);
 		list_del_init(&entry->list);
 	}
 
 	dx_memcpy_fromio32(&entry->response, dx_msg->response[dma_ch], sizeof(dx_pcie_response_t));
+	proc_id = entry->response.proc_id;
 	list_add_tail(&entry->list, &dx_msg->responses[dma_ch].list);
-	dbg_msg("%s: dev_id %d, ch %d, %d, %d", __func__, dw->idx, dma_ch, entry->response.req_id, *header);
+	dbg_msg("%s: dev_id %d, ch %d, req_id %d, proc_id %d, pool %d",
+		__func__, dw->idx, dma_ch, entry->response.req_id,
+		proc_id, *header);
 
-	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[dma_ch]+0x100));
-	spin_unlock_irqrestore(&dx_msg->responses_lock[dma_ch], flags);
+	writel(DX_RESP_UNLOCK, dx_resp_lock_addr(dx_msg->response[dma_ch]));
 
-	/* Notify RT module that a response is available */
-	cb = READ_ONCE(response_callbacks[dev_id]);
+	/* Notify RT before dropping responses_lock so recovery queue-clear or
+	 * pool reuse cannot create a stale response credit for this entry. */
+	rcu_read_lock();
+	cb = smp_load_acquire(&response_callbacks[dev_id]);
+	cb_data = READ_ONCE(response_cb_data[dev_id]);
 	if (cb)
-		cb(dev_id, dma_ch, response_cb_data[dev_id]);
+		cb(dev_id, dma_ch, proc_id, cb_data);
+	rcu_read_unlock();
+
+	spin_unlock_irqrestore(&dx_msg->responses_lock[dma_ch], flags);
 }
 
 int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* response)
@@ -195,7 +256,11 @@ int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* respons
 	int ret;
 	unsigned long flags;
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
+
+	if (!dw)
+		return -ENODEV;
+	dx_msg = dw->dx_msg;
 
 	spin_lock_irqsave(&dx_msg->responses_lock[dma_ch], flags);
 	if(!list_empty(&dx_msg->responses[dma_ch].list))
@@ -217,36 +282,16 @@ int dx_pcie_dequeue_response(u32 dev_id, int dma_ch, dx_pcie_response_t* respons
 }
 EXPORT_SYMBOL_GPL(dx_pcie_dequeue_response);
 
-int dx_pcie_cleanup_responses_for_proc(u32 dev_id, uint32_t proc_id)
-{
-	int i, count = 0;
-	unsigned long flags;
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	dx_pcie_response_list_t *entry, *tmp;
-
-	for (i = 0; i < DX_PCIE_RESP_NUM; i++) {
-		spin_lock_irqsave(&dx_msg->responses_lock[i], flags);
-		list_for_each_entry_safe(entry, tmp, &dx_msg->responses[i].list, list) {
-			if (entry->response.proc_id == proc_id) {
-				dbg_msg("%s: dev_id %d, ch %d, proc %d removed",
-					__func__, dw->idx, i, proc_id);
-				list_del_init(&entry->list);
-				count++;
-			}
-		}
-		spin_unlock_irqrestore(&dx_msg->responses_lock[i], flags);
-	}
-	return count;
-}
-EXPORT_SYMBOL_GPL(dx_pcie_cleanup_responses_for_proc);
-
 void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	unsigned long flags;
 	dx_pcie_event_queue_t *q;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
 
 	spin_lock_irqsave(&dx_msg->event_lock, flags);
 	q = &dx_msg->event_queue;
@@ -257,11 +302,11 @@ void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code)
 			entry->event_type = DX_EVENT_TYPE_ERROR;
 			entry->dx_rt_err.err_code = err_code;
 		} else {
-			dx_memcpy_fromio32(entry, (dx_pcie_dev_event_t *)dx_msg->events,
+			dx_memcpy_fromio32(entry, dx_msg->events,
 					   sizeof(dx_pcie_dev_event_t));
 			dbg_msg("%s: dev_id %d, code:%d\n", __func__, dev_id,
 				entry->event_type);
-			dx_memset_io32((volatile void __iomem *)dx_msg->events,
+			dx_memset_io32(dx_msg->events,
 				       0x00, sizeof(dx_pcie_dev_event_t));
 		}
 		q->tail = (q->tail + 1) % DX_EVENT_QUEUE_SIZE;
@@ -284,12 +329,81 @@ void dx_pcie_enqueue_event_response(u32 dev_id, uint32_t err_code)
 
 	/* Notify RT module that an event is available */
 	{
-		dx_pcie_event_cb_t cb = READ_ONCE(event_callbacks[dev_id]);
+		dx_pcie_event_cb_t cb;
+
+		rcu_read_lock();
+		cb = smp_load_acquire(&event_callbacks[dev_id]);
 		if (cb)
-			cb(dev_id, event_cb_data[dev_id]);
+			cb(dev_id, READ_ONCE(event_cb_data[dev_id]));
+		rcu_read_unlock();
 	}
 }
 EXPORT_SYMBOL_GPL(dx_pcie_enqueue_event_response);
+
+/**
+ * dx_pcie_enqueue_recovery_event - Enqueue a DX_EVENT_TYPE_RECOVERY entry.
+ * @dev_id:              Device index
+ * @subcode:             enum dx_recovery_subcode
+ * @reason:              enum dx_recovery_reason (0 if not applicable)
+ * @recovery_count:      Cumulative successful recoveries (snapshot)
+ * @recovery_fail_count: Cumulative failed recovery attempts (snapshot)
+ * @dev_state:           Current dxrt_dev_state_t value (snapshot)
+ *
+ * Unlike dx_pcie_enqueue_event_response() which only carries an
+ * err_code, this helper fills the recovery union member so user-space
+ * can tell which phase of the recovery pass is firing without having
+ * to correlate with dmesg.  Safe from process context (callers are
+ * the RT link-event notify hook and the link-health worker).
+ */
+void dx_pcie_enqueue_recovery_event(u32 dev_id, uint32_t subcode,
+				    uint32_t reason,
+				    uint32_t recovery_count,
+				    uint32_t recovery_fail_count,
+				    uint32_t dev_state)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct dx_pcie_msg *dx_msg;
+	unsigned long flags;
+	dx_pcie_event_queue_t *q;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
+
+	spin_lock_irqsave(&dx_msg->event_lock, flags);
+	q = &dx_msg->event_queue;
+	if (q->count < DX_EVENT_QUEUE_SIZE) {
+		dx_pcie_dev_event_t *entry = &q->entries[q->tail];
+		memset(entry, 0, sizeof(*entry));
+		entry->event_type = DX_EVENT_TYPE_RECOVERY;
+		entry->dx_rt_recovery.subcode             = subcode;
+		entry->dx_rt_recovery.reason              = reason;
+		entry->dx_rt_recovery.recovery_count      = recovery_count;
+		entry->dx_rt_recovery.recovery_fail_count = recovery_fail_count;
+		entry->dx_rt_recovery.dev_state           = dev_state;
+		q->tail = (q->tail + 1) % DX_EVENT_QUEUE_SIZE;
+		q->count++;
+	} else {
+		pr_warn("%s: event queue full, dropping recovery event (subcode=%u)\n",
+			__func__, subcode);
+	}
+	spin_unlock_irqrestore(&dx_msg->event_lock, flags);
+
+	/* Wake HW event IRQ waitqueue — same reason as enqueue_event_response */
+	dx_pcie_interrupt_event_wakeup(dev_id);
+
+	/* Notify RT module that an event is available */
+	{
+		dx_pcie_event_cb_t cb;
+
+		rcu_read_lock();
+		cb = smp_load_acquire(&event_callbacks[dev_id]);
+		if (cb)
+			cb(dev_id, READ_ONCE(event_cb_data[dev_id]));
+		rcu_read_unlock();
+	}
+}
+EXPORT_SYMBOL_GPL(dx_pcie_enqueue_recovery_event);
 
 /**
  * dx_pcie_enqueue_abort_event - Enqueue enriched DMA abort event.
@@ -312,9 +426,13 @@ void dx_pcie_enqueue_abort_event(u32 dev_id, uint32_t err_code,
 				 const uint32_t *rd_ch_sts)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	unsigned long flags;
 	dx_pcie_event_queue_t *q;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
 
 	spin_lock_irqsave(&dx_msg->event_lock, flags);
 	q = &dx_msg->event_queue;
@@ -341,115 +459,39 @@ void dx_pcie_enqueue_abort_event(u32 dev_id, uint32_t err_code,
 
 	/* Notify RT module that an event is available */
 	{
-		dx_pcie_event_cb_t cb = READ_ONCE(event_callbacks[dev_id]);
+		dx_pcie_event_cb_t cb;
+
+		rcu_read_lock();
+		cb = smp_load_acquire(&event_callbacks[dev_id]);
 		if (cb)
-			cb(dev_id, event_cb_data[dev_id]);
+			cb(dev_id, READ_ONCE(event_cb_data[dev_id]));
+		rcu_read_unlock();
 	}
 }
 EXPORT_SYMBOL_GPL(dx_pcie_enqueue_abort_event);
 
 
-void dx_pcie_enqueue_proc_exit_event(u32 dev_id, pid_t proc_id)
-{
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	dx_pcie_proc_exit_queue_t *q = &dx_msg->proc_exit_queue;
-	unsigned long flags;
-
-	spin_lock_irqsave(&dx_msg->proc_exit_lock, flags);
-	if (q->count < DX_PROC_EXIT_QUEUE_SIZE) {
-		q->entries[q->tail].proc_id = proc_id;
-		q->tail = (q->tail + 1) % DX_PROC_EXIT_QUEUE_SIZE;
-		q->count++;
-		dbg_msg("%s: dev_id %d, proc_id %d queued (count=%d)\n",
-			__func__, dev_id, proc_id, q->count);
-	} else {
-		pr_warn("%s: proc_exit queue full, dropping proc_id %d\n",
-			__func__, proc_id);
-	}
-	spin_unlock_irqrestore(&dx_msg->proc_exit_lock, flags);
-}
-EXPORT_SYMBOL_GPL(dx_pcie_enqueue_proc_exit_event);
-
-int dx_pcie_dequeue_proc_exit_event(u32 dev_id, pid_t *proc_id)
-{
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	dx_pcie_proc_exit_queue_t *q = &dx_msg->proc_exit_queue;
-	unsigned long flags;
-	int ret = -1;
-
-	spin_lock_irqsave(&dx_msg->proc_exit_lock, flags);
-	if (q->count > 0) {
-		*proc_id = q->entries[q->head].proc_id;
-		q->head = (q->head + 1) % DX_PROC_EXIT_QUEUE_SIZE;
-		q->count--;
-		ret = 0;
-		dbg_msg("%s: dev_id %d, proc_id %d dequeued (count=%d)\n",
-			__func__, dev_id, *proc_id, q->count);
-	}
-	spin_unlock_irqrestore(&dx_msg->proc_exit_lock, flags);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(dx_pcie_dequeue_proc_exit_event);
-
-int dx_pcie_is_proc_exit_pending(u32 dev_id)
-{
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-
-	/* Return the count of pending proc_exit events */
-	return dx_msg->proc_exit_queue.count;
-}
-EXPORT_SYMBOL_GPL(dx_pcie_is_proc_exit_pending);
-
-void dx_pcie_clear_proc_exit_queue(u32 dev_id)
-{
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	dx_pcie_proc_exit_queue_t *q = &dx_msg->proc_exit_queue;
-	unsigned long flags;
-
-	spin_lock_irqsave(&dx_msg->proc_exit_lock, flags);
-	q->head = 0;
-	q->tail = 0;
-	q->count = 0;
-	spin_unlock_irqrestore(&dx_msg->proc_exit_lock, flags);
-}
-EXPORT_SYMBOL_GPL(dx_pcie_clear_proc_exit_queue);
-
-void dx_pcie_clear_proc_exit_for_pid(u32 dev_id, pid_t proc_id)
-{
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
-	dx_pcie_proc_exit_queue_t *q = &dx_msg->proc_exit_queue;
-	unsigned long flags;
-	dx_pcie_dev_proc_exit_t temp[DX_PROC_EXIT_QUEUE_SIZE];
-	int i, new_count = 0;
-
-	spin_lock_irqsave(&dx_msg->proc_exit_lock, flags);
-	/* Copy entries that do NOT match proc_id */
-	for (i = 0; i < q->count; i++) {
-		int idx = (q->head + i) % DX_PROC_EXIT_QUEUE_SIZE;
-		if (q->entries[idx].proc_id != (uint32_t)proc_id) {
-			temp[new_count++] = q->entries[idx];
-		}
-	}
-	/* Rebuild queue without matching entries */
-	q->head = 0;
-	q->tail = new_count;
-	q->count = new_count;
-	for (i = 0; i < new_count; i++)
-		q->entries[i] = temp[i];
-	spin_unlock_irqrestore(&dx_msg->proc_exit_lock, flags);
-}
-EXPORT_SYMBOL_GPL(dx_pcie_clear_proc_exit_for_pid);
-
 void dx_pcie_dequeue_event_response(u32 dev_id, dx_pcie_dev_event_t* response)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	unsigned long flags;
+
+	if (!dw) {
+		memset(response, 0, sizeof(*response));
+		return;
+	}
+	dx_msg = dw->dx_msg;
+
+	spin_lock_irqsave(&dx_msg->event_lock, flags);
+	if (dx_msg->event_queue.count > 0) {
+		*response = dx_msg->event_queue.entries[dx_msg->event_queue.head];
+		dx_msg->event_queue.head = (dx_msg->event_queue.head + 1) % DX_EVENT_QUEUE_SIZE;
+		dx_msg->event_queue.count--;
+		spin_unlock_irqrestore(&dx_msg->event_lock, flags);
+		return;
+	}
+	spin_unlock_irqrestore(&dx_msg->event_lock, flags);
 
 	dx_pcie_interrupt_event(dev_id);
 
@@ -468,7 +510,11 @@ EXPORT_SYMBOL_GPL(dx_pcie_dequeue_event_response);
 int dx_pcie_is_event_pending(u32 dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
+
+	if (!dw)
+		return 0;
+	dx_msg = dw->dx_msg;
 
 	/* Check if there are pending events in the circular buffer */
 	return dx_msg->event_queue.count > 0;
@@ -478,8 +524,12 @@ EXPORT_SYMBOL_GPL(dx_pcie_is_event_pending);
 void dx_pcie_clear_event_response(u32 dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	unsigned long flags;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
 
 	spin_lock_irqsave(&dx_msg->event_lock, flags);
 	dx_msg->event_queue.head = 0;
@@ -495,7 +545,7 @@ static uint32_t dx_pcie_is_notify_enable(struct dx_pcie_msg *dx_msg)
 {
 	uint32_t ret = 0, retry = 0;
 	while (retry++ < 1000) {
-		ret = readl((void*)(dx_msg->notify + EP_IRQ_MSG_EN_OFFSET));
+		ret = readl(dx_notify_addr(dx_msg, EP_IRQ_MSG_EN_OFFSET));
 		if (ret)
 			break;
 		udelay(10);
@@ -505,14 +555,32 @@ static uint32_t dx_pcie_is_notify_enable(struct dx_pcie_msg *dx_msg)
 void dx_pcie_notify_msg_to_device(u32 dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
+
+	if (!dw)
+		return;
+	dx_msg = dw->dx_msg;
 
 	if(dx_pcie_is_notify_enable(dx_msg)) {
 		if(dw->dx_ver == 3) {
-			writel(1, ((void*)(dx_msg->notify + EP_IRQ_MSG_OFFSET)));
+			writel(1, dx_notify_addr(dx_msg, EP_IRQ_MSG_OFFSET));
 		}
 	} else {
-		pr_err("Device error for interrupt\n");
+		/*
+		 * notify-enable bit on the EP did not become 1 within the
+		 * 10ms poll window.  This is *expected* during a FW
+		 * bootloader reboot kicked by DXRT_CMD_RECOVERY (the new FW
+		 * contract): the mailbox interface goes away while romcode/
+		 * bootloader/FreeRTOS re-initialize.  Demote the log to a
+		 * ratelimited warning so this normal transient does not look
+		 * like a hard fault and does not provoke userspace into
+		 * issuing another recovery on top of the one already in
+		 * flight.  Real link-down faults are reported via the
+		 * MMIO-0xFFFFFFFF path in dxrt_polling_ack() and the
+		 * link-health worker.
+		 */
+		pr_warn_ratelimited("dx_pcie: notify interface not ready (dev=%u) — FW may be rebooting\n",
+			dev_id);
 	}
 }
 EXPORT_SYMBOL_GPL(dx_pcie_notify_msg_to_device);
@@ -535,33 +603,38 @@ Return value:
 int dx_pcie_notify_req_to_device(u32 dev_id, u32 queue, u8 lock)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct dx_pcie_msg *dx_msg = dw->dx_msg;
+	struct dx_pcie_msg *dx_msg;
 	int ret = 0;
+
+	if (!dw)
+		return -ENODEV;
+	dx_msg = dw->dx_msg;
+
 	if(dw->dx_ver == 3) {
 		switch (queue) {
 			case DX_NORMAL_QUEUE0:
 				if (lock)
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE0_LOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE0_LOCK_OFFSET));
 				else
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE0_UNLOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE0_UNLOCK_OFFSET));
 				break;
 			case DX_NORMAL_QUEUE1:
 				if (lock)
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE1_LOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE1_LOCK_OFFSET));
 				else
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE1_UNLOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE1_UNLOCK_OFFSET));
 				break;
 			case DX_NORMAL_QUEUE2:
 				if (lock)
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE2_LOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE2_LOCK_OFFSET));
 				else
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_NORMAL_QUE2_UNLOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_NORMAL_QUE2_UNLOCK_OFFSET));
 				break;
 			case DX_HIGH_QUEUE:
 				if (lock)
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_HIGH_LOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_HIGH_LOCK_OFFSET));
 				else
-					writel(1, ((void*)(dx_msg->notify + EP_IRQ_HIGH_UNLOCK_OFFSET)));
+					writel(1, dx_notify_addr(dx_msg, EP_IRQ_HIGH_UNLOCK_OFFSET));
 				break;
 			default:
 				pr_err("%s:queue is not defined(%d)\n", __func__, queue);
@@ -599,44 +672,97 @@ static int dx_pcie_set_message_ram_offs(struct dw_edma *dw)
 
 void dx_pcie_register_response_callback(u32 dev_id, dx_pcie_response_cb_t cb, void *data)
 {
-	response_cb_data[dev_id] = data;
-	/* Ensure data is visible before callback pointer */
-	smp_wmb();
-	WRITE_ONCE(response_callbacks[dev_id], cb);
+	WRITE_ONCE(response_cb_data[dev_id], data);
+	smp_store_release(&response_callbacks[dev_id], cb);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_register_response_callback);
 
 void dx_pcie_unregister_response_callback(u32 dev_id)
 {
-	WRITE_ONCE(response_callbacks[dev_id], NULL);
-	smp_wmb();
-	response_cb_data[dev_id] = NULL;
+	smp_store_release(&response_callbacks[dev_id], NULL);
+	synchronize_rcu();
+	WRITE_ONCE(response_cb_data[dev_id], NULL);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_unregister_response_callback);
 
 void dx_pcie_register_event_callback(u32 dev_id, dx_pcie_event_cb_t cb, void *data)
 {
-	event_cb_data[dev_id] = data;
-	smp_wmb();
-	WRITE_ONCE(event_callbacks[dev_id], cb);
+	WRITE_ONCE(event_cb_data[dev_id], data);
+	smp_store_release(&event_callbacks[dev_id], cb);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_register_event_callback);
 
 void dx_pcie_unregister_event_callback(u32 dev_id)
 {
-	WRITE_ONCE(event_callbacks[dev_id], NULL);
-	smp_wmb();
-	event_cb_data[dev_id] = NULL;
+	smp_store_release(&event_callbacks[dev_id], NULL);
+	synchronize_rcu();
+	WRITE_ONCE(event_cb_data[dev_id], NULL);
 }
 EXPORT_SYMBOL_GPL(dx_pcie_unregister_event_callback);
 
+void dx_pcie_register_link_event_callback(u32 dev_id,
+					  dx_pcie_link_event_cb_t cb,
+					  void *data)
+{
+	if (dev_id >= MAX_DEV_NUM)
+		return;
+	WRITE_ONCE(link_event_cb_data[dev_id], data);
+	smp_store_release(&link_event_callbacks[dev_id], cb);
+}
+EXPORT_SYMBOL_GPL(dx_pcie_register_link_event_callback);
+
+void dx_pcie_unregister_link_event_callback(u32 dev_id)
+{
+	if (dev_id >= MAX_DEV_NUM)
+		return;
+	smp_store_release(&link_event_callbacks[dev_id], NULL);
+	synchronize_rcu();
+	WRITE_ONCE(link_event_cb_data[dev_id], NULL);
+}
+EXPORT_SYMBOL_GPL(dx_pcie_unregister_link_event_callback);
+
+/*
+ * dx_pcie_notify_link_event - Call the RT-module link-event handler
+ *
+ * Invoked from the link-health worker (process context) when the EP
+ * drops or restores its link without any AER/reset callback firing.
+ * The RT module uses this to set dev->recovering and wake waiters.
+ */
+void dx_pcie_notify_link_event(u32 dev_id, dx_pcie_link_event_t ev)
+{
+	dx_pcie_link_event_cb_t cb;
+	void *data;
+
+	if (dev_id >= MAX_DEV_NUM)
+		return;
+
+	rcu_read_lock();
+	cb = smp_load_acquire(&link_event_callbacks[dev_id]);
+	if (!cb)
+		goto out;
+
+	data = READ_ONCE(link_event_cb_data[dev_id]);
+	cb(dev_id, ev, data);
+
+out:
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(dx_pcie_notify_link_event);
+
 int dx_pcie_message_init(int dev_id)
 {
-	struct dw_edma *dw = dx_dev_list_get(dev_id);
-	struct device *dev = &dw->pdev->dev;
+	struct dw_edma *dw;
+	struct device *dev;
 	struct dx_pcie_msg *dx_msg;
 	int i, n;
 	int ret = 0;
+
+	if (dev_id < 0 || dev_id >= MAX_DEV_NUM)
+		return -EINVAL;
+	dw = dx_dev_list_get(dev_id);
+	if (!dw)
+		return -ENODEV;
+	dev = &dw->pdev->dev;
 	/* TODO - dx_msg is needed to per NPU and we should consider in case of one handler  */
 	dx_msg = devm_kcalloc(dev, 1, sizeof(struct dx_pcie_msg), GFP_KERNEL);
 	if (!dx_msg)
@@ -668,21 +794,15 @@ int dx_pcie_message_init(int dev_id)
 	spin_lock_init(&dx_msg->responses_lock[1]);
 	spin_lock_init(&dx_msg->responses_lock[2]);
 	spin_lock_init(&dx_msg->event_lock);
-	spin_lock_init(&dx_msg->proc_exit_lock);
-
-	/* Initialize proc_exit_queue */
-	dx_msg->proc_exit_queue.head = 0;
-	dx_msg->proc_exit_queue.tail = 0;
-	dx_msg->proc_exit_queue.count = 0;
 
 	/* Initialize event_queue (circular buffer) */
 	dx_msg->event_queue.head = 0;
 	dx_msg->event_queue.tail = 0;
 	dx_msg->event_queue.count = 0;
 
-	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[0]+0x100));
-	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[1]+0x100));
-	writel(DX_RESP_UNLOCK, ((void*)dx_msg->response[2]+0x100));
+	writel(DX_RESP_UNLOCK, dx_resp_lock_addr(dx_msg->response[0]));
+	writel(DX_RESP_UNLOCK, dx_resp_lock_addr(dx_msg->response[1]));
+	writel(DX_RESP_UNLOCK, dx_resp_lock_addr(dx_msg->response[2]));
 
 	/* IRQ Status Clear */
 	if (dw->nr_irqs == 1) {

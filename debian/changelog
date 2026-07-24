@@ -1,3 +1,29 @@
+dxrt-driver-dkms (2.5.1-2) unstable; urgency=medium
+
+  - Reject in-flight mailbox cmds during FW reboot, harden recovery sleep
+
+ -- dx-ci <dci@deepx.ai>  Fri, 03 Jul 2026 18:48:05 +0900
+
+dxrt-driver-dkms (2.5.0-2) unstable; urgency=medium
+
+  - Improved device connection and reconnection handling to enhance resilience during temporary connectivity instability.
+  - Optimized data flow for large-scale data transfers to improve operational consistency under high-load environments.
+  - Fixed an issue where the device failed to return to a normal state after a firmware update.
+  - Resolved module installation and loading errors that occurred in certain hardware environments.
+  - Added automatic recovery logic for critical runtime error scenarios.
+  - Expanded device identification support to recognize a wider range of hardware variants.
+  - Added a background preparation path to reduce latency during large-volume transfers.
+
+ -- dx-ci <dci@deepx.ai>  Wed, 24 Jun 2026 11:02:35 +0900
+
+dxrt-driver-dkms (2.5.0-2) unstable; urgency=medium
+
+ -- dx-ci <dci@deepx.ai>  Thu, 11 Jun 2026 15:39:36 +0900
+
+dxrt-driver-dkms (2.5.0-2) unstable; urgency=medium
+
+ -- dx-ci <dci@deepx.ai>  Tue, 09 Jun 2026 10:17:25 +0900
+
 dxrt-driver-dkms (2.4.1-2) unstable; urgency=medium
 
   - harden DKMS package for external distribution

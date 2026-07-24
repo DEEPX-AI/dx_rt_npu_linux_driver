@@ -46,6 +46,8 @@ module_param_named(fault_inject_skip_addr_check,
 MODULE_PARM_DESC(fault_inject_skip_addr_check,
 		 "Skip address-range validation in write_mem/read_mem (DANGER: test only)");
 
+/* Recovery-state tunables live in dxrt_drv_recovery.c (IS_ACCELERATOR only). */
+
 #if IS_ACCELERATOR
 static int __init dxrt_driver_init(void)
 {

@@ -143,34 +143,42 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 
 	if (len) {
 		pr_err("Invalid user buffer length. Cannot map to sgl\n");
-		return -EINVAL;
+		rv = -EINVAL;
+		cb->pages_nr = pages_nr;
+		goto err_out;
 	}
 	cb->pages_nr = pages_nr;
 
 	return 0;
 
 err_out:
+	sg_free_table(sgt);
 	char_sgdma_unmap_user_buf(cb, write);
 
 	return rv;
 }
 
-ssize_t dx_sgdma_write_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t count, int npu_id, bool npu_run)
+ssize_t dx_sgdma_write_user(struct dw_edma *dw, const char __user *buf, u64 pos, size_t count, int npu_id, bool npu_run)
 {
 	const char __user *ubuf = buf;
 	struct dx_dma_io_cb cb;
 	size_t ret;
 	int rv;
 
-	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
-
-	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
-		dw->idx, buf, (u64)count, pos, npu_id);
-
 	if (!dw) {
 		pr_err("[%s] priv pointer open error!(NULL)\n", __func__);
 		return 0;
 	}
+	if (npu_id < 0 || npu_id >= DX_H2C_DATA_CH_CNT) {
+		pr_err("[%s] H2C channel %d is not available for data (valid: 0-%d)\n",
+			__func__, npu_id, DX_H2C_DATA_CH_CNT - 1);
+		return -EINVAL;
+	}
+
+	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
+
+	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
+		dw->idx, buf, (u64)count, pos, npu_id);
 
 	/*Check transfer align - TODO*/
 
@@ -240,15 +248,20 @@ static ssize_t dx_sgdma_write_kernel(struct dw_edma *dw, char *buf, u64 pos, dma
 	size_t ret;
 	int rv;
 
-	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
-
-	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
-		dw->idx, buf, (u64)count, pos, npu_id);
-
 	if (!dw) {
 		pr_err("[%s] priv pointer open error!(NULL)\n", __func__);
 		return 0;
 	}
+	if (npu_id < 0 || npu_id >= DX_H2C_DATA_CH_CNT) {
+		pr_err("[%s] H2C channel %d is not available for data (valid: 0-%d)\n",
+			__func__, npu_id, DX_H2C_DATA_CH_CNT - 1);
+		return -EINVAL;
+	}
+
+	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 1);
+
+	dbg_sg("[W] Dev#%d, buf 0x%p,%llu, pos 0x%llx, npu_id:%d\n",
+		dw->idx, buf, (u64)count, pos, npu_id);
 
 	/*Check transfer align - TODO*/
 
@@ -294,6 +307,17 @@ ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t
 	struct dx_dma_io_cb cb;
 	size_t ret;
 	int rv;
+
+	if (!dw) {
+		pr_err("[%s] priv pointer open error!(NULL)\n", __func__);
+		return 0;
+	}
+
+	if (npu_id < 0 || npu_id >= dw->wr_ch_cnt) {
+		pr_err("[%s] C2H channel %d is not available for data (valid: 0-%d)\n",
+			__func__, npu_id, dw->wr_ch_cnt - 1);
+		return -EINVAL;
+	}
 
 	dx_pcie_start_profile(PCIE_TOTAL_TIME_T, count, dw->idx, npu_id, 0);
 
@@ -428,13 +452,29 @@ int dx_pcie_reset_dma_channels(int dev_id)
 	pr_info("[%s] resetting DMA channels for dev %d\n", __func__, dev_id);
 
 	/* Guard against use-after-free during concurrent PCI remove */
-	if (!atomic_read(&dw->alive)) {
+	if (atomic_read(&dw->dev_state) == DX_DEV_REMOVING) {
 		pr_warn("[%s] dev %d: device removal in progress, skip reset\n",
 			__func__, dev_id);
 		return -ENODEV;
 	}
 
+	if (atomic_read(&dw->link_state) == DX_LINK_DOWN ||
+	    atomic_read(&dw->dev_state) == DX_DEV_AER_RESET ||
+	    atomic_read(&dw->background_recovery_paused)) {
+		pr_warn("[%s] dev %d: transport recovery owns device, skip MMIO reset\n",
+			__func__, dev_id);
+		return -EAGAIN;
+	}
+
 	mutex_lock(&dw->wr_lock);
+	if (atomic_read(&dw->link_state) == DX_LINK_DOWN ||
+	    atomic_read(&dw->dev_state) == DX_DEV_AER_RESET ||
+	    atomic_read(&dw->background_recovery_paused)) {
+		mutex_unlock(&dw->wr_lock);
+		pr_warn("[%s] dev %d: transport recovery started, skip MMIO reset\n",
+			__func__, dev_id);
+		return -EAGAIN;
+	}
 	if (dw->ref_count == 0) {
 		bool stuck = false;
 
@@ -463,10 +503,10 @@ int dx_pcie_reset_dma_channels(int dev_id)
 	 * calling dmaengine_terminate_all() on channels that new
 	 * post-recovery transfers may be using. */
 	atomic_inc(&dw->recovery_epoch);
-	atomic_set(&dw->sbr_in_progress, 1);
+	atomic_set(&dw->dev_state, DX_DEV_RECOVERING);
 
 	/*
-	 * Full memory barrier: ensure recovery_epoch and sbr_in_progress
+	 * Full memory barrier: ensure recovery_epoch and dev_state
 	 * stores are globally visible before we set hw_err and read
 	 * transfer_wq.  Pairs with smp_rmb() in dw_edma_sg_process().
 	 * Required on ARM64 where atomic_set is not fully ordered.
@@ -480,7 +520,7 @@ int dx_pcie_reset_dma_channels(int dev_id)
 		WRITE_ONCE(chan->hw_err, true);
 		wq = READ_ONCE(chan->transfer_wq);
 		if (wq)
-			wake_up_interruptible(wq);
+			wake_up(wq);
 	}
 
 	/* Brief delay to let in-flight DMA threads wake up and
@@ -544,11 +584,9 @@ int dx_pcie_reset_dma_channels(int dev_id)
 		unsigned long drain_flags;
 		LIST_HEAD(drain_head);
 
+		vchan_synchronize(vc);
 		spin_lock_irqsave(&vc->lock, drain_flags);
-		list_splice_tail_init(&vc->desc_allocated, &drain_head);
-		list_splice_tail_init(&vc->desc_submitted, &drain_head);
-		list_splice_tail_init(&vc->desc_issued, &drain_head);
-		list_splice_tail_init(&vc->desc_completed, &drain_head);
+		vchan_get_all_descriptors(vc, &drain_head);
 		chan->request = EDMA_REQ_NONE;
 		chan->status = EDMA_ST_IDLE;
 		chan->configured = false;
@@ -577,17 +615,17 @@ int dx_pcie_reset_dma_channels(int dev_id)
 		if (needs_sbr) {
 			int sbr_ret;
 
-			pr_warn("[%s] dev %d: performing PCIe SBR\n",
+			pr_warn("[%s] dev %d: channels stuck, performing endpoint reset\n",
 				__func__, dev_id);
 			sbr_ret = dw_edma_v0_core_pcie_reset(dw);
 			if (sbr_ret) {
-				pr_err("[%s] dev %d: PCIe SBR failed (%d)\n",
+				pr_err("[%s] dev %d: endpoint reset failed (%d)\n",
 					__func__, dev_id, sbr_ret);
 				if (!err)
 					err = sbr_ret;
 			} else {
 				/*
-				 * SBR succeeded: return 1 to tell the caller
+				 * Reset succeeded: return 1 to tell the caller
 				 * that FW was reset and cannot respond to
 				 * messages until re-initialized.
 				 */
@@ -609,18 +647,22 @@ int dx_pcie_reset_dma_channels(int dev_id)
 	 * after recovery.  Without this, ch_in_use stays true forever
 	 * and the channel appears permanently busy. */
 	for (i = 0; i < dw->rd_ch_cnt; i++) {
-		spin_lock(&dw->rd_dma_chan_locks[i].ch_lock);
+		unsigned long flags;
+
+		spin_lock_irqsave(&dw->rd_dma_chan_locks[i].ch_lock, flags);
 		dw->rd_dma_chan_locks[i].ch_in_use = false;
-		spin_unlock(&dw->rd_dma_chan_locks[i].ch_lock);
+		spin_unlock_irqrestore(&dw->rd_dma_chan_locks[i].ch_lock, flags);
 	}
 	for (i = 0; i < dw->wr_ch_cnt; i++) {
-		spin_lock(&dw->wr_dma_chan_locks[i].ch_lock);
+		unsigned long flags;
+
+		spin_lock_irqsave(&dw->wr_dma_chan_locks[i].ch_lock, flags);
 		dw->wr_dma_chan_locks[i].ch_in_use = false;
-		spin_unlock(&dw->wr_dma_chan_locks[i].ch_lock);
+		spin_unlock_irqrestore(&dw->wr_dma_chan_locks[i].ch_lock, flags);
 	}
 
 	/* Allow new DMA submissions now that recovery is complete */
-	atomic_set(&dw->sbr_in_progress, 0);
+	atomic_set(&dw->dev_state, DX_DEV_LIVE);
 	mutex_unlock(&dw->wr_lock);
 
 	pr_info("[%s] dev %d DMA channel reset %s\n",
@@ -629,46 +671,104 @@ int dx_pcie_reset_dma_channels(int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_reset_dma_channels);
 
+static int dx_sgdma_ready_for_channel_alloc(struct dw_edma *dw, int dev_id)
+{
+	int dev_state;
+	int link_state;
+
+	if (!dw)
+		return -ENODEV;
+
+	dev_state = atomic_read(&dw->dev_state);
+	link_state = atomic_read(&dw->link_state);
+
+	if (dev_state == DX_DEV_REMOVING)
+		return -ENODEV;
+
+	if (dev_state != DX_DEV_LIVE || link_state != DX_LINK_UP ||
+	    atomic_read(&dw->background_recovery_paused)) {
+		pr_warn_ratelimited("[%s] dev %d: DMA not ready for channel allocation (dev_state=%d link_state=%d paused=%d)\n",
+			__func__, dev_id, dev_state, link_state,
+			atomic_read(&dw->background_recovery_paused));
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
 /**
- * dx_sgdma_init - PCIe SGDMA initilization
+ * dx_sgdma_init - PCIe SGDMA initialization
  * @dev_id: Device id
-**/
-void dx_sgdma_init(int dev_id)
+ */
+int dx_sgdma_init(int dev_id)
 {
 	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	bool wr_allocated[EDMA_MAX_WR_CH] = { false };
+	bool rd_allocated[EDMA_MAX_RD_CH] = { false };
 	int i, ret;
+	bool was_empty;
 
 	if (!dw) {
 		pr_err("[ERR] not found deepx pcie struct for dev_id %d\n", dev_id);
-		return;
+		return -ENODEV;
 	}
 
-	if (!atomic_read(&dw->alive)) {
-		pr_warn("[%s] dev %d: device removal in progress, skip init\n",
-			__func__, dev_id);
-		return;
-	}
+	ret = dx_sgdma_ready_for_channel_alloc(dw, dev_id);
+	if (ret)
+		return ret;
 
 	mutex_lock(&dw->wr_lock);
+
+	ret = dx_sgdma_ready_for_channel_alloc(dw, dev_id);
+	if (ret)
+		goto out_unlock;
+
+	if (dw->wr_ch_cnt > EDMA_MAX_WR_CH || dw->rd_ch_cnt > EDMA_MAX_RD_CH) {
+		pr_err("[%s] dev %d: invalid channel count wr=%u rd=%u\n",
+			__func__, dev_id, dw->wr_ch_cnt, dw->rd_ch_cnt);
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
 	if (dw->ref_count == 0) {
-		for (i=0; i<dw->rd_ch_cnt; i++) {
+		for (i=0; i<dw->wr_ch_cnt; i++) {
+			was_empty = !dw->wr_dma_chan[i];
 			ret = dw_edma_dma_allocation(dw->rd_dma_id, i, &dw->wr_dma_chan[i]);
 			if (ret || !dw->wr_dma_chan[i]) {
 				pr_err("[%s] dev %d: wr_dma_chan[%d] alloc FAILED (ret=%d)\n",
 					__func__, dev_id, i, ret);
+				ret = ret ? ret : -ENODEV;
+				goto err_dealloc;
 			}
+			wr_allocated[i] = was_empty;
 		}
-		for (i=0; i<dw->wr_ch_cnt; i++) {
+		for (i=0; i<dw->rd_ch_cnt && i<DX_H2C_DATA_CH_CNT; i++) {
+			was_empty = !dw->rd_dma_chan[i];
 			ret = dw_edma_dma_allocation(dw->wr_dma_id, i, &dw->rd_dma_chan[i]);
 			if (ret || !dw->rd_dma_chan[i]) {
 				pr_err("[%s] dev %d: rd_dma_chan[%d] alloc FAILED (ret=%d)\n",
 					__func__, dev_id, i, ret);
+				ret = ret ? ret : -ENODEV;
+				goto err_dealloc;
 			}
+			rd_allocated[i] = was_empty;
 		}
 	}
 	dw->ref_count++;
 	pr_debug("[%s] dev %d: ref_count=%d\n", __func__, dev_id, dw->ref_count);
+	ret = 0;
+	goto out_unlock;
+
+err_dealloc:
+	for (i = 0; i < dw->wr_ch_cnt; i++)
+		if (wr_allocated[i])
+			dw_edma_dma_deallocation(&dw->wr_dma_chan[i]);
+	for (i = 0; i < dw->rd_ch_cnt; i++)
+		if (rd_allocated[i])
+			dw_edma_dma_deallocation(&dw->rd_dma_chan[i]);
+out_unlock:
 	mutex_unlock(&dw->wr_lock);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(dx_sgdma_init);
 
@@ -689,7 +789,7 @@ void dx_sgdma_deinit(int dev_id)
 	/* Guard against use-after-free: if PCI remove is in progress
 	 * (or already completed), dw memory may be freed imminently.
 	 * Do not touch dw->wr_lock in that case. */
-	if (!atomic_read(&dw->alive)) {
+	if (atomic_read(&dw->dev_state) == DX_DEV_REMOVING) {
 		pr_warn("[%s] dev %d: device removal in progress, skip deinit\n",
 			__func__, dev_id);
 		return;
@@ -698,6 +798,12 @@ void dx_sgdma_deinit(int dev_id)
 	mutex_lock(&dw->wr_lock);
 	pr_debug("[%s] dev %d: ref_count=%d (before decrement)\n",
 		__func__, dev_id, dw->ref_count);
+	if (dw->ref_count <= 0) {
+		pr_warn_ratelimited("[%s] dev %d: deinit without active init (ref_count=%d)\n",
+			__func__, dev_id, dw->ref_count);
+		mutex_unlock(&dw->wr_lock);
+		return;
+	}
 	if (dw->ref_count == 1) {
 		for (i=0; i<dw->wr_ch_cnt; i++) {
 			dw_edma_dma_deallocation(&dw->wr_dma_chan[i]);

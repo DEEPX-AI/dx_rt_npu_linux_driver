@@ -10,9 +10,13 @@
 #include <linux/version.h>
 #include <linux/ktime.h>
 #include <linux/slab.h>
+#include <linux/idr.h>
+#include <linux/atomic.h>
+#include <linux/math64.h>
 
 #include "dx_util.h"
 #include "dx_lib.h"
+#include "dw-edma-thread.h"
 #if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
 #include "dx_pcie_api.h"
 #endif
@@ -26,6 +30,70 @@
 #if defined(DMA_PERF_MEASURE)
 #define uint64_t long long unsigned int
 dx_pcie_profiler_t g_pcie_prof[16][4][2][PCIE_PERF_MAX_T];
+bool g_perf_enabled;
+EXPORT_SYMBOL_GPL(g_perf_enabled);
+
+#define DX_PCIE_PROF_DEV_MAX 16
+#define DX_STATS_PRT_MAX_BUFFER_SIZE 4096
+
+struct dx_pcie_internal_stats {
+	atomic64_t helper_acquire_cnt;
+	atomic64_t helper_acquire_fail;
+	atomic64_t helper_round_sum;
+	atomic64_t helper_round_max;
+	atomic64_t helper_ch2;
+	atomic64_t helper_ch3;
+	atomic64_t helper_llm_cnt;
+	atomic64_t helper_llm_fail;
+	atomic64_t helper_llm_ns_sum;
+	atomic64_t helper_llm_ns_max;
+	atomic64_t pool_alloc_cnt;
+	atomic64_t pool_alloc_short;
+	atomic64_t pool_burst_sum;
+	atomic64_t pool_alloc_ns_sum;
+	atomic64_t pool_alloc_ns_max;
+};
+
+static struct dx_pcie_internal_stats g_pcie_internal_stats[DX_PCIE_PROF_DEV_MAX];
+static char dx_stats_buff[DX_STATS_PRT_MAX_BUFFER_SIZE];
+
+static bool dx_pcie_perf_valid_dev(int dev_n)
+{
+	return dev_n >= 0 && dev_n < DX_PCIE_PROF_DEV_MAX;
+}
+
+static void dx_atomic64_update_max(atomic64_t *max, uint64_t val)
+{
+	s64 old;
+
+	old = atomic64_read(max);
+	while (val > (uint64_t)old) {
+		s64 prev = atomic64_cmpxchg(max, old, (s64)val);
+
+		if (prev == old)
+			break;
+		old = prev;
+	}
+}
+
+static void dx_pcie_internal_stats_clear_one(struct dx_pcie_internal_stats *s)
+{
+	atomic64_set(&s->helper_acquire_cnt, 0);
+	atomic64_set(&s->helper_acquire_fail, 0);
+	atomic64_set(&s->helper_round_sum, 0);
+	atomic64_set(&s->helper_round_max, 0);
+	atomic64_set(&s->helper_ch2, 0);
+	atomic64_set(&s->helper_ch3, 0);
+	atomic64_set(&s->helper_llm_cnt, 0);
+	atomic64_set(&s->helper_llm_fail, 0);
+	atomic64_set(&s->helper_llm_ns_sum, 0);
+	atomic64_set(&s->helper_llm_ns_max, 0);
+	atomic64_set(&s->pool_alloc_cnt, 0);
+	atomic64_set(&s->pool_alloc_short, 0);
+	atomic64_set(&s->pool_burst_sum, 0);
+	atomic64_set(&s->pool_alloc_ns_sum, 0);
+	atomic64_set(&s->pool_alloc_ns_max, 0);
+}
 
 void get_start_time(ktime_t *s)
 {
@@ -38,7 +106,7 @@ uint64_t get_elapsed_time_ns(ktime_t s)
 	return ktime_to_ns(ktime_sub(e, s));
 }
 
-const char* get_pcie_type_string(int type)
+static __maybe_unused const char* get_pcie_type_string(int type)
 {
 	const char* type_str;
 	switch (type)
@@ -83,7 +151,7 @@ const char* get_pcie_type_string(int type)
 	return type_str;
 }
 
-const char* get_pcie_ctx_string(int type)
+static __maybe_unused const char* get_pcie_ctx_string(int type)
 {
 	const char* ctx_str;
 	switch (type)
@@ -337,6 +405,140 @@ out_free:
 	return ret;
 }
 
+void dx_pcie_perf_clear_internal_stats(void)
+{
+	int dev;
+
+	for (dev = 0; dev < DX_PCIE_PROF_DEV_MAX; dev++)
+		dx_pcie_internal_stats_clear_one(&g_pcie_internal_stats[dev]);
+}
+
+void dx_pcie_perf_record_helper_acquire(int dev_n, int rounds,
+					       int channel, bool success)
+{
+	struct dx_pcie_internal_stats *s;
+
+	if (!READ_ONCE(g_perf_enabled) || !dx_pcie_perf_valid_dev(dev_n))
+		return;
+
+	if (rounds < 0)
+		rounds = 0;
+
+	s = &g_pcie_internal_stats[dev_n];
+	atomic64_inc(&s->helper_acquire_cnt);
+	atomic64_add(rounds, &s->helper_round_sum);
+	dx_atomic64_update_max(&s->helper_round_max, rounds);
+
+	if (!success) {
+		atomic64_inc(&s->helper_acquire_fail);
+		return;
+	}
+
+	if (channel == 2)
+		atomic64_inc(&s->helper_ch2);
+	else if (channel == 3)
+		atomic64_inc(&s->helper_ch3);
+}
+
+void dx_pcie_perf_record_helper_llm_copy(int dev_n, uint64_t ns, int ret)
+{
+	struct dx_pcie_internal_stats *s;
+
+	if (!READ_ONCE(g_perf_enabled) || !dx_pcie_perf_valid_dev(dev_n))
+		return;
+
+	s = &g_pcie_internal_stats[dev_n];
+	atomic64_inc(&s->helper_llm_cnt);
+	atomic64_add(ns, &s->helper_llm_ns_sum);
+	dx_atomic64_update_max(&s->helper_llm_ns_max, ns);
+	if (ret)
+		atomic64_inc(&s->helper_llm_fail);
+}
+
+void dx_pcie_perf_record_pool_alloc(int dev_n, uint32_t requested,
+					   uint32_t allocated, uint64_t ns)
+{
+	struct dx_pcie_internal_stats *s;
+
+	if (!READ_ONCE(g_perf_enabled) || !dx_pcie_perf_valid_dev(dev_n))
+		return;
+
+	s = &g_pcie_internal_stats[dev_n];
+	atomic64_inc(&s->pool_alloc_cnt);
+	atomic64_add(allocated, &s->pool_burst_sum);
+	atomic64_add(ns, &s->pool_alloc_ns_sum);
+	dx_atomic64_update_max(&s->pool_alloc_ns_max, ns);
+	if (allocated < requested)
+		atomic64_inc(&s->pool_alloc_short);
+}
+
+char *show_pcie_internal_stats(void)
+{
+	int dev;
+	int offset = 0;
+	bool any = false;
+
+	memset(dx_stats_buff, 0x00, sizeof(dx_stats_buff));
+	offset += scnprintf(dx_stats_buff + offset,
+		DX_STATS_PRT_MAX_BUFFER_SIZE - offset,
+		"DMA internal telemetry (recorded only while perf_enable=1)\n");
+	offset += scnprintf(dx_stats_buff + offset,
+		DX_STATS_PRT_MAX_BUFFER_SIZE - offset,
+		"dev | helper acq/fail avg_round max_round ch2/ch3 | lli cnt/fail avg_us max_us | pool cnt/short avg_burst avg_us max_us\n");
+	offset += scnprintf(dx_stats_buff + offset,
+		DX_STATS_PRT_MAX_BUFFER_SIZE - offset,
+		"----+--------------------------------------------+-----------------------------+------------------------------------------\n");
+
+	for (dev = 0; dev < DX_PCIE_PROF_DEV_MAX; dev++) {
+		struct dx_pcie_internal_stats *s = &g_pcie_internal_stats[dev];
+		uint64_t helper_cnt = atomic64_read(&s->helper_acquire_cnt);
+		uint64_t lli_cnt = atomic64_read(&s->helper_llm_cnt);
+		uint64_t pool_cnt = atomic64_read(&s->pool_alloc_cnt);
+		uint64_t avg_round = helper_cnt ?
+			div64_u64(atomic64_read(&s->helper_round_sum), helper_cnt) : 0;
+		uint64_t avg_lli_us = lli_cnt ?
+			div64_u64(atomic64_read(&s->helper_llm_ns_sum), lli_cnt * 1000) : 0;
+		uint64_t avg_pool_burst = pool_cnt ?
+			div64_u64(atomic64_read(&s->pool_burst_sum), pool_cnt) : 0;
+		uint64_t avg_pool_us = pool_cnt ?
+			div64_u64(atomic64_read(&s->pool_alloc_ns_sum), pool_cnt * 1000) : 0;
+
+		if (!helper_cnt && !lli_cnt && !pool_cnt)
+			continue;
+
+		any = true;
+		offset += scnprintf(dx_stats_buff + offset,
+			DX_STATS_PRT_MAX_BUFFER_SIZE - offset,
+			"%3d | %6llu/%-4llu %9llu %9llu %3llu/%-3llu | %5llu/%-4llu %6llu %6llu | %5llu/%-5llu %9llu %6llu %6llu\n",
+			dev,
+			helper_cnt,
+			(uint64_t)atomic64_read(&s->helper_acquire_fail),
+			avg_round,
+			(uint64_t)atomic64_read(&s->helper_round_max),
+			(uint64_t)atomic64_read(&s->helper_ch2),
+			(uint64_t)atomic64_read(&s->helper_ch3),
+			lli_cnt,
+			(uint64_t)atomic64_read(&s->helper_llm_fail),
+			avg_lli_us,
+			div64_u64(atomic64_read(&s->helper_llm_ns_max), 1000),
+			pool_cnt,
+			(uint64_t)atomic64_read(&s->pool_alloc_short),
+			avg_pool_burst,
+			avg_pool_us,
+			div64_u64(atomic64_read(&s->pool_alloc_ns_max), 1000));
+
+		if (offset > DX_STATS_PRT_MAX_BUFFER_SIZE * 9 / 10)
+			break;
+	}
+
+	if (!any)
+		offset += scnprintf(dx_stats_buff + offset,
+			DX_STATS_PRT_MAX_BUFFER_SIZE - offset,
+			"No internal telemetry data found.\n");
+
+	return dx_stats_buff;
+}
+
 /* part : [0 - all, 1 - partial] */
 void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int ch_n)
 {
@@ -354,6 +556,7 @@ void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int 
 		}
 	} else {
 		memset(g_pcie_prof, 0, sizeof(g_pcie_prof));
+		dx_pcie_perf_clear_internal_stats();
 		for (dev = 0; dev < 16; dev++) {
 			for (dma = 0; dma < 4; dma++) {
 				for (ch = 0; ch < 2; ch++) {
@@ -368,7 +571,12 @@ void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int 
 
 inline void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n)
 {
-	dx_pcie_profiler_t *p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
+	dx_pcie_profiler_t *p;
+
+	if (!READ_ONCE(g_perf_enabled))
+		return;
+
+	p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
 	/* If the size is changed then clear the profiler datas only for data bandwidth */
 	// if (p->size == 0) p->size = size;
 	// if ( (type == PCIE_TOTAL_TIME_T) && (p->size != size) ) {
@@ -380,8 +588,14 @@ inline void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n,
 
 inline void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n)
 {
-	dx_pcie_profiler_t *p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
-	uint64_t elapsed_t = get_elapsed_time_ns(p->pref_t);
+	dx_pcie_profiler_t *p;
+	uint64_t elapsed_t;
+
+	if (!READ_ONCE(g_perf_enabled))
+		return;
+
+	p = &g_pcie_prof[dev_n][dma_n][ch_n][type];
+	elapsed_t = get_elapsed_time_ns(p->pref_t);
 
 	p->size = size;
 	if (elapsed_t > p->perf_max_t) {
@@ -395,10 +609,7 @@ inline void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, i
 	p->perf_avg_t = p->perf_sum_t / p->count;
 }
 #else
-char *show_pcie_profile(void) { return NULL; }
-void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int ch_n) { /*nothing*/ }
-void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n) { /*nothing*/ }
-void dx_pcie_end_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n) { /*nothing*/ }
+#error "DMA_PERF_MEASURE must be defined — set unconditionally in Kbuild"
 #endif /*DMA_PERF_MEASURE*/
 
 static int dx_pci_rebar_find_pos(struct pci_dev *pdev, int bar)
@@ -446,6 +657,7 @@ u64 dx_pci_rebar_size_to_bytes(int size)
 
 static LIST_HEAD(dx_dev_list);
 static DEFINE_SPINLOCK(dx_dev_lock);
+static DEFINE_IDA(dx_dev_ida);
 
 static LIST_HEAD(dx_dev_rcu_list);
 // static DEFINE_SPINLOCK(dx_dev_rcu_lock);
@@ -457,62 +669,54 @@ static LIST_HEAD(dx_dev_rcu_list);
 int dx_dev_list_add(struct dw_edma *dw)
 {
 	unsigned long flags;
+	int id;
+
+	id = ida_alloc_max(&dx_dev_ida, MAX_DEV_NUM - 1, GFP_KERNEL);
+	if (id < 0) {
+		pr_err("[ERR] idx allocation failed (max=%d)\n", MAX_DEV_NUM);
+		return id;
+	}
 
 	spin_lock_irqsave(&dx_dev_lock, flags);
-	if (list_empty(&dx_dev_list)) {
-		dw->idx = 0;
-	} else {
-		struct dw_edma *last;
-		last = list_last_entry(&dx_dev_list, struct dw_edma, list_head);
-		dw->idx = last->idx + 1;
-	}
+	dw->idx = id;
 	list_add_tail(&dw->list_head, &dx_dev_list);
 	spin_unlock_irqrestore(&dx_dev_lock, flags);
 
 	dbg_init("deepx dma idx %d.\n", dw->idx);
 
-	// spin_lock(&xdev_rcu_lock);
-	// list_add_tail_rcu(&xdev->rcu_node, &xdev_rcu_list);
-	// spin_unlock(&xdev_rcu_lock);
-
 	return 0;
 }
 static int dx_dev_get_list_size(void)
 {
-	struct dw_edma *last;
-	if (!list_empty(&dx_dev_list)) {
-		last = list_last_entry(&dx_dev_list, struct dw_edma, list_head);
-		return last->idx;
-	} else {
-		return -1;
-	}
+	struct list_head *ptr;
+	int count = 0;
+
+	list_for_each(ptr, &dx_dev_list)
+		count++;
+	return count;
 }
 #undef list_last_entry
 
 struct dw_edma *dx_dev_list_get(int dev_id)
 {
 	struct list_head *ptr;
-	int size;
 	struct dw_edma *dw = NULL;
 	unsigned long flags;
 
-	spin_lock_irqsave(&dx_dev_lock, flags);
-	size = dx_dev_get_list_size();
-	if (list_empty(&dx_dev_list))
-		pr_err("[ERR] list is empty");
-	else if (dev_id > size)
-		pr_err("[ERR] dev_id is over than the size of list(%d/%d)", dev_id, size);
+	if (dev_id < 0 || dev_id >= MAX_DEV_NUM) {
+		pr_err("[ERR] dev_id %d out of range [0, %d)\n",
+		       dev_id, MAX_DEV_NUM);
+		return NULL;
+	}
 
-	list_for_each(ptr, &dx_dev_list){
+	spin_lock_irqsave(&dx_dev_lock, flags);
+	list_for_each(ptr, &dx_dev_list) {
 		struct dw_edma *ptr_node = list_entry(ptr, struct dw_edma, list_head);
 		if (ptr_node->idx == dev_id) {
-			// printk("Deepx Pcie struct id number : %d\n", ptr_node->idx);
 			dw = ptr_node;
 			break;
 		}
 	}
-	if (dw == NULL)
-		pr_err("[ERR] not found deepx pcie struct");
 	spin_unlock_irqrestore(&dx_dev_lock, flags);
 
 	return dw;
@@ -527,15 +731,18 @@ void dx_dev_list_remove(struct dw_edma *dw)
 	list_del(&dw->list_head);
 	spin_unlock_irqrestore(&dx_dev_lock, flags);
 
-	// spin_lock(&xdev_rcu_lock);
-	// list_del_rcu(&xdev->rcu_node);
-	// spin_unlock(&xdev_rcu_lock);
-	// synchronize_rcu();
+	ida_free(&dx_dev_ida, dw->idx);
 }
 
 uint32_t dx_pcie_get_dev_num(void)
 {
-	return dx_dev_get_list_size() + 1;
+	unsigned long flags;
+	int size;
+
+	spin_lock_irqsave(&dx_dev_lock, flags);
+	size = dx_dev_get_list_size();
+	spin_unlock_irqrestore(&dx_dev_lock, flags);
+	return size;
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_dev_num);
 
@@ -561,7 +768,7 @@ u64 dx_pcie_get_booting_region(int dev_id, int id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_booting_region);
 
-/**
+/*
  * dx_pcie_test_and_clear_init_completed - Atomically test and clear init_completed flag
  * @dev_id: Device id
  * Returns: true if init was needed (flag was true), false otherwise
@@ -588,7 +795,7 @@ bool dx_pcie_test_and_clear_init_completed(int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_test_and_clear_init_completed);
 
-/**
+/*
  * dx_pcie_set_init_completed - Set init_completed flag to trigger re-init
  * @dev_id: Device id
  *
@@ -610,7 +817,7 @@ void dx_pcie_set_init_completed(int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_set_init_completed);
 
-/**
+/*
  * dx_pci_find_vsec_capability - Find a vendor-specific extended capability
  * @dev: PCI device to query
  * @vendor: Vendor ID for which capability is defined
@@ -639,7 +846,7 @@ u16 dx_pci_find_vsec_capability(struct pci_dev *dev, u16 vendor, int cap)
 	return 0;
 }
 
-/**
+/*
  * dx_pci_read_revision_id - Read the revision ID from the configuration space (offset 0x08)
  * @dev: PCI device
  * 
@@ -658,7 +865,7 @@ int dx_pci_read_revision_id(struct pci_dev *dev, u8 *revision_id)
     return 0;
 }
 
-/**
+/*
  * dx_pci_read_revision_id - Read the program if from the configuration space (offset 0x08)
  * @dev: PCI device
  * 
@@ -677,7 +884,7 @@ int dx_pci_read_program_if(struct pci_dev *dev, u8 *prog_if)
     return 0;
 }
 
-/**
+/*
  * dx_pci_read_msi_data - Read the msi data
  * @dev: PCI device
  * 
@@ -711,7 +918,7 @@ u16 dx_pci_read_msi_data(struct pci_dev *pdev)
 	return msi_data;
 }
 
-/**
+/*
  * dx_pci_read_msi_msg - Read complete MSI info from PCI config space
  * @pdev: PCI device
  * @msg: struct msi_msg to fill
@@ -748,7 +955,7 @@ int dx_pci_read_msi_msg(struct pci_dev *pdev, struct msi_msg *msg)
 	return 0;
 }
 
-/**
+/*
  * dx_pci_write_msi_msg - Write MSI address/data to PCI config space
  * @pdev: PCI device
  * @msg: struct msi_msg containing values to write

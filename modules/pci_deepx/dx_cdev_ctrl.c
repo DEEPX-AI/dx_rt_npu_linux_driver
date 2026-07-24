@@ -32,9 +32,9 @@ static int char_ctrl_open(struct inode *inode, struct file *file)
 
 	/* pointer to containing structure of the character device inode */
 	xcdev = container_of(inode->i_cdev, struct dx_dma_cdev, cdev);
-	dbg_sg("[%s] - %s\n", __func__, xcdev->sys_device->kobj.name);
 	if (!xcdev)
 		return -1;
+	dbg_sg("[%s] - %s\n", __func__, xcdev->sys_device->kobj.name);
 	/* create a reference to our char device in the opened file */
 	file->private_data = xcdev;
 	return 0;
@@ -220,6 +220,32 @@ void dx_pcie_get_driver_info(struct deepx_pcie_info *info, int dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_get_driver_info);
 
+static long perf_get_ioctl(struct dx_dma_cdev *xcdev, void __user *arg)
+{
+	struct dx_dma_ioc_perf obj;
+	dx_pcie_profiler_t *p;
+	int i;
+
+	if (copy_from_user(&obj, arg, sizeof(obj)))
+		return -EFAULT;
+
+	if (obj.dev_id >= 16 || obj.dma_id >= 4 || obj.direction >= 2)
+		return -EINVAL;
+
+	p = g_pcie_prof[obj.dev_id][obj.dma_id][obj.direction];
+
+	for (i = 0; i < DX_DMA_PERF_MAX_PHASES && i < PCIE_PERF_MAX_T; i++)
+		obj.phase_avg_ns[i] = p[i].perf_avg_t;
+
+	obj.count = p[PCIE_DMA_XFER_T].count;
+	obj.size = p[PCIE_DMA_XFER_T].size;
+
+	if (copy_to_user(arg, &obj, sizeof(obj)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)filp->private_data;
@@ -270,6 +296,18 @@ static long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			return -ENOTTY;
 		}
 		return version_ioctl(xcdev, (void __user *)arg);
+	case DX_DMA_IOCPERFGET:
+		if (copy_from_user((void *)&ioctl_obj, (void __user *)arg,
+			 sizeof(struct dx_dma_ioc_base))) {
+			pr_err("copy_from_user failed.\n");
+			return -EFAULT;
+		}
+		if (ioctl_obj.magic != DX_DMA_XCL_MAGIC) {
+			pr_err("magic 0x%x != DX_DMA_XCL_MAGIC (0x%x).\n",
+				ioctl_obj.magic, DX_DMA_XCL_MAGIC);
+			return -ENOTTY;
+		}
+		return perf_get_ioctl(xcdev, (void __user *)arg);
 	// case DX_DMA_IOCOFFLINE:
 	// 	xdma_device_offline(xdev->pdev, xdev);
 	// 	break;

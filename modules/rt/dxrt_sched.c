@@ -10,7 +10,7 @@
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
-/**
+/*
  * add_queue_from_sched_op 
  *  - Save option to list of dev if option is not duplicated in list
  * @dev: The deepx device on kernel structure
@@ -70,7 +70,7 @@ int add_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound)
     return ret;
 }
 
-/**
+/*
  * get_queue_from_sched_op 
  *  - Retrieves the queue to use based on option information.
  * @dev: The deepx device on kernel structure
@@ -100,7 +100,7 @@ int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q)
     return ret;
 }
 
-/**
+/*
  * delete_matching_queue 
  *  - Delete the queue to use based on option information.
  * @dev: The deepx device on kernel structure
@@ -140,7 +140,7 @@ int delete_matching_queue(struct dxdev* dev, npu_bound_op bound)
     return ret;
 }
 
-/**
+/*
  * clear_queue_list 
  *  - Delete the queue list.
  * @dev: The deepx device on kernel structure

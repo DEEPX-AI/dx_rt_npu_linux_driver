@@ -67,6 +67,7 @@ struct dx_dma_cdev {
 	int bar;				/* PCIe BAR for HW access, if needed */
 	int npu_id;				/* NPU ID, if needed */
 	bool write;				/* c2h chdev : true, h2c chdev : false*/
+	bool cdev_added;
 	unsigned long base;		/* bar access offset */
 	struct dx_dma_user_irq *user_irq;	/* IRQ value, if needed */
 	struct device *sys_device;	/* sysfs device */
