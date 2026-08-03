@@ -7,7 +7,8 @@
  */
 
 #include <linux/debugfs.h>
-#include <linux/bitfield.h>
+#include "dx_bitfield_compat.h"	//DEEPX MODIFIED: 4.4 FIELD_* compat
+#include "dx_debugfs_compat.h"	//DEEPX MODIFIED: 4.4 debugfs compat
 
 #include "dw-edma-v0-debugfs.h"
 #include "dw-edma-v0-regs.h"

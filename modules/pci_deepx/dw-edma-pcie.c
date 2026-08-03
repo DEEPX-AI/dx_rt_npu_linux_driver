@@ -12,7 +12,7 @@
 #include <linux/device.h>
 #include <linux/msi.h>
 #include <linux/irq.h>
-#include <linux/bitfield.h>
+#include "dx_bitfield_compat.h"	//DEEPX MODIFIED: 4.4 FIELD_* compat
 #include <linux/aer.h>
 #include <linux/delay.h>
 #include "dx_edma.h"
@@ -290,7 +290,15 @@ static int dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
 		if (!irq_data)
 			return -EINVAL;
 
+		/*
+		 * DEEPX MODIFIED: pci_msi_mask_irq() is EXPORT_SYMBOL_GPL from
+		 * Linux 5.x onward.  On 4.4 it exists in msi.c but is not
+		 * exported, so skip it there — the hardware MSI Mask Bits
+		 * register is written in bulk by pci_write_config_dword() below.
+		 */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
 		pci_msi_mask_irq(irq_data);
+#endif
 		expected_mask |= BIT(i);
 	}
 	for (i = allocated_irqs; i < max_irqs; i++)
@@ -481,23 +489,23 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 								       total_irqs, nr_irqs);
 			if (err) {
 				pci_warn(pdev,
-					 "failed to mask unused MSI vectors (err=%d), fallback to single MSI\n",
+					 "M-MSI vector-mask Failed (err=%d), fallback to S-MSI\n",
 					 err);
 				pci_free_irq_vectors(pdev);
 				nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
 			} else {
-				pci_info(pdev, "multi MSI enabled (%d required, %d allocated)\n",
-					 total_irqs, nr_irqs);
+				pci_info(pdev, "M-MSI allocation Success (%dV allocated, %d required, base IRQ %d)\n",
+					 nr_irqs, total_irqs, pci_irq_vector(pdev, 0));
 			}
 		} else {
 			if (nr_irqs > 0) {
 				pci_warn(pdev,
-					 "partial MSI allocation (%d/%d vectors, %d required), fallback to single MSI\n",
+					 "M-MSI allocation Partial (%d/%dV, %d required), fallback to S-MSI\n",
 					 nr_irqs, multi_irqs, total_irqs);
 				pci_free_irq_vectors(pdev);
 			} else {
 				pci_warn(pdev,
-					 "multi MSI allocation failed (%d vectors, %d required, err=%d), fallback to single MSI\n",
+					 "M-MSI allocation Failed (%dV, %d required, err=%d), fallback to S-MSI\n",
 					 multi_irqs, total_irqs, nr_irqs);
 			}
 			nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
@@ -507,11 +515,10 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	}
 #endif
 	if (nr_irqs < 1) {
-		pci_err(pdev, "fail to alloc IRQ vector (number of IRQs=%d)\n", nr_irqs);
+		pci_err(pdev, "S-MSI allocation Failed (1V, err=%d)\n", nr_irqs);
 		return -EPERM;
 	} else if (nr_irqs == 1) {
-		pci_err(pdev, "With only a single interrupt handler, "
-			"the device performance might be slower compared to a multi-interrupt environment\n");
+		pci_info(pdev, "S-MSI allocation Success (1V, IRQ %d)\n", pci_irq_vector(pdev, 0));
 	}
 	dw->event_irq_idx = get_nr_user_irqs(dw) - 1;
 	pci_dbg(pdev, "Error irq index: %d\n", dw->event_irq_idx);
@@ -1017,6 +1024,22 @@ static void dx_dma_pcie_reset_done(struct pci_dev *pdev)
 	dx_link_health_start(chip->dw);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
+/*
+ * Pre-4.13 kernels (e.g. 4.4 LTS) don't have the split
+ * reset_prepare()/reset_done() callbacks in struct pci_error_handlers -
+ * they only have a single reset_notify(dev, prepare) callback. Dispatch
+ * to the same prepare/done implementations so behavior is identical.
+ */
+static void dx_dma_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
+{
+	if (prepare)
+		dx_dma_pcie_reset_prepare(pdev);
+	else
+		dx_dma_pcie_reset_done(pdev);
+}
+#endif
+
 static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev) __attribute__((unused));
 static pci_ers_result_t dx_dma_pcie_error_mmio_enabled(struct pci_dev *pdev)
 {
@@ -1143,8 +1166,12 @@ static const struct pci_error_handlers dx_dma_err_handler = {
 	.error_detected = dx_dma_pcie_error_detected,
 	.slot_reset 	= dx_dma_pcie_error_slot_reset,
 	.resume 	= dx_dma_pcie_error_resume,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0))
 	.reset_prepare	= dx_dma_pcie_reset_prepare,
 	.reset_done	= dx_dma_pcie_reset_done,
+#else
+	.reset_notify	= dx_dma_pcie_reset_notify,
+#endif
 };
 
 static struct pci_driver dx_dma_pcie_driver = {

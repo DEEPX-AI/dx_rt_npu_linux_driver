@@ -12,6 +12,29 @@
 #include <linux/bug.h>
 #include <linux/dmaengine.h>
 #include <linux/version.h>
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0))
+/*
+ * The callback_result infrastructure (enum dmaengine_tx_result,
+ * struct dmaengine_result, dma_async_tx_callback_result and the
+ * dma_async_tx_descriptor::callback_result member) was introduced in 4.6.
+ * Provide the types here so the same helpers build on 4.4.
+ */
+enum dmaengine_tx_result {
+	DMA_TRANS_NOERROR = 0,		/* SUCCESS */
+	DMA_TRANS_READ_FAILED,		/* Source DMA read failed */
+	DMA_TRANS_WRITE_FAILED,		/* Destination DMA write failed */
+	DMA_TRANS_ABORTED,		/* Op never submitted / aborted */
+};
+
+struct dmaengine_result {
+	enum dmaengine_tx_result result;
+	u32 residue;
+};
+
+typedef void (*dma_async_tx_callback_result)(void *dma_async_param,
+				const struct dmaengine_result *result);
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0) */
 /**
  * dma_cookie_init - initialize the cookies for a DMA channel
  * @chan: dma channel to initialize
@@ -122,7 +145,11 @@ dmaengine_desc_get_callback(struct dma_async_tx_descriptor *tx,
 			    struct dmaengine_desc_callback *cb)
 {
 	cb->callback = tx->callback;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0))
 	cb->callback_result = tx->callback_result;
+#else
+	cb->callback_result = NULL;
+#endif
 	cb->callback_param = tx->callback_param;
 }
 

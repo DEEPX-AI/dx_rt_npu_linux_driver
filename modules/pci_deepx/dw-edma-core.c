@@ -20,6 +20,13 @@
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
 #include <linux/cpumask.h>
+#include <linux/dmi.h>
+#ifdef CONFIG_X86
+#include <asm/cpufeature.h>
+#endif
+#if defined(CONFIG_ARM64) || defined(CONFIG_ARM)
+#include <linux/arm-smccc.h>
+#endif
 
 #include "dx_mmio_compat.h"
 #include "dw-edma-core.h"
@@ -478,44 +485,237 @@ static void vchan_free_desc(struct virt_dma_desc *vdesc)
 
 	dw_edma_free_desc(desc);
 }
+
 /*
- * Check and fix MSI mismatch before DMA transfer (Single MSI mode only).
- * Called only when nr_irqs == 1. Detects if irqbalance changed MSI address
- * and updates EP DMA registers accordingly.
+ * SMBIOS/DMI vendor and product strings advertised by hypervisors.  Used on
+ * non-x86 (e.g. arm64) where there is no architected "hypervisor present" CPU
+ * bit — virtualization is transparent at EL1, so string matching is the only
+ * portable option.  Extend this table when a new hypervisor must be detected.
+ * Kept low false-positive: ambiguous cloud markers that also appear on
+ * bare-metal instances (e.g. "Amazon EC2", "Google") are intentionally
+ * excluded so bare-metal irqbalance handling is never mistaken for a guest.
  */
-static void dx_dma_check_and_fix_msi(struct dw_edma *dw)
+static const char * const dx_dma_vm_dmi_markers[] = {
+	"QEMU", "KVM", "VMware", "Xen", "VirtualBox", "innotek",
+	"Parallels", "Bochs", "BHYVE", "bhyve", "Hyper-V", "Virtual Machine",
+	"OpenStack", "oVirt", "RHEV", "Nutanix", "ACRN", "Cloud Hypervisor",
+	"Apple Virtualization",
+};
+
+/*
+ * DMI/SMBIOS-based detection: match the system-vendor and product-name
+ * strings against dx_dma_vm_dmi_markers[].  This is the broadest-coverage
+ * mechanism (many hypervisor vendors) and works on every kernel version.
+ * If DMI is unavailable (e.g. !CONFIG_DMI or a DT-only guest) both strings
+ * are NULL and the call degrades to "bare metal".
+ */
+static bool dx_dma_detect_vm_dmi(void)
 {
-	struct msi_msg pci_msi;
+	const char *fields[2];
+	unsigned int i, j;
+
+	fields[0] = dmi_get_system_info(DMI_SYS_VENDOR);
+	fields[1] = dmi_get_system_info(DMI_PRODUCT_NAME);
+
+	for (i = 0; i < ARRAY_SIZE(fields); i++) {
+		if (!fields[i])
+			continue;
+		for (j = 0; j < ARRAY_SIZE(dx_dma_vm_dmi_markers); j++)
+			if (strstr(fields[i], dx_dma_vm_dmi_markers[j]))
+				return true;
+	}
+
+	return false;
+}
+
+/*
+ * SMCCC-based detection (ARM/arm64, kernel 5.11+):  query the SMCCC
+ * "Vendor Specific Hypervisor Service" call-UID.  A hypervisor implementing
+ * the service returns a valid UID; bare-metal secure firmware returns
+ * SMCCC_RET_NOT_SUPPORTED for this function ID.  This is a spec-defined
+ * signal, so it catches guests that expose no SMBIOS/DMI (e.g. a DT-only
+ * KVM guest) which the string match above would miss.
+ *
+ * Gated on the presence of ARM_SMCCC_VENDOR_HYP_CALL_UID_FUNC_ID (added in
+ * 5.11) rather than a hard version number, so older kernels transparently
+ * fall through to the DMI path.  arm_smccc_1_1_invoke() itself returns
+ * SMCCC_RET_NOT_SUPPORTED when no v1.1 conduit exists, and the explicit
+ * conduit check avoids issuing a call on platforms without one.
+ */
+#if (defined(CONFIG_ARM64) || defined(CONFIG_ARM)) && \
+	defined(ARM_SMCCC_VENDOR_HYP_CALL_UID_FUNC_ID)
+static bool dx_dma_detect_vm_smccc(void)
+{
+	struct arm_smccc_res res;
+
+	if (arm_smccc_1_1_get_conduit() == SMCCC_CONDUIT_NONE)
+		return false;
+
+	arm_smccc_1_1_invoke(ARM_SMCCC_VENDOR_HYP_CALL_UID_FUNC_ID, &res);
+
+	/* SMC32 return is 32-bit; cast so 0xFFFFFFFF maps to -1. */
+	return (int)res.a0 != SMCCC_RET_NOT_SUPPORTED;
+}
+#else
+static inline bool dx_dma_detect_vm_smccc(void) { return false; }
+#endif
+
+/*
+ * Detect whether the driver is running inside a virtualized guest.
+ *
+ * Under a hypervisor the MSI message address read from PCI config space is
+ * an untranslatable guest address, so the eDMA IMWR completion target must
+ * instead come from firmware (which reads the live host-programmed HW MSI
+ * capability).  Detection is tiered so every arch/kernel is covered:
+ *  1. x86 (Intel+AMD): architected hypervisor-present CPUID bit — every
+ *     hypervisor sets it, fully vendor-agnostic, all kernel versions.
+ *  2. ARM 5.11+: spec-defined SMCCC vendor-hyp UID query (dx_dma_detect_vm_smccc).
+ *  3. Fallback (all arches/versions): DMI/SMBIOS vendor+product string match
+ *     (dx_dma_detect_vm_dmi) — broadest hypervisor-vendor coverage.
+ * If none matches, the driver treats the platform as bare metal.
+ */
+static bool dx_dma_detect_vm(void)
+{
+#ifdef CONFIG_X86
+	/* Architected: every x86 hypervisor sets this CPUID bit. */
+	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
+		return true;
+#endif
+
+	/* ARM 5.11+: try the spec-defined query first, else fall back to DMI. */
+	if (dx_dma_detect_vm_smccc())
+		return true;
+
+	return dx_dma_detect_vm_dmi();
+}
+
+/*
+ * Apply a new MSI tuple to the cached irq[0] value and reprogram every
+ * DMA channel's completion (IMWR) target.  Because all channels share
+ * irq[0] (pos == 0 mapping), this handles both single- and multi-MSI.
+ * Returns true if a change was applied.
+ */
+static bool dx_dma_apply_msi(struct dw_edma *dw, const struct msi_msg *msi)
+{
 	struct dx_edma_irq *dw_irq = &dw->irq[0];
 	struct dw_edma_chan *chan;
 	int i;
 
-	/* Read current MSI from PCI config space */
-	if (dx_pci_read_msi_msg(dw->pdev, &pci_msi) != 0)
-		return;
-
-	/* Check if MSI changed since last update */
-	if (pci_msi.address_lo == dw_irq->msi.address_lo &&
-	    pci_msi.address_hi == dw_irq->msi.address_hi &&
-	    pci_msi.data == dw_irq->msi.data) {
-		return;  /* No change */
+	if (msi->address_lo == dw_irq->msi.address_lo &&
+	    msi->address_hi == dw_irq->msi.address_hi &&
+	    msi->data == dw_irq->msi.data) {
+		return false;  /* No change */
 	}
 
-	/* MSI mismatch detected - update cached value and EP registers */
-	pr_debug("dx_dma: MSI config updated by irqbalance - [addr=0x%x_%x, data=0x%x] -> [addr=0x%x_%x, data=0x%x]\n",
+	pr_debug("Updating MSI - [addr=0x%x_%x, data=0x%x] -> [addr=0x%x_%x, data=0x%x]\n",
 		dw_irq->msi.address_hi, dw_irq->msi.address_lo, dw_irq->msi.data,
-		pci_msi.address_hi, pci_msi.address_lo, pci_msi.data);
+		msi->address_hi, msi->address_lo, msi->data);
 
-	/* Update cached MSI */
-	memcpy(&dw_irq->msi, &pci_msi, sizeof(pci_msi));
+	memcpy(&dw_irq->msi, msi, sizeof(*msi));
 
-	/* Update all DMA channels */
 	for (i = 0; i < dw->wr_ch_cnt + dw->rd_ch_cnt; i++) {
 		chan = &dw->chan[i];
-		memcpy(&chan->msi, &pci_msi, sizeof(pci_msi));
+		memcpy(&chan->msi, msi, sizeof(*msi));
 		dw_edma_v0_core_device_config(chan);
 	}
+
+	return true;
 }
+
+/*
+ * Check and fix MSI mismatch before DMA transfer.
+ * Called only when nr_irqs == 1. Detects if the MSI target changed and
+ * updates EP DMA registers accordingly.
+ *
+ * In a VFIO/VM guest the PCI config-space read returns the untranslatable
+ * guest GPA, so the authoritative MSI target comes from the firmware
+ * (cached in dw->hw_msi via dx_edma_set_hw_msi()).  On bare metal we keep
+ * reading PCI config space to follow irqbalance re-affinity.
+ */
+static void dx_dma_check_and_fix_msi(struct dw_edma *dw)
+{
+	struct msi_msg pci_msi;
+
+	if (dw->vm_env) {
+		if (!dw->hw_msi.valid)
+			return;  /* FW has not reported a live MSI yet */
+
+		/* Pair with smp_wmb() in dx_edma_set_hw_msi(): ensure the
+		 * MSI fields are observed only after 'valid' is seen set. */
+		smp_rmb();
+		pci_msi.address_lo = dw->hw_msi.address_lo;
+		pci_msi.address_hi = dw->hw_msi.address_hi;
+		pci_msi.data = dw->hw_msi.data;
+	} else {
+		/* Read current MSI from PCI config space */
+		if (dx_pci_read_msi_msg(dw->pdev, &pci_msi) != 0)
+			return;
+	}
+
+	dx_dma_apply_msi(dw, &pci_msi);
+}
+
+/*
+ * dx_edma_is_vm_env - Report whether the eDMA device runs as a VFIO/VM guest.
+ * @dev_id: device index.
+ *
+ * Used by the RT driver to decide whether to query the firmware for the
+ * live HW MSI capability.  Returns false if the device is not found.
+ */
+bool dx_edma_is_vm_env(u32 dev_id)
+{
+	struct dw_edma *dw = dx_dev_list_get((int)dev_id);
+
+	if (!dw)
+		return false;
+
+	return dw->vm_env;
+}
+EXPORT_SYMBOL_GPL(dx_edma_is_vm_env);
+
+/*
+ * dx_edma_set_hw_msi - Store the firmware-reported live HW MSI tuple.
+ * @dev_id:     device index.
+ * @addr_lo:    MSI message address low.
+ * @addr_hi:    MSI message upper address (0 for 32-bit).
+ * @data:       MSI message data (base vector).
+ * @nr_vectors: number of allocated MSI vectors.
+ *
+ * Caches the tuple in dw->hw_msi and, when running as a VM guest,
+ * immediately reprograms all DMA channels so the first transfer already
+ * targets the correct host-visible IMWR address.
+ */
+void dx_edma_set_hw_msi(u32 dev_id, u32 addr_lo, u32 addr_hi, u32 data,
+			u32 nr_vectors)
+{
+	struct dw_edma *dw = dx_dev_list_get((int)dev_id);
+	struct msi_msg msi;
+
+	if (!dw)
+		return;
+
+	dw->hw_msi.address_lo = addr_lo;
+	dw->hw_msi.address_hi = addr_hi;
+	dw->hw_msi.data = data;
+	dw->hw_msi.nr_vectors = nr_vectors;
+	/* Publish the fields before 'valid'; pairs with smp_rmb() in
+	 * dx_dma_check_and_fix_msi(). */
+	smp_wmb();
+	dw->hw_msi.valid = true;
+
+	if (!dw->vm_env)
+		return;
+
+	msi.address_lo = addr_lo;
+	msi.address_hi = addr_hi;
+	msi.data = data;
+
+	if (dx_dma_apply_msi(dw, &msi))
+		dev_info(&dw->pdev->dev,
+			 "Applying HW MSI [addr=0x%x_%x, data=0x%x, vecs=%u]\n",
+			 addr_hi, addr_lo, data, nr_vectors);
+}
+EXPORT_SYMBOL_GPL(dx_edma_set_hw_msi);
 
 static void dw_edma_start_transfer(struct dw_edma_chan *chan);
 
@@ -2903,14 +3103,20 @@ static int dw_edma_channel_setup(struct dw_edma_chip *chip, bool write,
 	/* Register DMA device */
 	err = dma_async_device_register(dma);
 
+	/*
+	 * vchan_init() set every chan->vc.chan.device to `dma`, so the
+	 * registered device id is simply dma->dev_id.  Use it directly instead
+	 * of dereferencing the loop variable `chan`, which the compiler cannot
+	 * prove is initialized when the channel loop runs zero times.
+	 */
 	dbg_init("%s Channel ID ::: %d\n",
 		write ? "DMA_READ" : "DMA_WRITE",
-		chan->vc.chan.device->dev_id);
+		dma->dev_id);
 	if (write) {
-		dw->rd_dma_id = chan->vc.chan.device->dev_id;
+		dw->rd_dma_id = dma->dev_id;
 		memset(dw->rd_dma_chan, 0x00, sizeof(dw->rd_dma_chan));
 	} else {
-		dw->wr_dma_id = chan->vc.chan.device->dev_id;
+		dw->wr_dma_id = dma->dev_id;
 		memset(dw->wr_dma_chan, 0x00, sizeof(dw->wr_dma_chan));
 	}
 
@@ -2975,15 +3181,25 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 			return err;
 		}
 
-		/* Read current MSI from PCI config space - use OS-assigned value as-is */
-		if (dx_pci_read_msi_msg(dw->pdev, &dw->irq[0].msi) != 0) {
-			pr_warn("dx_dma: Failed to read MSI from PCI config\n");
-			if (irq_get_msi_desc(irq))
-				get_cached_msi_msg(irq, &dw->irq[0].msi);
+		if (dw->vm_env) {
+			/* VFIO/VM guest: the config-space MSI is an untranslatable
+			 * guest GPA, so do NOT program it here.  The authoritative
+			 * host-visible HW MSI is supplied later by firmware via
+			 * dx_edma_set_hw_msi().  Leave dw->irq[0].msi zeroed until
+			 * then; no DMA runs before the FW MSI arrives. */
+			pr_info("Virtual env detected - bypassing MSI config-space setup (IRQ %d)\n",
+				irq);
+		} else {
+			/* Read current MSI from PCI config space - use OS-assigned value as-is */
+			if (dx_pci_read_msi_msg(dw->pdev, &dw->irq[0].msi) != 0) {
+				pr_warn("Failed to read MSI from PCI config\n");
+				if (irq_get_msi_desc(irq))
+					get_cached_msi_msg(irq, &dw->irq[0].msi);
+			}
+			pr_info("Applying Host CAP MSI - addr=0x%x_%x, data=0x%x (IRQ %d)\n",
+				dw->irq[0].msi.address_hi, dw->irq[0].msi.address_lo,
+				dw->irq[0].msi.data, irq);
 		}
-		pr_info("dx_dma: Single MSI mode - addr=0x%x_%x, data=0x%x (IRQ %d)\n",
-			dw->irq[0].msi.address_hi, dw->irq[0].msi.address_lo,
-			dw->irq[0].msi.data, irq);
 	} else {
 		/* Distribute IRQs equally among all channels */
 		int tmp = dw->nr_irqs;
@@ -3109,8 +3325,17 @@ int dx_dma_probe(struct dw_edma_chip *chip)
 	dw->pdev = to_pci_dev(dev);
 	dw_iatu_default_config_set(dw);
 
+	/*
+	 * Detect VFIO/VM guest.  In a guest the PCI config-space MSI read
+	 * returns the guest GPA which VFIO cannot translate, so the eDMA
+	 * IMWR completion address must instead come from the firmware
+	 * (which reads the live host-programmed HW MSI capability).
+	 */
+	dw->vm_env = dx_dma_detect_vm();
+
 	dw->wr_ch_cnt = min_t(u16, dw->wr_ch_cnt,
 			      dw_edma_v0_core_ch_count(dw, EDMA_DIR_WRITE));
+
 	dw->wr_ch_cnt = min_t(u16, dw->wr_ch_cnt, EDMA_MAX_WR_CH);
 
 	dw->rd_ch_cnt = min_t(u16, dw->rd_ch_cnt,

@@ -13,6 +13,9 @@
 #include <linux/pci.h>
 #include <linux/interrupt.h>
 
+#include "dx_pci_compat.h"	//DEEPX MODIFIED: 4.4 pci_* compat
+#include "dx_mm_compat.h"	//DEEPX MODIFIED: 4.4 kvmalloc/kvfree compat
+#include "dx_ida_compat.h"	//DEEPX MODIFIED: 4.4 ida_alloc_max/ida_free compat
 #include "dx_edma.h"
 #if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
 #include "dx_message.h"
@@ -457,6 +460,15 @@ struct dw_edma {
 	int							dma_irqs; /* number of edma irqs */
 	int							nr_irqs;
 	u16							event_irq_idx;	/* Error index of MSI vector table */
+
+	bool						vm_env;		/* true when running as a VFIO/VM guest */
+	struct dx_hw_msi {
+		u32  address_lo;
+		u32  address_hi;
+		u32  data;
+		u32  nr_vectors;
+		bool valid;
+	} hw_msi;					/* MSI tuple reported by FW (live HW MSI cap) */
 	
 	enum dx_edma_map_format		mf;
 

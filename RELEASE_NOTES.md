@@ -1,4 +1,15 @@
 # RELEASE_NOTES
+## v2.6.0 / 2026-08-03
+
+### 1. Changed
+- Enhance MSI Handling for virtualization support in eDMA driver.
+
+### 2. Fixed
+- support kernel version 4.4.0
+- don't let forked child's close() cancel parent's ioctl wait
+
+### 3. Added
+
 ## v2.5.1 / 2026-07-03
 
 ### 1. Changed
