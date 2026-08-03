@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0
 # DeepX Synopsys PCIe driver
 
-ccflags-y += -I $(src)/include
-ccflags-y += -I $(src)/../include
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/../include
 
 ccflags-y += $(CCFLAGS)
+
+# DEEPX MODIFIED: newer GCC flags -Waddress-of-packed-member on MMIO register
+# structs (intentionally __packed).  Suppress so kernel 4.4 gcc-wrapper.py does
+# not treat this benign warning as a fatal error.
+ccflags-y += -Wno-address-of-packed-member
 
 # Always compile perf measurement code (runtime-gated via sysfs)
 ccflags-y += -DDMA_PERF_MEASURE
@@ -45,7 +50,7 @@ dx_dma-y := dw-edma-pcie.o dw-edma-core.o dw-edma-v0-core.o \
 		dx_dma_sysfs.o dx_link_health.o
 
 ifneq ($(filter -DRPI_DEBUG_BUILD=1,$(ccflags-y)),)
-ccflags-y += -I $(src)/utils/rpi
+ccflags-y += -I$(src)/utils/rpi
 endif
 
 ifneq ($(CONFIG_DX_AI_ACCEL_RT),)
@@ -54,6 +59,14 @@ endif
 
 ifeq ($(CONFIG_DMA_VIRTUAL_CHANNELS),)
 dx_dma-y += virt-dma.o
+else
+# Kernel provides virt-dma but 4.4 built-in virt-dma lacks vchan_tx_desc_free
+# (added in mainline 4.7).  Compile the extension stub only when the symbol is
+# absent from the kernel's Module.symvers.  On 5.x kernels it is already in
+# vmlinux — compiling it would cause a "exported twice" MODPOST error.	//DEEPX MODIFIED
+ifeq ($(shell grep -qw vchan_tx_desc_free $(objtree)/Module.symvers 2>/dev/null && echo y),)
+dx_dma-y += dx_vchan_ext.o
+endif
 endif
 
 obj-$(CONFIG_DX_AI_ACCEL_PCIE_DEEPX) += dx_dma.o

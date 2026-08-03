@@ -164,6 +164,8 @@ function setup_args() {
             _args+=("ARCH=x86")
         elif [[ ${_arch} == "riscv64" ]]; then
             _args+=("ARCH=riscv")
+        elif [[ ${_arch} == "aarch64" ]]; then
+            _args+=("ARCH=arm64")
         else
             _args+=("ARCH=${_arch}")
         fi

@@ -6,7 +6,7 @@
  * Author: Taegyun An <atg@deepx.ai>
  */
 
-#include <linux/bitfield.h>
+#include "dx_bitfield_compat.h"	//DEEPX MODIFIED: 4.4 FIELD_* compat
 #include <linux/delay.h>
 #include <linux/irq.h>
 #include <linux/moduleparam.h>
@@ -19,8 +19,10 @@ static inline bool dx_pcie_has_flr(struct pci_dev *dev)
 
 	if (!pci_is_pcie(dev))
 		return false;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0))
 	if (dev->dev_flags & PCI_DEV_FLAGS_NO_FLR_RESET)
 		return false;
+#endif
 	pcie_capability_read_dword(dev, PCI_EXP_DEVCAP, &cap);
 	return !!(cap & PCI_EXP_DEVCAP_FLR);
 }
@@ -2108,13 +2110,16 @@ int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
 	u32 tmp = 0;
+	u32 msi_addr_lo = chan->msi.address_lo;
+	u32 msi_addr_hi = chan->msi.address_hi;
+	u32 msi_data = chan->msi.data;
 
 	/* MSI done addr - low, high */
-	SET_RW_32(dw, chan->dir, done_imwr.lsb, chan->msi.address_lo);
-	SET_RW_32(dw, chan->dir, done_imwr.msb, chan->msi.address_hi);
+	SET_RW_32(dw, chan->dir, done_imwr.lsb, msi_addr_lo);
+	SET_RW_32(dw, chan->dir, done_imwr.msb, msi_addr_hi);
 	/* MSI abort addr - low, high */
-	SET_RW_32(dw, chan->dir, abort_imwr.lsb, chan->msi.address_lo);
-	SET_RW_32(dw, chan->dir, abort_imwr.msb, chan->msi.address_hi);
+	SET_RW_32(dw, chan->dir, abort_imwr.lsb, msi_addr_lo);
+	SET_RW_32(dw, chan->dir, abort_imwr.msb, msi_addr_hi);
 	/* MSI data - low, high */
 	switch (chan->id) {
 	case 0:
@@ -2142,12 +2147,12 @@ int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
 		/* Channel odd {1, 3, 5, 7} */
 		tmp &= EDMA_V0_CH_EVEN_MSI_DATA_MASK;
 		tmp |= FIELD_PREP(EDMA_V0_CH_ODD_MSI_DATA_MASK,
-				  chan->msi.data);
+				  msi_data);
 	} else {
 		/* Channel even {0, 2, 4, 6} */
 		tmp &= EDMA_V0_CH_ODD_MSI_DATA_MASK;
 		tmp |= FIELD_PREP(EDMA_V0_CH_EVEN_MSI_DATA_MASK,
-				  chan->msi.data);
+				  msi_data);
 	}
 
 	switch (chan->id) {
