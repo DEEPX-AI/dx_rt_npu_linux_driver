@@ -104,5 +104,8 @@ void dx_pcie_register_link_event_callback(u32 dev_id,
 					  dx_pcie_link_event_cb_t cb,
 					  void *data);
 void dx_pcie_unregister_link_event_callback(u32 dev_id);
+bool dx_edma_is_vm_env(u32 dev_id);
+void dx_edma_set_hw_msi(u32 dev_id, u32 addr_lo, u32 addr_hi, u32 data,
+			u32 nr_vectors);
 
 #endif /*_DX_PCIE_API_H*/

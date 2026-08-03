@@ -1,3 +1,11 @@
+dxrt-driver-dkms (2.6.0-2) unstable; urgency=medium
+
+  - Enhance MSI Handling for virtualization support in eDMA driver.
+  - support kernel version 4.4.0
+  - don't let forked child's close() cancel parent's ioctl wait
+
+ -- dx-ci <dci@deepx.ai>  Mon, 03 Aug 2026 14:12:57 +0900
+
 dxrt-driver-dkms (2.5.1-2) unstable; urgency=medium
 
   - Reject in-flight mailbox cmds during FW reboot, harden recovery sleep

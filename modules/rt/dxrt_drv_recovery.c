@@ -22,6 +22,7 @@
 #include <linux/delay.h>
 
 #include "dxrt_drv.h"
+#include "dx_sysfs_compat.h"	//DEEPX MODIFIED: 4.4 sysfs_emit compat
 #include "dxrt_recovery_cfg.h"
 
 #if IS_ACCELERATOR

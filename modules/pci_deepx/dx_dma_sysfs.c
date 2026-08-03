@@ -9,6 +9,7 @@
 #include <linux/device.h>
 #include <linux/pci.h>
 #include <linux/mutex.h>
+#include "dx_sysfs_compat.h"	//DEEPX MODIFIED: 4.4 sysfs_emit compat
 #include "dx_dma_sysfs.h"
 #include "dx_util.h"
 #include "dx_link_health.h"

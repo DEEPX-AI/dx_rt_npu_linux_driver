@@ -9,6 +9,7 @@
 #define __DXRT_DRV_H
 
 #include <linux/types.h>
+#include <linux/version.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/reset.h>
@@ -20,7 +21,9 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/sched.h>
-#include <linux/sched/signal.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0))
+#include <linux/sched/signal.h>	/* split out of linux/sched.h in 4.11 */
+#endif
 #include <linux/kthread.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
@@ -347,6 +350,17 @@ typedef enum {
  * mailbox-ready edge gate for them.
  */
 #define DX_FW_DLMSG_MIN_VER    (270U)  /* FW 2.7.0 */
+/* CMD : DXRT_CMD_PCIE (must match firmware dxrt_pcie_sub_cmd_t) */
+#define DX_GET_MSI_IMWR     6
+
+/* DX_GET_MSI_IMWR response payload (must match firmware dx_msi_imwr_resp_t) */
+typedef struct {
+    uint32_t addr_lo;
+    uint32_t addr_hi;
+    uint32_t data;
+    uint32_t nr_vectors;
+    uint32_t msi_enabled;
+} dx_msi_imwr_resp_t;
 
 #define DXRT_IOCTL_MAGIC     'D'
 typedef enum {
@@ -564,6 +578,7 @@ struct dxrt_driver {
 struct dxrt_file_ctx {
     struct dxdev *dx;
     atomic_t terminating;
+    pid_t owner_tgid;
 };
 
 typedef int (*dxrt_message_handler)(struct dxdev*, dxrt_message_t*, struct dxrt_file_ctx*);
@@ -700,6 +715,8 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_register_event_callback(...) do {} while(0)
 #define dx_pcie_unregister_event_callback(...) do {} while(0)
 
+#define dx_edma_is_vm_env(...) 0
+#define dx_edma_set_hw_msi(...) 0
 
 int dxrt_request_handler(void *data);
 #endif

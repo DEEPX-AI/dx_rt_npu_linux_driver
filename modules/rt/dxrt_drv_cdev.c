@@ -30,6 +30,7 @@
 #endif
 
 #include "dxrt_drv.h"
+#include "dx_poll_compat.h"	//DEEPX MODIFIED: 4.4 __poll_t/EPOLL* compat
 #if DEVICE_TYPE==0
 #include "dx_pcie_api.h"
 #endif
@@ -57,6 +58,7 @@ static int dxrt_dev_open(struct inode *i, struct file *f)
 
     ctx->dx = dx;
     atomic_set(&ctx->terminating, 0);
+    ctx->owner_tgid = current->tgid;
 
     if (dx->type == DX_ACC) {
         ret = dx_sgdma_init(num);
@@ -155,6 +157,16 @@ static int dxrt_dev_flush(struct file *f, fl_owner_t id)
         return 0;
 
     pr_debug("%s: %s\n", f->f_path.dentry->d_iname, __func__);
+
+    /*
+     * The ctx (open file description) is shared across fork(). A forked
+     * child that closes the inherited fd must NOT terminate the parent's
+     * pending operations. Only wake waiters when the closer belongs to the
+     * owning thread group. Threads of the same process share tgid, so
+     * per-thread close() of a multi-threaded owner still works.
+     */
+    if (current->tgid != ctx->owner_tgid)
+        return 0;
 
     /* Wake up all waiting threads */
     dxrt_wakeup_waiters(dx, ctx);

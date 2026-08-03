@@ -7,6 +7,7 @@
  */
 
 #include <linux/poll.h>
+#include "dx_poll_compat.h"	//DEEPX MODIFIED: 4.4 __poll_t/EPOLL* compat
 #include "dx_cdev.h"
 #include "dx_cdev_ctrl.h"
 #include "dx_lib.h"

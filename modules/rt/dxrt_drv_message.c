@@ -158,6 +158,8 @@ void dxrt_device_init_early(struct dxdev *dev)
     dx_pcie_register_link_event_callback(num, dxrt_link_event_notify, dev);
 }
 
+static void dxrt_query_msi_imwr(struct dxdev *dev);
+
 /*
 * Initialization function to drive the device
 */
@@ -170,6 +172,15 @@ void dxrt_device_init(struct dxdev* dev)
         /* do nothing */
     } else {
         dxrt_bind_pcie_resources(dev, true);
+        dev->msg                = (dxrt_device_message_t*)dx_pcie_get_message_area(num);
+        dev->log                = (uint32_t*)dx_pcie_get_log_area(num);
+        dev->dl                 = (dx_download_msg*)dx_pcie_get_dl_area(num);
+        dev->request_queue      = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE0);
+        dev->request_queue1     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE1);
+        dev->request_queue2     = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_NORMAL_QUEUE2);
+        dev->request_high_queue = (dxrt_queue_t*)dx_pcie_get_request_queue(num, DX_HIGH_QUEUE);
+        dx_pcie_clear_response_queue(num);
+        dxrt_query_msi_imwr(dev);
     }
 }
 
@@ -358,6 +369,54 @@ static inline bool dxrt_fw_mbox_blocked(struct dxdev *dev)
 }
 
 /*
+ * dxrt_query_msi_imwr - Ask the firmware for the live HW MSI capability.
+ *
+ * Only meaningful under VFIO/VM passthrough, where the guest's PCI
+ * config-space MSI read returns an untranslatable GPA.  The firmware reads
+ * the host-programmed HW MSI capability and returns the real completion
+ * (IMWR) target, which we hand to the eDMA driver.  A timeout is non-fatal:
+ * the eDMA driver simply keeps using the PCI config-space path.
+ */
+static void dxrt_query_msi_imwr(struct dxdev *dev)
+{
+    int num = dev->id;
+    dx_msi_imwr_resp_t resp;
+    int ret;
+
+    if (!dev->msg)
+        return;
+
+    if (!dx_edma_is_vm_env(num))
+        return;
+
+    mutex_lock(&dev->msg_lock);
+    dev->msg->cmd     = DXRT_CMD_PCIE;
+    dev->msg->sub_cmd = DX_GET_MSI_IMWR;
+    dev->msg->size    = 0;
+    dev->msg->ack     = 0;
+    dx_pcie_notify_msg_to_device(num);
+    ret = dxrt_polling_ack(dev, 1);
+    if (ret != 0) {
+        mutex_unlock(&dev->msg_lock);
+        pr_warn(MODULE_NAME "%d: %s: FW query timed out, keeping config-space path\n",
+                num, __func__);
+        return;
+    }
+    resp.addr_lo     = dev->msg->data[0];
+    resp.addr_hi     = dev->msg->data[1];
+    resp.data        = dev->msg->data[2];
+    resp.nr_vectors  = dev->msg->data[3];
+    resp.msi_enabled = dev->msg->data[4];
+    mutex_unlock(&dev->msg_lock);
+
+    if (!resp.msi_enabled) {
+        pr_warn(MODULE_NAME "%d: %s: FW reports MSI disabled\n", num, __func__);
+        return;
+    }
+    dx_edma_set_hw_msi(num, resp.addr_lo, resp.addr_hi, resp.data, resp.nr_vectors);
+}
+
+/**
  * dxrt_msg_general - Read/Write data from/to the dxrt device 
  * @dev: The deepx device on kernel
  * @msg: User-space pointer including the data buffer
@@ -1885,8 +1944,12 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
 
     spin_lock_irqsave(&dev->error_lock, flags);
     if (dev_event.event_type == DXRT_EVENT_ERROR) {
+        ssize_t suffix_len;
+
         dev_event.dx_rt_err.rt_driver_version          = DXRT_MOD_VERSION_NUMBER;
-        strscpy(dev_event.dx_rt_err.rt_driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
+        suffix_len = strscpy(dev_event.dx_rt_err.rt_driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
+        if (suffix_len < 0)
+            pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
         dev_event.dx_rt_err.pcie_driver_version        = info.driver_version;
         dev_event.dx_rt_err.bus                        = info.bus;
         dev_event.dx_rt_err.dev                        = info.dev;
@@ -1986,10 +2049,14 @@ retry_after_recovery:
 
     spin_lock_irqsave(&dev->error_lock, flags);
     if (dev_event.event_type == DXRT_EVENT_ERROR) {
+        ssize_t suffix_len;
+
         dev_event.dx_rt_err.rt_driver_version          = DXRT_MOD_VERSION_NUMBER;
-        strscpy(dev_event.dx_rt_err.rt_driver_version_suffix,
+        suffix_len = strscpy(dev_event.dx_rt_err.rt_driver_version_suffix,
             __stringify(RT_VERSION_SUFFIX),
             sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
+        if (suffix_len < 0)
+            pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
         dev_event.dx_rt_err.pcie_driver_version        = info.driver_version;
         dev_event.dx_rt_err.bus                        = info.bus;
         dev_event.dx_rt_err.dev                        = info.dev;
@@ -2054,8 +2121,12 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg, s
         case DRVINFO_CMD_GET_RT_INFO_V2:
             if (msg->data!=NULL) {
                 struct dxrt_drv_info_v2 info;
+                ssize_t suffix_len;
+
                 info.driver_version = DXRT_MOD_VERSION_NUMBER;
-                strscpy(info.driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(info.driver_version_suffix));
+                suffix_len = strscpy(info.driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(info.driver_version_suffix));
+                if (suffix_len < 0)
+                    pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
                 if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
                     pr_err("%d: %s cmd:%d failed.\n", num, __func__, msg->sub_cmd);
                     ret = -EFAULT;

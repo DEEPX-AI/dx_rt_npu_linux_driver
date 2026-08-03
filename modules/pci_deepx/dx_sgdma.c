@@ -58,7 +58,7 @@ static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
 	kvfree(cb->pages);
 #else
-	kfree(cb->pages)
+	kfree(cb->pages);
 #endif
 	cb->pages = NULL;
 }
