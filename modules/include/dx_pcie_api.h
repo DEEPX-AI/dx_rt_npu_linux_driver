@@ -48,6 +48,13 @@ void dx_sgdma_deinit(int dev_id);
 int dx_pcie_reset_dma_channels(int dev_id);
 ssize_t dx_sgdma_write(char *dest, u64 src, size_t count, int dev_id, int dma_ch, bool npu_run, enum mem_type type, dma_addr_t dma_addr);
 ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch, enum mem_type type);
+
+/* Persistent user-buffer registration. A registered buffer is pinned and
+ * DMA-mapped once; every later transfer on it skips pin/map/unmap entirely.
+ * @owner is an opaque per-fd token used to reclaim registrations on close. */
+int dx_sgdma_register_buffer(int dev_id, void *va, size_t size, bool write, void *owner);
+int dx_sgdma_unregister_buffer(int dev_id, void *va, bool write, void *owner);
+void dx_sgdma_unregister_owner(void *owner);
 unsigned int dx_pcie_interrupt(int dev_id, int irq_id);
 void dx_pcie_interrupt_clear(int dev_id, int irq_id);
 unsigned int dx_pcie_interrupt_wakeup(int dev_id, int irq_id);
@@ -90,6 +97,7 @@ void dx_pcie_enqueue_abort_event(u32 dev_id, uint32_t err_code,
 void dx_pcie_clear_event_response(u32 dev_id);
 void dx_pcie_get_driver_info(struct deepx_pcie_info *info, int dev_id);
 void dx_pcie_notify_msg_to_device(u32 dev_id);
+void dx_pcie_send_stable_check(u32 dev_id);
 int dx_pcie_notify_req_to_device(u32 dev_id, u32 queue, u8 lock);
 
 /* Response/Event callbacks from ISR to RT module */

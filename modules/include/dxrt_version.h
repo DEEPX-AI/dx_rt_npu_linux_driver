@@ -8,16 +8,18 @@
 #ifndef __DXRT_VERSION_H__
 #define __DXRT_VERSION_H__
 
-/* Helper macro for version prefix */
-#ifndef RT_VERSION_SUFFIX
-#define RT_VERSION_SUFFIX ""
+#ifdef RT_VERSION_SUFFIX
+#define DXRT_MODULE_VERSION_SUFFIX "-" __stringify(RT_VERSION_SUFFIX)
+#define DXRT_RUNTIME_VERSION_SUFFIX __stringify(RT_VERSION_SUFFIX)
+#else
+#define DXRT_MODULE_VERSION_SUFFIX ""
+#define DXRT_RUNTIME_VERSION_SUFFIX ""
 #endif
 
 #define DXRT_MODULE_VERSION         \
     __stringify(RT_VERSION_MAJOR) "." \
     __stringify(RT_VERSION_MINOR) "." \
-    __stringify(RT_VERSION_PATCH) "-" \
-    __stringify(RT_VERSION_SUFFIX)
+    __stringify(RT_VERSION_PATCH) DXRT_MODULE_VERSION_SUFFIX
 
 /* Standard version number (for backward compatibility) */
 #define DXRT_MOD_VERSION_NUMBER  \

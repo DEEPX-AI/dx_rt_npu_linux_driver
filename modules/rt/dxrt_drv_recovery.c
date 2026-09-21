@@ -329,6 +329,39 @@ static int fw_ping_probe(struct dxdev *dev, unsigned int timeout_ms,
     return ret;
 }
 
+/*
+ * fw_send_stable_check - Tell the EP that the host side is up.
+ *
+ * The EP times its LTSSM stability window from this message and only then
+ * relaxes its polling cadence.  Fire-and-forget: no ACK is awaited, so a FW
+ * that does not implement the sub-command costs us nothing.  Legacy images
+ * (< 2.7.0) never publish MAILBOX_READY and are skipped outright.
+ */
+static void fw_send_stable_check(struct dxdev *dev)
+{
+    if (!dev || !dev->msg)
+        return;
+
+    if (!dx_dlmsg_mailbox_ready(dev->dl)) {
+        pr_info(MODULE_NAME "%d: skip stable-check, FW mailbox not ready\n",
+                dev->id);
+        return;
+    }
+
+    mutex_lock(&dev->msg_lock);
+
+    dx_write32(dev->msg, dxrt_device_message_t, size, 0);
+    dx_write32(dev->msg, dxrt_device_message_t, cmd, DXRT_CMD_PCIE);
+    dx_write32(dev->msg, dxrt_device_message_t, sub_cmd, DX_PCIE_STABLE_CHECK);
+    dx_write32(dev->msg, dxrt_device_message_t, ack, 0);
+
+    dx_pcie_notify_msg_to_device(dev->id);
+
+    mutex_unlock(&dev->msg_lock);
+
+    pr_info(MODULE_NAME "%d: stable-check sent\n", dev->id);
+}
+
 /* ------------------------------------------------------------------ */
 /* Link-event bridge                                                  */
 /* ------------------------------------------------------------------ */
@@ -628,6 +661,9 @@ void dxrt_recovery_ready_work_fn(struct work_struct *work)
     for (ch = 0; ch <= MAX_PCIE_CH_NUM; ch++)
         wake_up_interruptible(&dev->response_wq[ch]);
     wake_up_interruptible(&dev->event_wq);
+
+    /* EP was rebooted or re-linked; re-arm its stability window. */
+    fw_send_stable_check(dev);
 
     emit_recovery_event(dev, DX_RECOVERY_DONE,
         atomic_read(&dev->last_recovery_reason));

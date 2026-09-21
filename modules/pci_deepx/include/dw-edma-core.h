@@ -12,6 +12,7 @@
 #include <linux/msi.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
+#include <linux/mutex.h>
 
 #include "dx_pci_compat.h"	//DEEPX MODIFIED: 4.4 pci_* compat
 #include "dx_mm_compat.h"	//DEEPX MODIFIED: 4.4 kvmalloc/kvfree compat
@@ -489,6 +490,10 @@ struct dw_edma {
 	u16							wr_dma_chan_list[EDMA_MAX_WR_CH]; /* 1 : used, 0: not-used */
 	struct mutex				rd_lock;
 	struct mutex				wr_lock;
+	struct mutex				outbound_mem_lock;
+	void						*outbound_mem_cpu_addr;
+	dma_addr_t					outbound_mem_dma_addr;
+	size_t						outbound_mem_size;
 	struct dx_pcie_msg			*dx_msg;
 
 	const struct dx_edma_core_ops	*ops;

@@ -32,7 +32,14 @@ typedef enum dx_pcie_perf_t {
     /* 3. Completion */
     PCIE_ISR_EXEC_T                 ,    /* [ISR]  ISR Execution Time */
     PCIE_WAKEUP_LATENCY_T           ,    /* [K->U] Wakeup Latency (Callback ~ Thread Resume) */
-    PCIE_POST_PROCESS_T             ,    /* [KERN] Post Processing (Unmap, etc) */
+    PCIE_POST_PROCESS_T             ,    /* [KERN] Post Processing (dma_unmap_sg) */
+    PCIE_USER_UNMAP_T               ,    /* [KERN] User page release (unpin_user_pages_dirty_lock) */
+    PCIE_SG_FREE_T                  ,    /* [KERN] SG table free */
+
+    /* 3-1. Sub-metrics already contained inside PCIE_DMA_XFER_T.
+     *      Kept after POST_PROCESS so stage-sum/gap math stays additive. */
+    PCIE_LLI_ACQUIRE_T              ,    /* [HELP] Helper channel (RD CH2/3) ownership wait */
+    PCIE_LLI_COPY_T                 ,    /* [HELP] Helper doorbell ~ LLI copy polling done */
 
     /* 4. Total Scopes */
     PCIE_KERNEL_DMA_TOTAL_T         ,    /* [ALL]  dw_edma_sg_process Total */
@@ -49,6 +56,8 @@ typedef struct dx_pcie_profiler_t {
     ktime_t     pref_t;
     uint64_t    count;
     uint64_t    size;
+    uint64_t    last_t;  /* elapsed of the most recent paired sample (for Top-N breakdown) */
+    uint8_t     armed;   /* set by start, cleared by end: guards duplicate/unpaired ends */
 } dx_pcie_profiler_t;
 
 /* PCIE NUM / DMA CHANNEL NUM / READ/WRITE Channel*/
@@ -59,6 +68,16 @@ extern struct dw_edma *dx_dev_list_get(int dev_id);
 
 extern char *show_pcie_profile(void);
 extern char *show_pcie_internal_stats(void);
+extern char *show_pcie_concurrency(void);
+extern char *show_pcie_outliers(void);
+extern char *show_pcie_top(void);
+extern void dx_pcie_record_stage(int type, int dev_n, int dma_n, int ch_n, uint64_t elapsed_t);
+extern uint32_t dx_pcie_outlier_thresh_us(void);
+extern void dx_pcie_outlier_set_thresh_us(uint32_t us);
+extern uint32_t dx_pcie_outlier_floor_us(void);
+extern void dx_pcie_outlier_set_floor_us(uint32_t us);
+extern bool dx_pcie_size_reset_enabled(void);
+extern void dx_pcie_set_size_reset_enabled(bool val);
 extern void clear_pcie_profile_info(int partial, int type_n, int dev_n, int dma_n, int ch_n);
 extern void dx_pcie_perf_clear_internal_stats(void);
 extern void dx_pcie_start_profile(int type, uint64_t size, int dev_n, int dma_n, int ch_n);

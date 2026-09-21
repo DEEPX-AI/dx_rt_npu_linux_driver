@@ -299,8 +299,26 @@ typedef enum {
     DXRT_CMD_PCIE               , /* Sub-command */
     DXRT_CMD_NPU_RUN_RESP_V2    ,
     DXRT_CMD_EVENT_V2           ,
+    DXRT_CMD_REGISTER_BUFFER    ,
+    DXRT_CMD_UNREGISTER_BUFFER  ,
     DXRT_CMD_MAX                ,
 } dxrt_cmd_t;
+
+/* CMD : DXRT_CMD_REGISTER_BUFFER / DXRT_CMD_UNREGISTER_BUFFER
+ * Pins and DMA-maps a user buffer once so that every later inference skips
+ * pin/map/unmap. The registration is owned by the file descriptor it was made
+ * on and is dropped automatically when that fd is closed. */
+typedef struct {
+    uint64_t addr;      /* user virtual address, page aligned recommended */
+    uint64_t size;      /* length in bytes */
+    uint32_t dir;       /* DXRT_BUF_DIR_* */
+    uint32_t reserved;
+} __attribute__((packed)) dxrt_buffer_reg_t;
+
+typedef enum {
+    DXRT_BUF_DIR_H2C = 0,   /* input: host -> device */
+    DXRT_BUF_DIR_C2H = 1,   /* output: device -> host */
+} dxrt_buf_dir_t;
 
 /* CMD : DXRT_CMD_IDENTIFY_DEVICE*/
 typedef enum {
@@ -652,6 +670,7 @@ bool     dx_dlmsg_wait_mailbox_ready(dx_download_msg __iomem *msg,
 /* Existing: 0..3 owned by GET_PCIE_INFO/CLEAR_ERR_STAT/LINK_FLAP/AER_INJECT */
 #define DX_PCIE_PING            (4u)
 #define DX_PCIE_CPU_RESET       (5u) /* test-only: FW-side cpu_reset_with_reason */
+#define DX_PCIE_STABLE_CHECK    (7u) /* probe done; FW starts LTSSM stability window */
 
 #define DX_PCIE_PING_MAGIC      (0x50494E47u) /* "PING" */
 #define DX_PCIE_PONG_MAGIC      (0x504F4E47u) /* "PONG" */
@@ -685,6 +704,9 @@ extern dxrt_message_handler message_handler[];
 #define dx_pcie_reset_dma_channels(...) 0
 #define dx_sgdma_write(...) 0
 #define dx_sgdma_read(...) 0
+#define dx_sgdma_register_buffer(...) 0
+#define dx_sgdma_unregister_buffer(...) 0
+#define dx_sgdma_unregister_owner(...) 0
 #define dx_pcie_get_message_area(...) 0
 #define dx_pcie_get_log_area(...) 0
 #define dx_pcie_get_dl_area(...) 0
