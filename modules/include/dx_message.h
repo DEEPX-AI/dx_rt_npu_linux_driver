@@ -14,6 +14,22 @@
 
 #define DX_PCIE_RESP_NUM    (3)
 
+/* Mailbox slot layout (must match firmware dx_msg_t / dxrt_device_message_t) */
+#define DX_MSG_OFF_CMD              (0x00)
+#define DX_MSG_OFF_SUB_CMD          (0x04)
+#define DX_MSG_OFF_ACK              (0x08)
+#define DX_MSG_OFF_SIZE             (0x0C)
+
+/* DLMSG readiness block offsets (must match dx_download_msg in dxrt_drv.h) */
+#define DX_MSG_DL_OFF_READY_MAGIC   (0x20)
+#define DX_MSG_DL_OFF_READY_FLAGS   (0x28)
+#define DX_MSG_DL_READY_MAGIC       (0x52454144u) /* "READ" */
+#define DX_MSG_DL_MAILBOX_READY     (1u << 3)
+
+/* Command values (must match dxrt_cmd_t / firmware dxrt_pcie_sub_cmd_t) */
+#define DX_MSG_CMD_PCIE             (29u)
+#define DX_MSG_PCIE_STABLE_CHECK    (7u)
+
 /* DMA error codes (must match dxrt_error_t in dxrt_drv.h) */
 #define ERR_PCIE_DMA_FAIL_BASE   100
 #define ERR_PCIE_DMA_CH_FAIL(ch)  (ERR_PCIE_DMA_FAIL_BASE + (ch))

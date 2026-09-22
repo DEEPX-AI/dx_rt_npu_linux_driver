@@ -1,3 +1,18 @@
+dxrt-driver-dkms (2.7.0-2) unstable; urgency=medium
+
+  - fix user buffer unmap spike time
+  - Change EP PCIe device task period when driver probe
+
+ -- dx-ci <dci@deepx.ai>  Tue, 22 Sep 2026 09:51:11 +0900
+
+dxrt-driver-dkms (2.6.0-2) unstable; urgency=medium
+
+  - Enhance MSI Handling for virtualization support in eDMA driver.
+  - support kernel version 4.4.0
+  - don't let forked child's close() cancel parent's ioctl wait
+
+ -- dx-ci <dci@deepx.ai>  Thu, 17 Sep 2026 11:06:53 +0900
+
 dxrt-driver-dkms (2.6.0-2) unstable; urgency=medium
 
   - Enhance MSI Handling for virtualization support in eDMA driver.

@@ -745,6 +745,13 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 		 * to avoid double-mapping and address overwrite. */
 		dbg_tfr("%s: pre_mapped buffer, skip dma_map_sg\n",
 			dma_chan_name(chan));
+		/* A registered user buffer keeps its mapping across transfers, so
+		 * the cache maintenance normally done by dma_map_sg() has to be
+		 * issued explicitly here. No-op on coherent architectures. */
+		if (cb->registered)
+			dma_sync_sg_for_device(dev, sgt->sgl, sgt->orig_nents,
+					       direction == DMA_DEV_TO_MEM ?
+					       DMA_FROM_DEVICE : DMA_TO_DEVICE);
 		if (direction == DMA_DEV_TO_MEM) {
 			sconf.src_addr = cb->ep_addr;
 			sconf.dst_addr = sg_dma_address(sg);
@@ -886,11 +893,14 @@ static int dw_edma_sg_process(struct dw_edma_info *info,
 
 	ret = dw_edma_wait_done(info, chan, start_epoch, true);
 
+	dx_pcie_end_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
+	/* Demote after the measurement: the rq lock and RT->CFS re-enqueue (and the
+	 * preemption it may trigger) is scheduler cost, not wakeup latency. */
 	if (policy == SCHED_NORMAL)
 		sched_set_normal(current, nice);
 #endif
-	dx_pcie_end_profile(PCIE_WAKEUP_LATENCY_T, info->cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
 
 	/* Recovery guard: channel already cleaned up, exit immediately */
 	if (atomic_read(&dw_chan->chip->dw->recovery_epoch) != start_epoch) {
@@ -1049,7 +1059,12 @@ err_stats:
 	 * every original page receives proper cache maintenance.
 	 * Skip unmap for pre-mapped buffers (dma_alloc_coherent). */
 	dx_pcie_start_profile(PCIE_POST_PROCESS_T, cb->len, info->dev_n, info->cb->npu_id, info->cb->write);
-	if (!cb->pre_mapped && orig_nents > 0) {
+	if (cb->registered) {
+		/* Mapping is persistent; only hand the buffer back to the CPU. */
+		if (direction == DMA_DEV_TO_MEM)
+			dma_sync_sg_for_cpu(dev, sgt->sgl, sgt->orig_nents,
+					    DMA_FROM_DEVICE);
+	} else if (!cb->pre_mapped && orig_nents > 0) {
 		if (direction == DMA_DEV_TO_MEM) {
 			dma_unmap_sg(dev, sgt->sgl, orig_nents, DMA_FROM_DEVICE);
 		} else {
@@ -1063,7 +1078,14 @@ err_alloc_descs:
 		dx_dma_release_chan_ownership(chan_lock, &chan_lock_flags);
 	}
 	WRITE_ONCE(dw_chan->transfer_wq, NULL);	/* Unpublish waitqueue */
-	sg_free_table(sgt);
+	dx_pcie_start_profile(PCIE_SG_FREE_T, cb->len, info->dev_n, cb->npu_id, cb->write);
+	/* A registered buffer's table is owned by the registry and outlives this
+	 * transfer. Note this must key off cb->registered and not cb->pre_mapped:
+	 * the kernel-buffer path also sets pre_mapped but allocates a fresh table
+	 * per call and relies on this free. */
+	if (!cb->registered)
+		sg_free_table(sgt);
+	dx_pcie_end_profile(PCIE_SG_FREE_T, cb->len, info->dev_n, cb->npu_id, cb->write);
 	info->done = true; 
 
 	return cb->result; // Return 0 on success, negative error code on failure
