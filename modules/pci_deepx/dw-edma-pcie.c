@@ -27,6 +27,7 @@
 #include "dx_dma_sysfs.h"
 #include "dx_link_health.h"
 #include "dx_message.h"
+#include "dx_buf_registry.h"
 #include "version.h"
 
 #ifdef RPI_DEBUG_BUILD
@@ -253,11 +254,12 @@ static const struct dx_edma_core_ops dw_edma_pcie_core_ops = {
 	.irq_vector = dw_edma_pcie_irq_vector,
 };
 
-static int dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
+static int __maybe_unused dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
 						int used_irqs, int allocated_irqs)
 {
 	struct irq_data *irq_data;
 	u32 expected_mask = 0;
+	u32 used_mask;
 	u32 mask;
 	u16 control;
 	int pos, mask_pos, max_irqs;
@@ -265,6 +267,8 @@ static int dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
 
 	if (allocated_irqs <= used_irqs)
 		return 0;
+
+	used_mask = BIT(used_irqs) - 1;
 
 	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
 	if (!pos) {
@@ -307,18 +311,22 @@ static int dw_edma_pcie_mask_unused_msi_vectors(struct pci_dev *pdev,
 	mask_pos = (control & PCI_MSI_FLAGS_64BIT) ?
 		PCI_MSI_MASK_64 : PCI_MSI_MASK_32;
 	pci_read_config_dword(pdev, pos + mask_pos, &mask);
+	/* msi_capability_init() masks every vector, and an RC irqchip that only
+	 * drives its own MSI controller never clears the endpoint's mask bits.
+	 * Clear the vectors we requested here or no MSI is ever delivered. */
+	mask &= ~used_mask;
 	mask |= expected_mask;
 	pci_write_config_dword(pdev, pos + mask_pos, mask);
 	pci_read_config_dword(pdev, pos + mask_pos, &mask);
-	if ((mask & expected_mask) != expected_mask) {
+	if ((mask & expected_mask) != expected_mask || (mask & used_mask)) {
 		pci_warn(pdev,
-			 "unused MSI vector mask readback failed (expected=0x%08x, current=0x%08x)\n",
-			 expected_mask, mask);
+			 "MSI vector mask readback failed (used=0x%08x, unused=0x%08x, current=0x%08x)\n",
+			 used_mask, expected_mask, mask);
 		return -EIO;
 	}
 
-	pci_info(pdev, "masked unused MSI vectors [%d-%d] (mask=0x%08x)\n",
-		 used_irqs, max_irqs - 1, mask);
+	pci_info(pdev, "MSI vectors [0-%d] unmasked, unused [%d-%d] masked (mask=0x%08x)\n",
+		 used_irqs - 1, used_irqs, max_irqs - 1, mask);
 
 	return 0;
 }
@@ -383,7 +391,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	struct dw_edma *dw;
 	int err, nr_irqs;
 	int i, mask, bar_size;
-	int total_irqs, multi_irqs;
+	int total_irqs, multi_irqs __maybe_unused;
 	u8 revision_id, prog_if;
 
 	dbg_init("pdev : %p name[%s].\n", pdev, pci_name(pdev));
@@ -468,14 +476,20 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	/* IRQs allocation */
 	pci_dbg(pdev, "Total IRQ number with including npu handler: %d\n", total_irqs);
-#ifdef RPI_BUILD
+#if defined(RPI_BUILD) || defined(DX_FORCE_SINGLE_MSI)
     /* BCM2712 (RPi CM5) brcmstb MSI controller allocates MSI vectors with
      * unaligned base data (e.g. data=0xc with MME=3 gives base=8, not 0xc).
      * The EP RTL generates data=(base & ~mask)|vector per PCI spec, but the
      * host expects data=base+vector — mismatch silently drops NPU done MSIs.
-     * Force single MSI: all events muxed via SRAM SW IRQ block (dx_sw_irq). */
+     * Force single MSI: all events muxed via SRAM SW IRQ block (dx_sw_irq).
+     * DX_FORCE_SINGLE_MSI (FORCE_SINGLE_MSI=1 at build time) forces the same
+     * path on any host, e.g. to reproduce/debug single-MSI behavior off-RPi. */
     nr_irqs = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+#ifdef RPI_BUILD
     pci_info(pdev, "RPi: forcing single MSI mode (brcmstb multi-MSI data misalignment)\n");
+#else
+    pci_info(pdev, "forcing single MSI mode (FORCE_SINGLE_MSI build option)\n");
+#endif
 #else
 	if (total_irqs > 1) {
 		multi_irqs = 1;
@@ -718,6 +732,7 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 	 * but causes a NULL-pointer dereference on the slow-path. */
 	mutex_init(&chip->dw->wr_lock);
 	mutex_init(&chip->dw->rd_lock);
+	mutex_init(&chip->dw->outbound_mem_lock);
 
 	/* Starting eDMA driver */
 	err = dx_dma_probe(chip);
@@ -726,13 +741,19 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 		goto err_dev_list_remove;
 	}
 
+	/* Mailbox is usable here and no cdev/RT user can race us yet. */
+	dx_pcie_send_stable_check(chip->dw->idx);
+
 	/* Saving data structure reference */
 	pci_set_drvdata(pdev, chip);
+	err = dx_dma_sysfs_device_create(pdev);
+	if (err)
+		goto err_dma_remove;
 
 	/* Create Cdev */
 	err = xpdev_create_interfaces(chip);
 	if (err)
-		goto err_dma_remove;
+		goto err_dma_sysfs_remove;
 
 	dw_edma_thread_init(chip->dw->idx);
 	chip->dw->init_completed = true;
@@ -754,9 +775,13 @@ static int dx_dma_pcie_probe(struct pci_dev *pdev,
 
 	return 0;
 
+err_dma_sysfs_remove:
+	dx_dma_sysfs_device_remove(pdev);
 err_dma_remove:
-	pci_set_drvdata(pdev, NULL);
 	dx_dma_remove(chip);
+	pci_clear_master(pdev);
+	dx_dma_sysfs_device_release(pdev);
+	pci_set_drvdata(pdev, NULL);
 
 err_dev_list_remove:
 	dx_dev_list_remove(chip->dw);
@@ -782,10 +807,19 @@ static void dx_dma_pcie_remove(struct pci_dev *pdev)
 	 * cancel_delayed_work_sync waits for in-flight worker to finish. */
 	dx_link_health_stop(chip->dw);
 
+	/* Drop registered user buffers while their DMA device is still alive. */
+	dx_buf_registry_del_device(chip->dw->idx);
+
+	/* Block new allocation/status access before tearing down its backing DMA. */
+	dx_dma_sysfs_device_remove(pdev);
+
 	/* Stopping eDMA driver */
 	err = dx_dma_remove(chip);
 	if (err)
 		pci_warn(pdev, "can't remove device properly: %d\n", err);
+	pci_clear_master(pdev);
+	dx_dma_sysfs_device_release(pdev);
+	pci_set_drvdata(pdev, NULL);
 
 	/* Remove Cdev */
 	xpdev_release_interfaces(chip->dw->xpdev);
@@ -1128,35 +1162,22 @@ static void dx_dma_pcie_shutdown(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id dx_dma_pcie_id_table[] = {
-	/* TODO: deprecation in 261231 */
+	/* TODO(Legacy Device ID): deprecation in 270631 */
 	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
 		DX_PCI_LEGACY_DEVICE_ID
 		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
-		DX_PCI_LEGACY_DEVICE_ID, 
-		DX_PCI_SUB_VENDOR_ID, 
-		DX_PCI_LEGACY_SUB_DEVICE_ID
+	/* New Device ID */
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
+		DX_M1_PCI_DEVICE_ID
 		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	/* M1 / M1M / H1[M1] / H1[M1M] */
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
-		DX_M1_PCI_DEVICE_ID, 
-		DX_PCI_SUB_VENDOR_ID, 
-		DX_M1_PCI_SUB_DEVICE_ID
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
+		DX_M1M_PCI_DEVICE_ID
 		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
-		DX_M1M_PCI_DEVICE_ID, 
-		DX_PCI_SUB_VENDOR_ID, 
-		DX_M1M_PCI_SUB_DEVICE_ID
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
+		DX_H1_PCI_DEVICE_ID
 		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
-		DX_H1_PCI_DEVICE_ID, 
-		DX_PCI_SUB_VENDOR_ID, 
-		DX_H1_PCI_SUB_DEVICE_ID
-		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
-	{ PCI_DEVICE_SUB(DX_PCI_VENDOR_ID, 
-		DX_H1M_PCI_DEVICE_ID, 
-		DX_PCI_SUB_VENDOR_ID, 
-		DX_H1M_PCI_SUB_DEVICE_ID
+	{ PCI_DEVICE(DX_PCI_VENDOR_ID, 
+		DX_H1M_PCI_DEVICE_ID
 		), .driver_data = (kernel_ulong_t)(&dx_pcie_data_v3) },
 	{ }
 };

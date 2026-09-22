@@ -17,7 +17,7 @@
 
 struct virt_dma_desc {
 	struct dma_async_tx_descriptor tx;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 	struct dmaengine_result tx_result;
 #endif
 	/* protected by vc.lock */
@@ -32,14 +32,24 @@ struct virt_dma_chan {
 	spinlock_t lock;
 
 	/* protected by vc.lock */
+#ifndef DX_VCHAN_NO_DESC_ALLOCATED
+	/* DEEPX MODIFIED: mainline 6af149d2b142 (v4.16) added desc_allocated.
+	 * When vmlinux predates it and supplies vchan_tx_submit()/vchan_init(),
+	 * keeping this field shifts every list below by one list_head. */
 	struct list_head desc_allocated;
+#endif
 	struct list_head desc_submitted;
 	struct list_head desc_issued;
 	struct list_head desc_completed;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 	struct list_head desc_terminated;
 #endif
 	struct virt_dma_desc *cyclic;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0) && \
+     LINUX_VERSION_CODE <  KERNEL_VERSION(5, 6, 0))
+	/* Unused by this driver; kept so sizeof() matches the vmlinux struct. */
+	struct virt_dma_desc *vd_terminated;
+#endif
 };
 
 static inline struct virt_dma_chan *to_virt_chan(struct dma_chan *chan)
@@ -71,13 +81,18 @@ static inline struct dma_async_tx_descriptor *vchan_tx_prep(struct virt_dma_chan
 	vd->tx.tx_submit = vchan_tx_submit;
 	vd->tx.desc_free = vchan_tx_desc_free;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 	vd->tx_result.result = DMA_TRANS_NOERROR;
 	vd->tx_result.residue = 0;
 #endif
 
 	spin_lock_irqsave(&vc->lock, flags);
+#ifdef DX_VCHAN_NO_DESC_ALLOCATED
+	/* The kernel's vchan_tx_submit() will list_add_tail() this node. */
+	INIT_LIST_HEAD(&vd->node);
+#else
 	list_add_tail(&vd->node, &vc->desc_allocated);
+#endif
 	spin_unlock_irqrestore(&vc->lock, flags);
 
 	return &vd->tx;
@@ -123,15 +138,17 @@ static inline void vchan_vdesc_fini(struct virt_dma_desc *vd)
 {
 	struct virt_dma_chan *vc = to_virt_chan(vd->tx.chan);
 
+#ifndef DX_VCHAN_NO_DESC_ALLOCATED
 	if (dmaengine_desc_test_reuse(&vd->tx)) {
 		unsigned long flags;
 
 		spin_lock_irqsave(&vc->lock, flags);
 		list_add(&vd->node, &vc->desc_allocated);
 		spin_unlock_irqrestore(&vc->lock, flags);
-	} else {
-		vc->desc_free(vd);
+		return;
 	}
+#endif
+	vc->desc_free(vd);
 }
 
 /**
@@ -145,7 +162,7 @@ static inline void vchan_cyclic_callback(struct virt_dma_desc *vd)
 	vc->cyclic = vd;
 	tasklet_schedule(&vc->task);
 }
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 /**
  * vchan_terminate_vdesc - Disable pending cyclic callback
  * @vd: virtual descriptor to be terminated
@@ -187,11 +204,13 @@ static inline struct virt_dma_desc *vchan_next_desc(struct virt_dma_chan *vc)
 static inline void vchan_get_all_descriptors(struct virt_dma_chan *vc,
 	struct list_head *head)
 {
+#ifndef DX_VCHAN_NO_DESC_ALLOCATED
 	list_splice_tail_init(&vc->desc_allocated, head);
+#endif
 	list_splice_tail_init(&vc->desc_submitted, head);
 	list_splice_tail_init(&vc->desc_issued, head);
 	list_splice_tail_init(&vc->desc_completed, head);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 	list_splice_tail_init(&vc->desc_terminated, head);
 #endif
 }
@@ -222,14 +241,14 @@ static inline void vchan_free_chan_resources(struct virt_dma_chan *vc)
  */
 static inline void vchan_synchronize(struct virt_dma_chan *vc)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 	LIST_HEAD(head);
 	unsigned long flags;
 #endif
 
 	tasklet_kill(&vc->task);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 	spin_lock_irqsave(&vc->lock, flags);
 
 	list_splice_tail_init(&vc->desc_terminated, &head);

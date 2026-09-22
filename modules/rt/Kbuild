@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 #  DeepX AI accelerators RT driver
 
-ccflags-y += -I $(src)/../include
+ccflags-y += -I$(src)/../include
 
 ccflags-y += $(CCFLAGS)
 
