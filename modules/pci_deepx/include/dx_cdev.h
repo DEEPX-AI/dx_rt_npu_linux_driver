@@ -35,6 +35,8 @@ extern unsigned int desc_blen_max;
 extern unsigned int h2c_timeout;
 extern unsigned int c2h_timeout;
 
+struct dx_reg_buf;
+
 
 struct dx_dma_io_cb {
 	char __user *buf;
@@ -57,6 +59,11 @@ struct dx_dma_io_cb {
 	char result; /* 0:PASS, -1:FAIL */
 	bool is_llm; /* linked list mode */
 	bool pre_mapped; /* SG already has DMA addrs (dma_alloc_coherent) */
+	/* Registered user buffer: sgt is borrowed from the registry, so the
+	 * transfer path must not unpin the pages nor free the table. Implies
+	 * pre_mapped, and additionally requires explicit dma_sync_sg_*(). */
+	bool registered;
+	struct dx_reg_buf *reg; /* registry entry held for this transfer */
 };
 
 struct dx_dma_cdev {

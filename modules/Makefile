@@ -19,6 +19,13 @@ else
 $(info ** Standard Build **)
 endif
 
+# FORCE_SINGLE_MSI=1 : force single-MSI mode on any host, independent of the
+# RPi auto-detection above (e.g. to reproduce/debug single-MSI behavior on a
+# non-RPi host).
+ifneq ($(FORCE_SINGLE_MSI),)
+export CONFIG_FORCE_SINGLE_MSI=1
+$(info ** Single MSI forced (FORCE_SINGLE_MSI=1) **)
+endif
 
 ifneq ($(ARCH),)
 KERNEL_ARCH += ARCH=$(ARCH)
@@ -34,9 +41,15 @@ RT_VERSION_MAJOR := $(shell echo $(RT_VERSION_STRING) | cut -d'.' -f1)
 RT_VERSION_MINOR := $(shell echo $(RT_VERSION_STRING) | cut -d'.' -f2)
 RT_VERSION_PATCH := $(shell echo $(RT_VERSION_STRING) | cut -d'.' -f3 | cut -d'-' -f1)
 # Extract optional suffix (empty if not present)
-RT_VERSION_SUFFIX := $(shell echo $(RT_VERSION_STRING) | awk -F- 'NF>1{print $$2}')
+RT_VERSION_SUFFIX := $(shell echo $(RT_VERSION_STRING) | sed -n 's/^[^-]*-//p')
 
-# Only pass the macro to the compiler when suffix exists
+# build.ver carries the public-release build id and overrides release.ver.
+RT_BUILD_FILE = $(current_dir)/../build.ver
+ifneq ($(wildcard $(RT_BUILD_FILE)),)
+RT_VERSION_SUFFIX := $(shell tr -d '[:space:]' < $(RT_BUILD_FILE))
+endif
+
+# Only pass the suffix macro to the compiler when a suffix exists.
 RT_VERSION_SUFFIX_FLAG := $(strip $(if $(RT_VERSION_SUFFIX),-DRT_VERSION_SUFFIX=$(RT_VERSION_SUFFIX),))
 
 # For pretty printing (include '-' only when suffix exists)

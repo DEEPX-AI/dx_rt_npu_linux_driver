@@ -106,7 +106,7 @@ static void vchan_complete(unsigned long arg)
 	}
 	spin_unlock_irq(&vc->lock);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 	{
 		struct virt_dma_desc *_vd;
 		dmaengine_desc_callback_invoke(&cb, &vd->tx_result);
@@ -171,7 +171,7 @@ void vchan_init(struct virt_dma_chan *vc, struct dma_device *dmadev)
 	INIT_LIST_HEAD(&vc->desc_submitted);
 	INIT_LIST_HEAD(&vc->desc_issued);
 	INIT_LIST_HEAD(&vc->desc_completed);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0))
 	INIT_LIST_HEAD(&vc->desc_terminated);
 #endif
 

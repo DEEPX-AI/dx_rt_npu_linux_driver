@@ -136,6 +136,10 @@ static int dxrt_dev_release(struct inode *i, struct file *f)
      */
 
     if (dx->type == DX_ACC) {
+        /* Reclaim any buffers still registered on this fd, including after an
+         * abnormal exit, so pinned pages are never leaked. Must run before
+         * ctx is freed since ctx is the registration owner token. */
+        dx_sgdma_unregister_owner(ctx);
         dx_sgdma_deinit(num);
     }
 

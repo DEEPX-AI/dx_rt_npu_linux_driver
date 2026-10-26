@@ -37,6 +37,7 @@
 #include "dx_sgdma_cdev.h"
 #include "dx_lib.h"
 #include "dx_util.h"
+#include "dx_pcie_api.h"
 #include "dw-edma-thread.h"
 #include "dx_message.h"
 #include "dw-edma-mem.h"
@@ -1784,6 +1785,7 @@ static void dw_edma_launch_work_fn(struct work_struct *work)
 	child = chan->pending_launch_chunk;
 	first = chan->pending_launch_first;
 	chan->pending_launch_chunk = NULL;
+	dbg_core("[%s] ch%d child=%p\n", __func__, chan->id, child);
 
 	if (!child) {
 		spin_unlock_irqrestore(&chan->vc.lock, flags);
@@ -1797,6 +1799,13 @@ static void dw_edma_launch_work_fn(struct work_struct *work)
 	    READ_ONCE(chan->aborted) || READ_ONCE(chan->hw_err) ||
 	    chan->request == EDMA_REQ_STOP ||
 	    chan->status != EDMA_ST_BUSY) {
+		dev_warn_ratelimited(chan->chip->dev,
+			"%s: launch cancelled before doorbell (dev_state=%d link_state=%d paused=%d aborted=%d hw_err=%d request=%d status=%d)\n",
+			dma_chan_name(&chan->vc.chan),
+			atomic_read(&dw->dev_state), atomic_read(&dw->link_state),
+			atomic_read(&dw->background_recovery_paused),
+			READ_ONCE(chan->aborted), READ_ONCE(chan->hw_err),
+			chan->request, chan->status);
 		spin_unlock_irqrestore(&chan->vc.lock, flags);
 		wake_transfer = true;
 		goto out_wake;
@@ -2062,7 +2071,9 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 		 * a new transfer and wake it prematurely (done->done=true
 		 * but cookie not yet complete → "completion busy" error). */
 		/* vc.lock already held by outer lock */
+#ifndef DX_VCHAN_NO_DESC_ALLOCATED
 		list_splice_tail_init(&vc->desc_allocated, &head);
+#endif
 		list_splice_tail_init(&vc->desc_submitted, &head);
 		list_splice_tail_init(&vc->desc_issued, &head);
 		list_splice_tail_init(&vc->desc_completed, &head);
@@ -2111,6 +2122,15 @@ static void dw_edma_device_issue_pending(struct dma_chan *dchan)
 	    chan->status == EDMA_ST_IDLE && vchan_issue_pending(&chan->vc)) {
 		chan->status = EDMA_ST_BUSY;
 		dw_edma_start_transfer(chan);
+	} else {
+		/* Silent drop here wedges the channel: the caller waits for a
+		 * doorbell that was never issued. */
+		dev_warn_ratelimited(chan->chip->dev,
+			"%s: issue_pending skipped (shutdown=%d configured=%d request=%d status=%d issued=%d submitted=%d)\n",
+			dma_chan_name(dchan), READ_ONCE(dw->shutting_down),
+			chan->configured, chan->request, chan->status,
+			!list_empty(&chan->vc.desc_issued),
+			!list_empty(&chan->vc.desc_submitted));
 	}
 	spin_unlock_irqrestore(&chan->vc.lock, flags);
 }

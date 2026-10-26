@@ -49,4 +49,13 @@ static inline void *kvmalloc_array(size_t n, size_t size, gfp_t flags)
 #define __GFP_RETRY_MAYFAIL __GFP_REPEAT
 #endif
 
+/* mmgrab() (mainline 4.11) pins the mm_struct itself, not its address space. */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0))
+#include <linux/sched.h>
+static inline void mmgrab(struct mm_struct *mm)
+{
+	atomic_inc(&mm->mm_count);
+}
+#endif
+
 #endif /* __DX_MM_COMPAT_H */

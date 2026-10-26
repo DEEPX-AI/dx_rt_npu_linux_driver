@@ -585,6 +585,36 @@ void dx_pcie_notify_msg_to_device(u32 dev_id)
 }
 EXPORT_SYMBOL_GPL(dx_pcie_notify_msg_to_device);
 
+/*
+ * Tell the EP that the host driver finished probing so it can time its
+ * LTSSM stability window from here.  Fire-and-forget: the EP falls back to
+ * its own periodic check if this never arrives.
+ */
+void dx_pcie_send_stable_check(u32 dev_id)
+{
+	void __iomem *msg = dx_pcie_get_message_area(dev_id);
+	void __iomem *dl = dx_pcie_get_dl_area(dev_id);
+
+	if (!msg || !dl)
+		return;
+
+	/* FW drops mailbox commands until MAILBOX_READY is published. */
+	if (readl(dl + DX_MSG_DL_OFF_READY_MAGIC) != DX_MSG_DL_READY_MAGIC ||
+	    !(readl(dl + DX_MSG_DL_OFF_READY_FLAGS) & DX_MSG_DL_MAILBOX_READY)) {
+		pr_info("dx_pcie: skip stable-check, FW mailbox not ready (dev=%u)\n",
+			dev_id);
+		return;
+	}
+
+	writel(0, msg + DX_MSG_OFF_SIZE);
+	writel(DX_MSG_PCIE_STABLE_CHECK, msg + DX_MSG_OFF_SUB_CMD);
+	writel(DX_MSG_CMD_PCIE, msg + DX_MSG_OFF_CMD);
+	writel(0, msg + DX_MSG_OFF_ACK); /* ack==0 marks the slot pending */
+
+	dx_pcie_notify_msg_to_device(dev_id);
+}
+EXPORT_SYMBOL_GPL(dx_pcie_send_stable_check);
+
 /* 
 Return value:
    0      : success

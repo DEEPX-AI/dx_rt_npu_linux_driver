@@ -11,6 +11,10 @@ ccflags-y += $(CCFLAGS)
 # not treat this benign warning as a fatal error.
 ccflags-y += -Wno-address-of-packed-member
 
+# DEEPX MODIFIED: kernel 4.4 pagemap.h (fault_in_multipages_readable) trips
+# -Wunused-but-set-variable, which gcc-wrapper.py escalates to a hard error.
+ccflags-y += -Wno-unused-but-set-variable
+
 # Always compile perf measurement code (runtime-gated via sysfs)
 ccflags-y += -DDMA_PERF_MEASURE
 
@@ -43,11 +47,15 @@ ifneq ($(CONFIG_RPI_BUILD),)
 ccflags-y += -DRPI_BUILD=1
 endif
 
+ifneq ($(CONFIG_FORCE_SINGLE_MSI),)
+ccflags-y += -DDX_FORCE_SINGLE_MSI=1
+endif
+
 dx_dma-y := dw-edma-pcie.o dw-edma-core.o dw-edma-v0-core.o \
-		dw-edma-v0-debugfs.o dw-edma-thread.o dx_util.o \
+		dw-edma-v0-debugfs.o dw-edma-thread.o dx_util.o dx_profiler.o \
 		dx_cdev.o dx_sgdma_cdev.o dx_cdev_ctrl.o \
 		dx_cdev_events.o dx_sgdma.o dw-edma-mem.o \
-		dx_dma_sysfs.o dx_link_health.o
+		dx_dma_sysfs.o dx_link_health.o dx_buf_registry.o
 
 ifneq ($(filter -DRPI_DEBUG_BUILD=1,$(ccflags-y)),)
 ccflags-y += -I$(src)/utils/rpi
@@ -60,12 +68,17 @@ endif
 ifeq ($(CONFIG_DMA_VIRTUAL_CHANNELS),)
 dx_dma-y += virt-dma.o
 else
-# Kernel provides virt-dma but 4.4 built-in virt-dma lacks vchan_tx_desc_free
-# (added in mainline 4.7).  Compile the extension stub only when the symbol is
-# absent from the kernel's Module.symvers.  On 5.x kernels it is already in
-# vmlinux — compiling it would cause a "exported twice" MODPOST error.	//DEEPX MODIFIED
+# Kernel provides virt-dma but old built-in virt-dma lacks vchan_tx_desc_free.
+# Compile the extension stub only when the symbol is absent from the kernel's
+# Module.symvers.  On 5.x kernels it is already in vmlinux — compiling it would
+# cause a "exported twice" MODPOST error.	//DEEPX MODIFIED
+# Mainline 6af149d2b142 added vchan_tx_desc_free and struct virt_dma_chan::
+# desc_allocated in the same commit, so the symbol also tells us which struct
+# layout vmlinux was built with.  Our virt-dma.h must match it exactly, since
+# vchan_init()/vchan_tx_submit() come from the kernel in this branch.
 ifeq ($(shell grep -qw vchan_tx_desc_free $(objtree)/Module.symvers 2>/dev/null && echo y),)
 dx_dma-y += dx_vchan_ext.o
+ccflags-y += -DDX_VCHAN_NO_DESC_ALLOCATED=1
 endif
 endif
 

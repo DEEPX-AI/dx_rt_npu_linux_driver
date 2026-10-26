@@ -1,4 +1,14 @@
 # RELEASE_NOTES
+## v2.7.0 / 2026-09-22
+
+### 1. Changed
+
+### 2. Fixed
+- fix user buffer unmap spike time
+
+### 3. Added
+- Change EP PCIe device task period when driver probe
+
 ## v2.6.0 / 2026-08-03
 
 ### 1. Changed

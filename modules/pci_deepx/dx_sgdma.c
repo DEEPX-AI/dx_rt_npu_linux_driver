@@ -28,6 +28,8 @@
 #include "dw-edma-thread.h"
 #include "dw-edma-v0-core.h"
 #include "dx_util.h"
+#include "dx_gup_compat.h"	//DEEPX MODIFIED: FOLL_PIN compat for < 5.6
+#include "dx_buf_registry.h"
 #if IS_ENABLED(CONFIG_DX_AI_ACCEL_RT)
 #include "dx_pcie_api.h"
 #endif
@@ -38,22 +40,22 @@
 
 static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
 {
-	int i;
-
-	if (!cb->pages || !cb->pages_nr)
+	/* Registered buffer: pages and sg table belong to the registry and stay
+	 * pinned/mapped across transfers. Just drop the in-flight reference. */
+	if (cb->registered) {
+		dx_buf_registry_release(cb->reg);
+		cb->reg = NULL;
+		cb->registered = false;
+		cb->pre_mapped = false;
 		return;
-
-	for (i = 0; i < cb->pages_nr; i++) {
-		if (cb->pages[i]) {
-			if (!write)
-				set_page_dirty_lock(cb->pages[i]);
-			put_page(cb->pages[i]);
-		} else
-			break;
 	}
 
-	if (i != cb->pages_nr)
-		pr_info("sgl pages %d/%u.\n", i, cb->pages_nr);
+	if (!cb->pages)
+		return;
+
+	/* On C2H the device wrote into these pages, so they must be re-dirtied. */
+	if (cb->pages_nr)
+		dx_unpin_user_pages_dirty_lock(cb->pages, cb->pages_nr, !write);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(KVM_KERNEL_MAJ, KVM_KERNEL_MIN, KVM_KERNEL_PAT))
 	kvfree(cb->pages);
@@ -61,6 +63,7 @@ static void char_sgdma_unmap_user_buf(struct dx_dma_io_cb *cb, bool write)
 	kfree(cb->pages);
 #endif
 	cb->pages = NULL;
+	cb->pages_nr = 0;
 }
 
 static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, int dev_n, int dma_n)
@@ -77,6 +80,17 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 
 	if (pages_nr == 0)
 		return -EINVAL;
+
+	/* Pre-registered buffer: already pinned and dma_map_sg()'d, so the whole
+	 * pin/alloc/map sequence below is skipped. */
+	rv = dx_buf_registry_acquire(dev_n, buf, cb->len, write, sgt, &cb->reg);
+	if (rv == 0) {
+		cb->pre_mapped = true;
+		cb->registered = true;
+		return 0;
+	}
+	if (rv != -ENOENT)
+		return rv;	/* registered but stale - do not silently fall back */
 
 	dx_pcie_start_profile(PCIE_SG_ALLOC_T, 0, dev_n, dma_n, write);
 	if (sg_alloc_table(sgt, pages_nr, GFP_KERNEL)) {
@@ -98,8 +112,8 @@ static int char_sgdma_map_user_buf_to_sgl(struct dx_dma_io_cb *cb, bool write, i
 	dx_pcie_start_profile(PCIE_USER_MAP_T, 0, dev_n, dma_n, write);
 
 	/* get physical pages from user pages */
-	rv = get_user_pages_fast((unsigned long)buf, pages_nr, !write,
-				cb->pages);
+	rv = dx_pin_user_pages_fast((unsigned long)buf, pages_nr,
+				write ? 0 : FOLL_WRITE, cb->pages);
 
 	/* No pages were pinned */
 	if (rv < 0) {
@@ -205,7 +219,9 @@ ssize_t dx_sgdma_write_user(struct dw_edma *dw, const char __user *buf, u64 pos,
 		return -ENODEV;
 	}
 	rv = dw_edma_run(&cb, dw->rd_dma_chan[npu_id], dw->idx, 0);
+	dx_pcie_start_profile(PCIE_USER_UNMAP_T, count, dw->idx, npu_id, cb.write);
 	char_sgdma_unmap_user_buf(&cb, cb.write);
+	dx_pcie_end_profile(PCIE_USER_UNMAP_T, count, dw->idx, npu_id, cb.write);
 
 	/*check result*/
 	if (rv == 0) {
@@ -350,7 +366,9 @@ ssize_t dx_sgdma_read_user(struct dw_edma *dw, char __user *buf, u64 pos, size_t
 		return -ENODEV;
 	}
 	rv = dw_edma_run(&cb, dw->wr_dma_chan[npu_id], dw->idx, 1);
+	dx_pcie_start_profile(PCIE_USER_UNMAP_T, count, dw->idx, npu_id, cb.write);
 	char_sgdma_unmap_user_buf(&cb, cb.write);
+	dx_pcie_end_profile(PCIE_USER_UNMAP_T, count, dw->idx, npu_id, cb.write);
 
 	/*check result*/
 	if (rv == 0) {
@@ -428,6 +446,92 @@ ssize_t dx_sgdma_read(char *src, u64 dest, size_t count, int dev_id, int dma_ch,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dx_sgdma_read);
+
+/*
+ * Resolve the struct device that dma_map_sg() must be called on for @write.
+ * It has to be the exact same device the transfer path uses (chan->device->dev),
+ * otherwise the mapping lands in a different IOMMU domain.
+ */
+static struct device *dx_sgdma_dma_device(struct dw_edma *dw, bool write)
+{
+	struct dma_chan **chans;
+	int i, cnt;
+
+	if (write) {
+		chans = dw->rd_dma_chan;
+		cnt = min_t(int, DX_H2C_DATA_CH_CNT, EDMA_MAX_RD_CH);
+	} else {
+		chans = dw->wr_dma_chan;
+		cnt = min_t(int, (int)dw->wr_ch_cnt, EDMA_MAX_WR_CH);
+	}
+
+	for (i = 0; i < cnt; i++) {
+		if (chans[i] && chans[i]->device)
+			return chans[i]->device->dev;
+	}
+	return NULL;
+}
+
+/**
+ * dx_sgdma_register_buffer - pin and DMA-map a user buffer once, for reuse
+ * @dev_id: Device id
+ * @va: User buffer address
+ * @size: Buffer size in bytes
+ * @write: true for H2C, false for C2H
+ * @owner: Opaque per-fd token used to reclaim the registration on close
+ *
+ * Subsequent dx_sgdma_write()/dx_sgdma_read() calls on the same buffer reuse
+ * the cached mapping instead of pinning and mapping it again.
+ *
+ * Return: 0 on success, negative errno on failure.
+ */
+int dx_sgdma_register_buffer(int dev_id, void *va, size_t size, bool write,
+			     void *owner)
+{
+	struct dw_edma *dw = dx_dev_list_get(dev_id);
+	struct device *dma_dev;
+
+	if (!dw) {
+		pr_err("[ERR] not found deepx pcie struct for dev_id %d\n", dev_id);
+		return -ENODEV;
+	}
+	if (atomic_read(&dw->dev_state) == DX_DEV_REMOVING)
+		return -ENODEV;
+
+	dma_dev = dx_sgdma_dma_device(dw, write);
+	if (!dma_dev) {
+		pr_err("[%s] dev %d: no %s DMA channel allocated\n",
+			__func__, dev_id, write ? "H2C" : "C2H");
+		return -ENODEV;
+	}
+
+	return dx_buf_registry_add(dma_dev, dev_id, (void __user *)va, size,
+				   write, owner);
+}
+EXPORT_SYMBOL_GPL(dx_sgdma_register_buffer);
+
+/**
+ * dx_sgdma_unregister_buffer - release a registration made by the caller
+ *
+ * Return: 0 on success, -ENOENT if not registered, -EBUSY if a transfer on
+ * the buffer is still in flight.
+ */
+int dx_sgdma_unregister_buffer(int dev_id, void *va, bool write, void *owner)
+{
+	return dx_buf_registry_del(dev_id, (void __user *)va, write, owner);
+}
+EXPORT_SYMBOL_GPL(dx_sgdma_unregister_buffer);
+
+/**
+ * dx_sgdma_unregister_owner - drop every registration belonging to @owner
+ *
+ * Called when the owning file handle goes away, including on process crash.
+ */
+void dx_sgdma_unregister_owner(void *owner)
+{
+	dx_buf_registry_del_owner(owner);
+}
+EXPORT_SYMBOL_GPL(dx_sgdma_unregister_owner);
 
 /**
  * dx_pcie_reset_dma_channels - Terminate and reset all DMA channels

@@ -1947,7 +1947,9 @@ static int dxrt_handle_event(struct dxdev* dev, dxrt_message_t* msg, struct dxrt
         ssize_t suffix_len;
 
         dev_event.dx_rt_err.rt_driver_version          = DXRT_MOD_VERSION_NUMBER;
-        suffix_len = strscpy(dev_event.dx_rt_err.rt_driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
+        suffix_len = strscpy(dev_event.dx_rt_err.rt_driver_version_suffix,
+            DXRT_RUNTIME_VERSION_SUFFIX,
+            sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
         if (suffix_len < 0)
             pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
         dev_event.dx_rt_err.pcie_driver_version        = info.driver_version;
@@ -2053,7 +2055,7 @@ retry_after_recovery:
 
         dev_event.dx_rt_err.rt_driver_version          = DXRT_MOD_VERSION_NUMBER;
         suffix_len = strscpy(dev_event.dx_rt_err.rt_driver_version_suffix,
-            __stringify(RT_VERSION_SUFFIX),
+            DXRT_RUNTIME_VERSION_SUFFIX,
             sizeof(dev_event.dx_rt_err.rt_driver_version_suffix));
         if (suffix_len < 0)
             pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
@@ -2124,7 +2126,9 @@ static int dxrt_handle_rt_drv_info_sub(struct dxdev* dev, dxrt_message_t* msg, s
                 ssize_t suffix_len;
 
                 info.driver_version = DXRT_MOD_VERSION_NUMBER;
-                suffix_len = strscpy(info.driver_version_suffix, __stringify(RT_VERSION_SUFFIX), sizeof(info.driver_version_suffix));
+                suffix_len = strscpy(info.driver_version_suffix,
+                    DXRT_RUNTIME_VERSION_SUFFIX,
+                    sizeof(info.driver_version_suffix));
                 if (suffix_len < 0)
                     pr_warn_ratelimited(MODULE_NAME "%d: RT_VERSION_SUFFIX truncated\n", num);
                 if (copy_to_user((void __user*)msg->data, &info, sizeof(info))) {
@@ -2528,6 +2532,61 @@ static int dxrt_handle_drv_info(struct dxdev* dev, dxrt_message_t* msg, struct d
     return dxrt_handle_rt_drv_info_sub(dev, msg, ctx);
 }
 
+/*
+ * Buffer registration.
+ *
+ * Pinning a 2.3 MB user buffer and pushing it through the IOMMU costs
+ * ~300-500us per transfer, which is a third of a typical inference.  A
+ * registered buffer pays that once, so the ioctl path only submits descriptors.
+ *
+ * The registration belongs to the fd it was made on (@ctx), so a crashing
+ * process cannot leak pinned pages: dxrt_dev_release() reclaims them.
+ */
+static int dxrt_parse_buffer_reg(dxrt_message_t *msg, dxrt_buffer_reg_t *out)
+{
+    if (!msg->data || msg->size != sizeof(*out))
+        return -EINVAL;
+    if (copy_from_user(out, (void __user *)msg->data, sizeof(*out)))
+        return -EFAULT;
+    if (!out->addr || !out->size)
+        return -EINVAL;
+    if (out->dir != DXRT_BUF_DIR_H2C && out->dir != DXRT_BUF_DIR_C2H)
+        return -EINVAL;
+    return 0;
+}
+
+static int dxrt_register_buffer(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
+{
+    dxrt_buffer_reg_t reg;
+    int ret;
+
+    if (dev->type != DX_ACC)
+        return -EOPNOTSUPP;
+
+    ret = dxrt_parse_buffer_reg(msg, &reg);
+    if (ret)
+        return ret;
+
+    return dx_sgdma_register_buffer(dev->id, (void *)(uintptr_t)reg.addr,
+        (size_t)reg.size, reg.dir == DXRT_BUF_DIR_H2C, ctx);
+}
+
+static int dxrt_unregister_buffer(struct dxdev* dev, dxrt_message_t* msg, struct dxrt_file_ctx *ctx)
+{
+    dxrt_buffer_reg_t reg;
+    int ret;
+
+    if (dev->type != DX_ACC)
+        return -EOPNOTSUPP;
+
+    ret = dxrt_parse_buffer_reg(msg, &reg);
+    if (ret)
+        return ret;
+
+    return dx_sgdma_unregister_buffer(dev->id, (void *)(uintptr_t)reg.addr,
+        reg.dir == DXRT_BUF_DIR_H2C, ctx);
+}
+
 int message_handler_general(struct dxdev *dx, dxrt_message_t *msg, struct dxrt_file_ctx *ctx)
 {
     dxrt_dev_state_t state;
@@ -2577,4 +2636,6 @@ dxrt_message_handler message_handler[] = {
     [DXRT_CMD_START]                = dxrt_msg_general,
     [DXRT_CMD_TERMINATE]            = dxrt_terminate,
     [DXRT_CMD_PCIE]                 = dxrt_msg_general,
+    [DXRT_CMD_REGISTER_BUFFER]      = dxrt_register_buffer,
+    [DXRT_CMD_UNREGISTER_BUFFER]    = dxrt_unregister_buffer,
 };

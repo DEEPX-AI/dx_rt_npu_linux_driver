@@ -1638,7 +1638,12 @@ static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
 	bool use_dedicated = false;
 	struct dma_chan_lock *target_lock = NULL;
 	ktime_t llm_start;
+	ktime_t acq_start;
 	bool perf_enabled = READ_ONCE(g_perf_enabled);
+	/* This helper runs inside the data channel's PCIE_DMA_XFER_T window, so
+	 * attribute its cost to that channel's profiling slot. */
+	int prof_dma = chan->id;
+	int prof_ch = (chan->dir == EDMA_DIR_READ) ? 1 : 0;
 	bool atomic_context = in_atomic() || irqs_disabled();
 	u32 acquire_timeout_us = atomic_context ?
 		DX_DMA_HELPER_ACQUIRE_ATOMIC_TIMEOUT_US :
@@ -1656,6 +1661,9 @@ static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
 			second_ch = EDMA_CH_ID_3;
 		}
 
+		if (perf_enabled)
+			get_start_time(&acq_start);
+
 		for (retry = 0;
 		     retry < (acquire_timeout_us /
 			      DX_DMA_HELPER_ACQUIRE_STEP_US) && !use_dedicated;
@@ -1664,7 +1672,6 @@ static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
 				return -ENODEV;
 			if (READ_ONCE(chan->aborted) || READ_ONCE(chan->hw_err))
 				return -EIO;
-
 			target_lock = &dw->rd_dma_chan_locks[first_ch];
 			if (dx_dma_try_acquire_helper_channel(target_lock, &flags)) {
 				use_dedicated = true;
@@ -1684,10 +1691,13 @@ static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
 				usleep_range(DX_DMA_HELPER_ACQUIRE_STEP_US,
 					     DX_DMA_HELPER_ACQUIRE_STEP_US * 2);
 		}
-		if (perf_enabled)
+		if (perf_enabled) {
+			dx_pcie_record_stage(PCIE_LLI_ACQUIRE_T, dw->idx, prof_dma,
+				prof_ch, get_elapsed_time_ns(acq_start));
 			dx_pcie_perf_record_helper_acquire(dw->idx,
 				use_dedicated ? retry + 1 : retry,
 				channel, use_dedicated);
+		}
 
 		if (!use_dedicated) {
 			pr_err_ratelimited("[R] helper channels busy for LLI copy\n");
@@ -1747,9 +1757,13 @@ static int dw_edma_v0_core_xfer_llm_desc(struct dw_edma_chunk *chunk)
 		FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, channel));
 
 	ret = dx_dma_polling_wait(dw, channel, EDMA_DIR_READ);
-	if (chan->dir == EDMA_DIR_WRITE && perf_enabled)
-		dx_pcie_perf_record_helper_llm_copy(dw->idx,
-			get_elapsed_time_ns(llm_start), ret);
+	if (perf_enabled) {
+		u64 copy_ns = get_elapsed_time_ns(llm_start);
+
+		dx_pcie_record_stage(PCIE_LLI_COPY_T, dw->idx, prof_dma,
+				     prof_ch, copy_ns);
+		dx_pcie_perf_record_helper_llm_copy(dw->idx, copy_ns, ret);
+	}
 	if (ret) {
 		pr_err("[R][%d] LLM desc xfer fail\n", channel);
 	}
