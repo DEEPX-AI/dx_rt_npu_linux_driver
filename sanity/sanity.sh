@@ -328,7 +328,7 @@ function CollectDriverInfo() {
         echo ""
         echo "==== release.ver files ===="
         local sd="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
-        for f in "$sd/release.ver" "$sd/modules/pci_deepx/release.ver" "$sd/modules/pci_xilinx/release.ver"; do
+        for f in "$sd/release.ver" "$sd/modules/pci_deepx/release.ver"; do
             [[ -r "$f" ]] && echo "$f: $(cat "$f")"
         done
     } > "$DRVINFO_FILE" 2>&1

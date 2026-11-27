@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver

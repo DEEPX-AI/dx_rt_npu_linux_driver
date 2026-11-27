@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Deepx Runtime Driver
  *
@@ -449,6 +449,12 @@ typedef enum {
 #define DX_DLMSG_READY_PCIE_IRQ_READY     BIT(1)
 #define DX_DLMSG_READY_MESSAGE_TASK_READY BIT(2)
 #define DX_DLMSG_READY_MAILBOX_READY      BIT(3)
+/* Capability: FW drains inference queues by front/rear doorbell (no lock handshake).
+ * Published with RTOS_BOOTED; queue protocol detection keys on those, not MAILBOX_READY. */
+#define DX_DLMSG_READY_QUEUE_V2           BIT(4)
+/* Status, not a gate: a pre-QUEUE_V2 (V1) host used the lock handshake since the FW
+ * booted, so the FW holds LPDDR DFS at the boot level until its next reset. */
+#define DX_DLMSG_READY_QUEUE_V1_HOST      BIT(5)
 
 /*
  * Host gate: only MAILBOX_READY is the contract bit (set LAST by FW after
@@ -568,6 +574,7 @@ struct dxdev {
     dxrt_notify_throt_t notify;
     atomic_t recovering;            /* Recovery in progress flag */
     atomic_t recovery_epoch;        /* Monotonic counter: increments each recovery */
+    u32 queue_proto_latch;          /* see dxrt_queue_proto(); 0 = unlatched */
     struct mutex recovery_mutex;    /* Serializes concurrent recovery requests */
     spinlock_t error_lock;
 
@@ -580,6 +587,13 @@ struct dxdev {
     /* Recovery readiness worker — runs after LINK_EV_UP / CPU_RESET to
      * probe FW mailbox liveness before returning to READY. */
     struct delayed_work recovery_ready_work;
+    /* Late readiness watch: after a readiness timeout the FW may still be
+     * booting; resume once DLMSG turns mailbox-ready (same epoch only). */
+    struct delayed_work late_ready_work;
+    int           late_ready_epoch;
+    bool          late_ready;           /* next readiness pass skips the reboot edge */
+    bool          late_need_drop;       /* reboot not seen yet: wait for the drop first */
+    unsigned long late_ready_deadline;
     /* PERM_FAIL sliding-window bookkeeping */
     unsigned long perm_fail_window_start;
     u32          perm_fail_count_in_window;
@@ -629,6 +643,8 @@ extern unsigned int dxrt_perm_fail_window_ms;
 extern unsigned int dxrt_perm_fail_max_retries;
 extern bool         dxrt_auto_reset_on_fw_timeout;
 extern unsigned int dxrt_dlmsg_ready_timeout_ms;
+extern unsigned int dxrt_fw_reboot_ready_timeout_ms;
+extern unsigned int dxrt_late_ready_window_ms;
 extern unsigned int dxrt_ping_timeout_ms;
 #else
 static inline int  dxrt_sysfs_attach(struct dxdev *dev)  { (void)dev; return 0; }
@@ -648,6 +664,9 @@ int dxrt_lock_queue(dxrt_queue_t __iomem *q);
 void dxrt_unlock_queue(dxrt_queue_t __iomem *q);
 int dxrt_enqueue(dxrt_queue_t __iomem *q, void *elem);
 int dxrt_lock_check(dxrt_queue_t __iomem *q);
+int dxrt_enqueue_v2(dxrt_queue_t __iomem *q, void *elem);
+/* Inference queue protocol requests use now: 1 = V1, 2 = V2, 0 = not decided yet. */
+u32 dxrt_queue_proto_current(struct dxdev *dev);
 /* Scheduler */
 int add_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound);
 int get_queue_from_sched_op(struct dxdev* dev, npu_bound_op bound, uint32_t *q);
@@ -663,6 +682,8 @@ int8_t dx_get_dl_status(dx_download_msg __iomem *msg);
 bool     dx_dlmsg_ready_valid(dx_download_msg __iomem *msg);
 uint32_t dx_dlmsg_ready_flags(dx_download_msg __iomem *msg);
 bool     dx_dlmsg_mailbox_ready(dx_download_msg __iomem *msg);
+bool     dx_dlmsg_rtos_up(dx_download_msg __iomem *msg);
+void     dx_dlmsg_log_state(dx_download_msg __iomem *msg, int id, const char *tag);
 bool     dx_dlmsg_wait_mailbox_ready(dx_download_msg __iomem *msg,
                                      unsigned int timeout_ms);
 

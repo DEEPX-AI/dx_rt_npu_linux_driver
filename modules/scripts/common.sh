@@ -37,14 +37,12 @@ SUPPORT_DEVICE=("m1" "v3")
 
 declare -g -A SUPPORT_PCIE_MODULE=(
     ["deepx"]="$(pwd)/pci_deepx"
-    ["xilinx"]="$(pwd)/pci_xilinx"
 )
 
 PCIE_DEPEND_DEVICE=("m1")
 
 declare -g -A PCIE_MODPROBE_CONF=(
     ["deepx"]="$(pwd)/dx_dma.conf"
-    ["xilinx"]="$(pwd)/xdma.conf"
 )
 
 # ============================================

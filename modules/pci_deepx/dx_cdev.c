@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from the Xilinx DMA IP Core driver for Linux (XDMA):
+ * Copyright (c) 2016-present, Xilinx, Inc. All rights reserved.
+ *
+ * Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver
  *
  * Author: Taegyun An <atg@deepx.ai>
@@ -25,8 +28,8 @@ static int user_cnt = 0;
 enum cdev_type {
 	CHAR_USER,
 	CHAR_EVENTS,
-	CHAR_XDMA_H2C,
-	CHAR_XDMA_C2H,
+	CHAR_DMA_H2C,
+	CHAR_DMA_C2H,
 };
 
 #ifdef DX_DEBUG_FS
@@ -79,33 +82,8 @@ int dx_cdev_check(const char *fname, struct dx_dma_cdev *xcdev, bool check_engin
 	// 	return -EINVAL;
 	// }
 
-	// if (check_engine) {
-	// 	struct xdma_engine *engine = xcdev->engine;
-
-	// 	if (!engine || engine->magic != MAGIC_ENGINE) {
-	// 		pr_info("%s, engine 0x%p, magic 0x%lx.\n", fname,
-	// 			engine, engine ? engine->magic : 0xFFFFFFFF);
-	// 		return -EINVAL;
-	// 	}
-	// }
-
 	return 0;
 }
-
-#ifdef __XDMA_SYSFS__
-ssize_t xdma_dev_instance_show(struct device *dev,
-		struct device_attribute *attr,
-		char *buf)
-{
-	struct xdma_pci_dev *xpdev =
-		(struct xdma_pci_dev *)dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%d\t%d\n",
-			xpdev->major, xpdev->xdev->idx);
-}
-
-static DEVICE_ATTR_RO(xdma_dev_instance);
-#endif
 
 #ifdef DX_DEBUG_FS
 static int config_kobject(struct dw_edma *dw, struct dx_dma_cdev *xcdev, enum cdev_type type, u16 cnt)
@@ -113,8 +91,8 @@ static int config_kobject(struct dw_edma *dw, struct dx_dma_cdev *xcdev, enum cd
 	int rv = -EINVAL;
 
 	switch (type) {
-	case CHAR_XDMA_H2C:
-	case CHAR_XDMA_C2H:
+	case CHAR_DMA_H2C:
+	case CHAR_DMA_C2H:
 		rv = kobject_set_name(&xcdev->cdev.kobj, devnode_names[type],
 			dw->idx, cnt);
 		break;
@@ -165,7 +143,6 @@ int char_open(struct inode *inode, struct file *file)
  */
 int char_close(struct inode *inode, struct file *file)
 {
-	// struct xdma_dev *xdev;
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)file->private_data;
 
 	if (!xcdev) {
@@ -206,7 +183,6 @@ int char_close(struct inode *inode, struct file *file)
 #ifdef DX_DEBUG_FS
 static int create_sys_device(struct dx_dma_cdev *xcdev, enum cdev_type type, int idx)
 {
-	// struct xdma_dev *xdev = xcdev->xdev;
 	int last_param = 0;
 
 	if (type == CHAR_USER) {
@@ -272,7 +248,6 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 {
 	int rv;
 	int minor;
-	// struct xdma_dev *xdev = xpdev->xdev;
 	dev_t dev;
 
 	spin_lock_init(&xcdev->lock);
@@ -310,12 +285,12 @@ static int create_xcdev(struct dx_dma_pci_dev *xpdev, struct dx_dma_cdev *xcdev,
 		minor = type + cnt;
 		dx_cdev_ctrl_init(xcdev);
 		break;
-	case CHAR_XDMA_H2C:
+	case CHAR_DMA_H2C:
 		minor = 32 + cnt;
 		xcdev->write = false;
 		dx_cdev_sgdma_init(xcdev);
 		break;
-	case CHAR_XDMA_C2H:
+	case CHAR_DMA_C2H:
 		minor = 36 + cnt;
 		xcdev->write = true;
 		dx_cdev_sgdma_init(xcdev);
@@ -372,9 +347,6 @@ static void xpdev_destroy_interfaces(struct dx_dma_pci_dev *xpdev)
 	int rv;
 	int user_count = dw ? min_t(int, dw->user_bar_cnt,
 					 ARRAY_SIZE(xpdev->user_cdev)) : 0;
-#ifdef __XDMA_SYSFS__
-	device_remove_file(&xpdev->pdev->dev, &dev_attr_xdma_dev_instance);
-#endif
 
 	/* iterate over channels */
 	for (i = 0; i < xpdev->h2c_channel_max; i++) {
@@ -477,7 +449,7 @@ int xpdev_create_interfaces(struct dw_edma_chip *chip)
 
 	/* iterate over channels */
 	for (i = 0; i < xpdev->h2c_channel_max; i++) {
-		rv = create_xcdev(xpdev, &xpdev->sgdma_h2c_cdev[i], 0, CHAR_XDMA_H2C, i);
+		rv = create_xcdev(xpdev, &xpdev->sgdma_h2c_cdev[i], 0, CHAR_DMA_H2C, i);
 		if (rv < 0) {
 			pr_err("create char h2c %d failed, %d.\n", i, rv);
 			goto fail;
@@ -485,7 +457,7 @@ int xpdev_create_interfaces(struct dw_edma_chip *chip)
 	}
 
 	for (i = 0; i < xpdev->c2h_channel_max; i++) {
-		rv = create_xcdev(xpdev, &xpdev->sgdma_c2h_cdev[i], 0, CHAR_XDMA_C2H, i);
+		rv = create_xcdev(xpdev, &xpdev->sgdma_c2h_cdev[i], 0, CHAR_DMA_C2H, i);
 		if (rv < 0) {
 			pr_err("create char c2h %d failed, %d.\n", i, rv);
 			goto fail;

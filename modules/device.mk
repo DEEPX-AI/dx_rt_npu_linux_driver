@@ -9,12 +9,8 @@ export CONFIG_DX_AI_ACCEL_M1=y
 export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=m
     ifeq ($(PCIE),deepx)
     export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=m
-    export CONFIG_DX_AI_ACCEL_PCIE_XILINX=n
-    else ifeq ($(PCIE),xilinx)
-    export CONFIG_DX_AI_ACCEL_PCIE_DEEPX=n
-    export CONFIG_DX_AI_ACCEL_PCIE_XILINX=m
     else
-    $(error ERROR: Not support sub-module 'make DEVICE=$(DEVICE) PCIE=[deepx|xilinx]')
+    $(error ERROR: Not support sub-module 'make DEVICE=$(DEVICE) PCIE=[deepx]')
     endif
 else ifeq ($(DEVICE),v3)
 export CONFIG_DX_AI_STAND_V3=y

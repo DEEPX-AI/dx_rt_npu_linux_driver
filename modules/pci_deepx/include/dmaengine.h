@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from Linux kernel drivers/dma/dmaengine.h (private DMA engine
+ * driver helpers), GPL-2.0.
+ *
+ * Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver
  *
  * Author: Taegyun An <atg@deepx.ai>

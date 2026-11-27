@@ -1,6 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from the Xilinx DMA IP Core driver for Linux (XDMA):
+ * Copyright (c) 2016-present, Xilinx, Inc. All rights reserved.
+ *
+ * Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver
  *
  * Author: Taegyun An <atg@deepx.ai>
@@ -89,9 +92,6 @@ struct dx_dma_ioc_perf {
 #define DX_DMA_IOCPERFGET	_IOWR(DX_DMA_IOC_MAGIC, DX_DMA_IOC_PERF_GET, \
 					struct dx_dma_ioc_perf)
 
-#define IOCTL_XDMA_ADDRMODE_SET	_IOW('q', 4, int)
-#define IOCTL_XDMA_ADDRMODE_GET	_IOR('q', 5, int)
-#define IOCTL_XDMA_ALIGN_GET	_IOR('q', 6, int)
 
 void dx_pcie_interrupt_event(int dev_id);
 void dx_cdev_ctrl_init(struct dx_dma_cdev *xcdev);

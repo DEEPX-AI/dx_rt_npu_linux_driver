@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from the Xilinx DMA IP Core driver for Linux (XDMA):
+ * Copyright (c) 2016-present, Xilinx, Inc. All rights reserved.
+ *
+ * Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver
  *
  * Author: Taegyun An <atg@deepx.ai>

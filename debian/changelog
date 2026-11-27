@@ -1,3 +1,18 @@
+dxrt-driver-dkms (2.7.1-2) unstable; urgency=medium
+
+  - Relicensed the driver from the DEEPX proprietary license to GPL-2.0-only, matching the license of the kernel modules.
+  - Licensed the ioctl interface headers (`dxrt_drv.h`, `dx_message.h`) as `GPL-2.0-only WITH Linux-syscall-note`, so userspace programs that use them are not derivative works of the driver.
+  - Removed the Xilinx XDMA PCIe module (`pci_xilinx`). The `PCIE=xilinx` build option and `module_insert.sh -m xilinx` are no longer supported; only `deepx` is available.
+  - After a FW update or reset, the driver waits up to 30 s (was 5 s) for the FW to come back, and a FW that comes back later returns to ready without a driver reload. Set with the `fw_reboot_ready_timeout_ms` and `late_ready_window_ms` module parameters
+  - Restored the original copyright notices in source files derived from the Linux kernel (dw-edma, virt-dma, dmaengine.h) and from the Xilinx XDMA driver.
+  - The DKMS package no longer includes local build artifacts (`Module.symvers`, `*.mod.c`, `modules.order`), sanity test logs, or the prebuilt `pcie_test` binary.
+  - Fixed `dxrt-cli` sometimes reporting "came back with firmware 0.0.0" and failing after a firmware update that succeeded
+  - The GPL-2.0 full text (`COPYING`) and the license summary (`/usr/share/doc/dxrt-driver-dkms/copyright`) are now included in the DKMS package.
+  - Inference requests use the FW's doorbell queue when the FW supports it, and the lock handshake with older FW. The `queue_proto` module parameter can force either one
+  - Added sysfs `queue/protocol` and `queue/fw_v1_host`
+
+ -- dx-ci <dci@deepx.ai>  Fri, 27 Nov 2026 11:42:00 +0900
+
 dxrt-driver-dkms (2.7.0-2) unstable; urgency=medium
 
   - fix user buffer unmap spike time
