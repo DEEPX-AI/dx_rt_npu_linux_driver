@@ -22,6 +22,36 @@ typedef enum dxqueue_flag_t {
 
 static size_t buffer_offset = offsetof(dxrt_queue_t, buffer[0]);
 
+/* Proto-A enqueue: single producer write, no lock/flag/irq_done handshake.
+ * front/rear are the sole shared state; FW drains on the doorbell. */
+int dxrt_enqueue_v2(dxrt_queue_t __iomem *q, void *elem)
+{
+    u32 max, front, rear, elem_size;
+
+    if (readl(&q->enable) == 0) return -EBUSY;
+
+    max = readl(&q->max_count);
+    front = readl(&q->front);
+    rear = readl(&q->rear);
+    elem_size = readl(&q->elem_size);
+    /* Link-down (all ~0) or a queue being re-initialized by FW. */
+    if (max == 0 || max > INFERENCE_REQUEST_FIFO_SIZE ||
+        front >= max || rear >= max ||
+        elem_size == 0 || elem_size > sizeof(dxrt_request_acc_t)) {
+        pr_err_ratelimited("%s: invalid queue state max=%u f=%u r=%u esz=%u\n",
+                           __func__, max, front, rear, elem_size);
+        return -EIO;
+    }
+    if ((rear + 1) % max == front) return -EBUSY;
+
+    dx_memcpy_toio32((u8 __iomem *)q + buffer_offset + (rear * elem_size),
+                     elem, elem_size);
+    wmb();
+    writel((rear + 1) % max, &q->rear);
+    wmb();
+    return 0;
+}
+
 void dxrt_init_queue(dxrt_queue_t __iomem *q, uint32_t max_count, uint32_t elem_size)
 {
     dx_memset_io32((volatile void __iomem *)q, 0, sizeof(dxrt_queue_t));
@@ -41,6 +71,7 @@ void dxrt_disable_queue(dxrt_queue_t __iomem *q)
     writel(0, &q->enable);
 }
 
+/* V1 fills every slot (count == max_count), so front == rear is ambiguous. */
 int dxrt_is_queue_empty(dxrt_queue_t __iomem *q)
 {
     return readl(&q->count) == 0;

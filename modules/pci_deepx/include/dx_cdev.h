@@ -52,7 +52,6 @@ struct dx_dma_io_cb {
 	/** MM only, DDR/BRAM memory addr */
 	u64 ep_addr;
 	/** write: if write to the device */
-	// struct xdma_request_cb *req;
 	u8 write:1;
 	bool npu_run;
 	// void (*io_done)(unsigned long cb_hndl, int err);

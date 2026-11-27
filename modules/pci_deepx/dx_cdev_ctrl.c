@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from the Xilinx DMA IP Core driver for Linux (XDMA):
+ * Copyright (c) 2016-present, Xilinx, Inc. All rights reserved.
+ *
+ * Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
  * DeepX eDMA PCIe driver
  *
  * Author: Taegyun An <atg@deepx.ai>
@@ -308,12 +311,6 @@ static long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			return -ENOTTY;
 		}
 		return perf_get_ioctl(xcdev, (void __user *)arg);
-	// case DX_DMA_IOCOFFLINE:
-	// 	xdma_device_offline(xdev->pdev, xdev);
-	// 	break;
-	// case DX_DMA_IOCONLINE:
-	// 	xdma_device_online(xdev->pdev, xdev);
-	// 	break;
 	default:
 		pr_err("UNKNOWN ioctl cmd 0x%x.\n", cmd);
 		return -ENOTTY;
@@ -324,7 +321,6 @@ static long char_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 /* maps the PCIe BAR into user space for memory-like access using mmap() */
 static int bridge_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	// struct xdma_dev *xdev;
 	struct dx_dma_cdev *xcdev = (struct dx_dma_cdev *)file->private_data;
 	struct dw_edma *dw = xcdev->xpdev->dw;
 	unsigned long off;

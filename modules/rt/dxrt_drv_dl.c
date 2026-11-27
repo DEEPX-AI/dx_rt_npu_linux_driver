@@ -123,6 +123,23 @@ bool dx_dlmsg_mailbox_ready(dx_download_msg __iomem *msg)
     return (flags & DX_DLMSG_READY_REQUIRED) == DX_DLMSG_READY_REQUIRED;
 }
 
+bool dx_dlmsg_rtos_up(dx_download_msg __iomem *msg)
+{
+    return msg && dx_read8(msg, dx_download_msg, bt_step) == DX_RTOS &&
+           dx_dlmsg_ready_valid(msg);
+}
+
+void dx_dlmsg_log_state(dx_download_msg __iomem *msg, int id, const char *tag)
+{
+    if (!msg)
+        return;
+    pr_err(MODULE_NAME "%d: %s: DLMSG bt_step=%u ready_valid=%d ready_flags=0x%x heartbeat=%u\n",
+           id, tag, dx_read8(msg, dx_download_msg, bt_step),
+           dx_dlmsg_ready_valid(msg),
+           dx_read32(msg, dx_download_msg, ready_flags),
+           dx_read32(msg, dx_download_msg, heartbeat));
+}
+
 bool dx_dlmsg_wait_mailbox_ready(dx_download_msg __iomem *msg,
                                  unsigned int timeout_ms)
 {

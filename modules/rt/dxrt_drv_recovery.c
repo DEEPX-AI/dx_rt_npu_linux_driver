@@ -53,6 +53,16 @@ module_param_named(dlmsg_ready_timeout_ms, dxrt_dlmsg_ready_timeout_ms, uint, 06
 MODULE_PARM_DESC(dlmsg_ready_timeout_ms,
 "Passive DLMSG mailbox-ready wait timeout after link-up (ms).");
 
+unsigned int dxrt_fw_reboot_ready_timeout_ms = DXRT_FW_REBOOT_READY_TIMEOUT_MS_DEFAULT;
+module_param_named(fw_reboot_ready_timeout_ms, dxrt_fw_reboot_ready_timeout_ms, uint, 0644);
+MODULE_PARM_DESC(fw_reboot_ready_timeout_ms,
+"DLMSG mailbox-ready wait after a FW update / CPU reset / recovery reboot (ms).");
+
+unsigned int dxrt_late_ready_window_ms = DXRT_LATE_READY_WINDOW_MS_DEFAULT;
+module_param_named(late_ready_window_ms, dxrt_late_ready_window_ms, uint, 0644);
+MODULE_PARM_DESC(late_ready_window_ms,
+"Keep watching DLMSG this long after a readiness timeout and resume when the FW comes up (ms, 0=off).");
+
 unsigned int dxrt_ping_timeout_ms = DXRT_PING_TIMEOUT_MS_DEFAULT;
 module_param_named(ping_timeout_ms, dxrt_ping_timeout_ms, uint, 0644);
 MODULE_PARM_DESC(ping_timeout_ms,
@@ -151,7 +161,7 @@ static int dxrt_wait_fw_reboot_mailbox_cycle(struct dxdev *dev,
     if (!dev->dl)
         return 0;
 
-    total_deadline = jiffies + msecs_to_jiffies(dxrt_dlmsg_ready_timeout_ms);
+    total_deadline = jiffies + msecs_to_jiffies(dxrt_fw_reboot_ready_timeout_ms);
     ack_deadline = jiffies + msecs_to_jiffies(DXRT_FW_REBOOT_ACK_WINDOW_MS);
     if (time_after(ack_deadline, total_deadline))
         ack_deadline = total_deadline;
@@ -159,7 +169,7 @@ static int dxrt_wait_fw_reboot_mailbox_cycle(struct dxdev *dev,
     pr_info(MODULE_NAME "%d: %s recovery — watching MAILBOX_READY edge "
             "(ack_window=%ums, total=%ums)\n",
             dev->id, tag, DXRT_FW_REBOOT_ACK_WINDOW_MS,
-            dxrt_dlmsg_ready_timeout_ms);
+            dxrt_fw_reboot_ready_timeout_ms);
 
     for (;;) {
         if (atomic_read(&dev->recovery_epoch) != start_epoch ||
@@ -175,10 +185,10 @@ static int dxrt_wait_fw_reboot_mailbox_cycle(struct dxdev *dev,
     }
 
     if (!saw_drop) {
-        pr_err(MODULE_NAME "%d: %s recovery — MAILBOX_READY never "
-               "cleared within %ums (ready_flags=0x%x)\n",
-               dev->id, tag, DXRT_FW_REBOOT_ACK_WINDOW_MS,
-               dx_dlmsg_ready_flags(dev->dl));
+        pr_err(MODULE_NAME "%d: %s recovery — still mailbox-ready "
+               "after %ums\n",
+               dev->id, tag, DXRT_FW_REBOOT_ACK_WINDOW_MS);
+        dx_dlmsg_log_state(dev->dl, dev->id, tag);
         return -ETIMEDOUT;
     }
 
@@ -197,11 +207,12 @@ static int dxrt_wait_fw_reboot_mailbox_cycle(struct dxdev *dev,
         msleep(20);
     }
 
-    pr_err(MODULE_NAME "%d: %s recovery — MAILBOX_READY did not "
-           "return within %ums (ready_flags=0x%x)\n",
-            dev->id, tag, dxrt_dlmsg_ready_timeout_ms,
-           dx_dlmsg_ready_flags(dev->dl));
-    return -ETIMEDOUT;
+    pr_err(MODULE_NAME "%d: %s recovery — not mailbox-ready "
+           "within %ums\n",
+            dev->id, tag, dxrt_fw_reboot_ready_timeout_ms);
+    dx_dlmsg_log_state(dev->dl, dev->id, tag);
+    /* The reboot did start; it may still finish (late readiness watch). */
+    return -EINPROGRESS;
 }
 
 /*
@@ -333,12 +344,22 @@ static int fw_ping_probe(struct dxdev *dev, unsigned int timeout_ms,
  * fw_send_stable_check - Tell the EP that the host side is up.
  *
  * The EP times its LTSSM stability window from this message and only then
- * relaxes its polling cadence.  Fire-and-forget: no ACK is awaited, so a FW
- * that does not implement the sub-command costs us nothing.  Legacy images
- * (< 2.7.0) never publish MAILBOX_READY and are skipped outright.
+ * relaxes its polling cadence.  Legacy images (< 2.7.0) never publish
+ * MAILBOX_READY and are skipped outright.
+ *
+ * The mailbox holds one command and its ack carries no sequence number, so
+ * the ack is awaited with msg_lock held.  The FW acks only after
+ * PcieHostDriverInit() returns (about 200 ms); a command posted before that
+ * would read this ack as its own, get no reply data, and the FW would then
+ * skip it because its ack is already set.  The FW acks unknown sub-commands
+ * too, so a FW without stable-check costs one round trip.  No ERR_FW_TIMEOUT
+ * event on timeout: recovery is already done and the FW has passed PING.
  */
 static void fw_send_stable_check(struct dxdev *dev)
 {
+    unsigned long deadline;
+    int ret = -ETIMEDOUT;
+
     if (!dev || !dev->msg)
         return;
 
@@ -357,9 +378,22 @@ static void fw_send_stable_check(struct dxdev *dev)
 
     dx_pcie_notify_msg_to_device(dev->id);
 
+    deadline = jiffies + msecs_to_jiffies(DXRT_STABLE_CHECK_ACK_TIMEOUT_MS);
+    while (time_before(jiffies, deadline)) {
+        u32 ack = dx_read32(dev->msg, dxrt_device_message_t, ack);
+
+        if (ack == (u32)~0u) { ret = -ENODEV; break; }
+        if (ack == 1)        { ret = 0;       break; }
+        usleep_range(1000, 1500);
+    }
+
     mutex_unlock(&dev->msg_lock);
 
-    pr_info(MODULE_NAME "%d: stable-check sent\n", dev->id);
+    if (ret == 0)
+        pr_info(MODULE_NAME "%d: stable-check acked\n", dev->id);
+    else
+        pr_warn(MODULE_NAME "%d: stable-check not acked (%d) within %u ms\n",
+                dev->id, ret, DXRT_STABLE_CHECK_ACK_TIMEOUT_MS);
 }
 
 /* ------------------------------------------------------------------ */
@@ -553,6 +587,100 @@ void dxrt_kick_fw_update_recovery_nodlmsg(struct dxdev *dev)
 }
 
 /* ------------------------------------------------------------------ */
+/* Late readiness watch                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * DLMSG area for paths outside an ioctl (sysfs, the late watch). dev->dl is
+ * only refreshed by an ioctl or LINK_EV_UP, and a dx_dma unbind / hot-unplug
+ * unmaps the BAR without LINK_EV_DOWN: look it up in dx_dma's device list,
+ * which drops the device before its BARs go away (NULL once it is gone).
+ */
+static dx_download_msg __iomem *dxrt_dl_area_live(struct dxdev *dev)
+{
+    if (!dev->dl)
+        return NULL;
+    return (dx_download_msg __iomem *)dx_pcie_get_dl_area(dev->id);
+}
+
+#define DXRT_LATE_READY_POLL_MS      1000u
+#define DXRT_LATE_READY_DROP_POLL_MS 20u   /* a warm reboot can take < 1 s */
+
+/*
+ * A readiness timeout only means the FW was slower than the wait (e.g. boot2nd
+ * retraining LPDDR), not that it is dead.  Keep polling DLMSG from FW_HANG and
+ * re-run the readiness probe once the FW publishes MAILBOX_READY, so the
+ * device comes back without a driver reload.  If the reboot was never seen
+ * starting, MAILBOX_READY may still belong to the old image: wait for it to
+ * drop first.  Any new recovery bumps the epoch or leaves FW_HANG, which ends
+ * the watch.
+ */
+static void dxrt_late_ready_work_fn(struct work_struct *work)
+{
+    struct dxdev *dev = container_of(to_delayed_work(work),
+        struct dxdev, late_ready_work);
+    dx_download_msg __iomem *dl;
+    bool ready;
+
+    if (atomic_read(&dev->recovery_epoch) != dev->late_ready_epoch ||
+        atomic_read(&dev->dev_state) != DXRT_STATE_FW_HANG)
+        return;
+    dl = dxrt_dl_area_live(dev);
+    if (!dl) {
+        pr_info(MODULE_NAME "%d: late FW boot watch stopped: device gone\n", dev->id);
+        return;
+    }
+
+    ready = dx_dlmsg_mailbox_ready(dl);
+    if (!ready && dev->late_need_drop) {
+        pr_info(MODULE_NAME "%d: late FW reboot started (MAILBOX_READY cleared)\n",
+                dev->id);
+        dev->late_need_drop = false;
+    }
+
+    if (!ready || dev->late_need_drop) {
+        if (time_before(jiffies, dev->late_ready_deadline)) {
+            schedule_delayed_work(&dev->late_ready_work,
+                msecs_to_jiffies(dev->late_need_drop ?
+                    DXRT_LATE_READY_DROP_POLL_MS : DXRT_LATE_READY_POLL_MS));
+            return;
+        }
+        pr_err(MODULE_NAME "%d: FW did not %s %ums after the readiness "
+               "timeout; giving up\n",
+               dev->id, dev->late_need_drop ? "reboot" : "turn mailbox-ready",
+               dxrt_late_ready_window_ms);
+        dx_dlmsg_log_state(dl, dev->id, "late_ready");
+        return;
+    }
+
+    if (atomic_cmpxchg(&dev->dev_state, DXRT_STATE_FW_HANG,
+                       DXRT_STATE_TRANSPORT_OK) != DXRT_STATE_FW_HANG)
+        return;
+
+    pr_info(MODULE_NAME "%d: FW turned mailbox-ready after the readiness "
+            "timeout (ready_flags=0x%x); re-probing\n",
+            dev->id, dx_dlmsg_ready_flags(dl));
+    /* The queued FW_HANG is stale now; a restarted dxrtd treats it as fatal. */
+    dx_pcie_clear_event_response(dev->id);
+    WRITE_ONCE(dev->late_ready, true);
+    schedule_delayed_work(&dev->recovery_ready_work, 0);
+}
+
+static void dxrt_watch_late_ready(struct dxdev *dev, int epoch, bool need_drop)
+{
+    if (!dev->dl || !dxrt_late_ready_window_ms)
+        return;
+
+    dev->late_ready_epoch = epoch;
+    dev->late_need_drop = need_drop;
+    dev->late_ready_deadline = jiffies +
+        msecs_to_jiffies(dxrt_late_ready_window_ms);
+    pr_info(MODULE_NAME "%d: watching DLMSG for a late FW boot (up to %ums)\n",
+            dev->id, dxrt_late_ready_window_ms);
+    schedule_delayed_work(&dev->late_ready_work, 0);
+}
+
+/* ------------------------------------------------------------------ */
 /* Recovery readiness probe                                           */
 /* ------------------------------------------------------------------ */
 
@@ -564,12 +692,19 @@ void dxrt_recovery_ready_work_fn(struct work_struct *work)
     int start_epoch;
     int ret;
     bool skip_ping = false;
+    bool late;
+    bool watch_late = false;
+    bool late_need_drop = false;
 
     if (!dev)
         return;
     if (atomic_read(&dev->dev_state) == DXRT_STATE_PERM_FAIL)
         return;
     start_epoch = atomic_read(&dev->recovery_epoch);
+
+    /* Set by the late watch, which already saw this epoch's reboot finish. */
+    late = READ_ONCE(dev->late_ready) && dev->late_ready_epoch == start_epoch;
+    WRITE_ONCE(dev->late_ready, false);
 
     if (atomic_read(&dev->recovery_epoch) != start_epoch ||
         atomic_read(&dev->dev_state) != DXRT_STATE_TRANSPORT_OK)
@@ -603,14 +738,19 @@ void dxrt_recovery_ready_work_fn(struct work_struct *work)
                     "marking ready\n", dev->id);
             skip_ping = true;
         } else {
-            if (reason == DX_RECOVERY_REASON_CPU_RESET ||
-                reason == DX_RECOVERY_REASON_FW_UPDATE) {
+            if ((reason == DX_RECOVERY_REASON_CPU_RESET ||
+                 reason == DX_RECOVERY_REASON_FW_UPDATE) && !late) {
                 ret = dxrt_wait_fw_reboot_mailbox_cycle(dev, start_epoch,
                                                         reason_str(reason));
                 if (ret == -EAGAIN)
                     return;
-                if (ret != 0)
+                if (ret != 0) {
+                    /* If the reboot was not seen starting, a set
+                     * MAILBOX_READY may still belong to the old image. */
+                    watch_late = true;
+                    late_need_drop = (ret != -EINPROGRESS);
                     goto fw_hang;
+                }
             } else {
                 bool ready = dx_dlmsg_wait_mailbox_ready(dev->dl,
                                                          dxrt_dlmsg_ready_timeout_ms);
@@ -623,6 +763,7 @@ void dxrt_recovery_ready_work_fn(struct work_struct *work)
                             dev->id, dxrt_dlmsg_ready_timeout_ms,
                             dx_get_boot_step(dev->dl),
                             dx_dlmsg_ready_flags(dev->dl));
+                    watch_late = true;
                     goto fw_hang;
                 }
             }
@@ -689,6 +830,8 @@ fw_hang:
 
     if (perm_fail_check(dev))
         return;
+    if (watch_late)
+        dxrt_watch_late_ready(dev, start_epoch, late_need_drop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -751,11 +894,15 @@ static ssize_t config_show(struct device *d, struct device_attribute *a,
     (void)d; (void)a;
     return sysfs_emit(buf,
     "dlmsg_ready_timeout_ms=%u\n"
+    "fw_reboot_ready_timeout_ms=%u\n"
+    "late_ready_window_ms=%u\n"
     "ping_timeout_ms=%u\n"
     "perm_fail_window_ms=%u\n"
     "perm_fail_max_retries=%u\n"
     "auto_reset_on_fw_timeout=%u\n",
     dxrt_dlmsg_ready_timeout_ms,
+    dxrt_fw_reboot_ready_timeout_ms,
+    dxrt_late_ready_window_ms,
     dxrt_ping_timeout_ms,
     dxrt_perm_fail_window_ms,
     dxrt_perm_fail_max_retries,
@@ -785,6 +932,60 @@ static const struct attribute_group dxrt_recovery_group = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Inference queue protocol (queue/)                                  */
+/* ------------------------------------------------------------------ */
+
+static ssize_t protocol_show(struct device *d, struct device_attribute *a,
+                             char *buf)
+{
+    struct dxdev *dev = dev_to_dxdev(d);
+    u32 proto;
+
+    (void)a;
+    if (!dev)
+        return -ENODEV;
+    proto = dxrt_queue_proto_current(dev);
+    return proto ? sysfs_emit(buf, "V%u\n", proto) : sysfs_emit(buf, "undecided\n");
+}
+
+/*
+ * 1: the FW saw a V1 host since it booted and holds LPDDR DFS at the boot level.
+ * unknown: FW not up, device gone, or FW without QUEUE_V2 (it has no such bit).
+ */
+static ssize_t fw_v1_host_show(struct device *d, struct device_attribute *a,
+                               char *buf)
+{
+    struct dxdev *dev = dev_to_dxdev(d);
+    dx_download_msg __iomem *dl;
+    u32 flags;
+
+    (void)a;
+    if (!dev)
+        return -ENODEV;
+    dl = dxrt_dl_area_live(dev);
+    if (!dl || !dx_dlmsg_rtos_up(dl))
+        return sysfs_emit(buf, "unknown\n");
+    flags = dx_dlmsg_ready_flags(dl);
+    if (flags == U32_MAX || !(flags & DX_DLMSG_READY_QUEUE_V2))
+        return sysfs_emit(buf, "unknown\n");
+    return sysfs_emit(buf, "%u\n", !!(flags & DX_DLMSG_READY_QUEUE_V1_HOST));
+}
+
+static DEVICE_ATTR_RO(protocol);
+static DEVICE_ATTR_RO(fw_v1_host);
+
+static struct attribute *dxrt_queue_attrs[] = {
+    &dev_attr_protocol.attr,
+    &dev_attr_fw_v1_host.attr,
+    NULL,
+};
+
+static const struct attribute_group dxrt_queue_group = {
+    .name  = "queue",
+    .attrs = dxrt_queue_attrs,
+};
+
+/* ------------------------------------------------------------------ */
 /* Lifecycle                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -798,11 +999,18 @@ void dxrt_recovery_state_init(struct dxdev *dev)
     dev->perm_fail_window_start = jiffies;
     dev->perm_fail_count_in_window = 0;
     INIT_DELAYED_WORK(&dev->recovery_ready_work, dxrt_recovery_ready_work_fn);
+    INIT_DELAYED_WORK(&dev->late_ready_work, dxrt_late_ready_work_fn);
 }
 
 void dxrt_recovery_state_deinit(struct dxdev *dev)
 {
-    cancel_delayed_work_sync(&dev->recovery_ready_work);
+    bool late, ready;
+
+    /* Each work can queue the other while it runs: repeat until neither was pending. */
+    do {
+        late = cancel_delayed_work_sync(&dev->late_ready_work);
+        ready = cancel_delayed_work_sync(&dev->recovery_ready_work);
+    } while (late || ready);
 }
 
 int dxrt_sysfs_attach(struct dxdev *dev)
@@ -820,6 +1028,13 @@ int dxrt_sysfs_attach(struct dxdev *dev)
             dev->id, ret);
         return ret;
     }
+    ret = sysfs_create_group(&dev->dev->kobj, &dxrt_queue_group);
+    if (ret) {
+        pr_err(MODULE_NAME "%d: sysfs_create_group(queue) failed (%d)\n",
+            dev->id, ret);
+        sysfs_remove_group(&dev->dev->kobj, &dxrt_recovery_group);
+        return ret;
+    }
     return 0;
 }
 
@@ -827,6 +1042,7 @@ void dxrt_sysfs_detach(struct dxdev *dev)
 {
     if (!dev || !dev->dev)
         return;
+    sysfs_remove_group(&dev->dev->kobj, &dxrt_queue_group);
     sysfs_remove_group(&dev->dev->kobj, &dxrt_recovery_group);
 }
 

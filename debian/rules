@@ -47,10 +47,11 @@ override_dh_install:
 		--exclude="build_debian_package.sh" \
 		--exclude="modules/scripts" \
 		--exclude="modules/module_insert.sh" \
-		--exclude="modules/pci_xilinx" \
 		--exclude="modules/pci_deepx/test" \
 		--exclude="modules/pci_deepx/utils" \
 		--exclude="modules/pci_deepx/.github" \
+		--exclude="sanity/result/*.log" \
+		--exclude="sanity/tools/pcie_test" \
 		--exclude="*.ko" \
 		--exclude="*.o" \
 		--exclude="*.mod" \
@@ -69,10 +70,10 @@ override_dh_install:
 	find "$(CURDIR)/debian/$(PACKAGER)$(DKMS_INSTALL_DEST)/" -type d -name '.tmp_versions' -exec rm -rf {} + 2>/dev/null || true
 
 # Handle submodules manually (copy working directory)
-# Only copy necessary submodules for DKMS build (exclude utils and pci_xilinx)
+# Only copy necessary submodules for DKMS build (exclude utils)
 	for submodule_path in $$(git config --file .gitmodules --get-regexp path | awk '{ print $$2 }'); do \
 		case "$$submodule_path" in \
-			utils|modules/pci_xilinx) \
+			utils) \
 				echo "Skipping submodule: $$submodule_path (not needed for DKMS)"; \
 				continue; \
 				;; \
@@ -90,6 +91,9 @@ override_dh_install:
 			--exclude="*.ko" \
 			--exclude="*.o" \
 			--exclude="*.mod" \
+			--exclude="*.mod.c" \
+			--exclude="modules.order" \
+			--exclude="Module.symvers" \
 			--filter='- .*.cmd' \
 			--filter='- .*.d' \
 			"./$$submodule_path/" \

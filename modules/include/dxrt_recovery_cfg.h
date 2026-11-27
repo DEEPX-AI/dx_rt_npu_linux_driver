@@ -44,6 +44,25 @@
 #define DXRT_DLMSG_READY_TIMEOUT_MS_DEFAULT     5000
 
 /*
+ * FW reboot DLMSG mailbox-ready wait (ms).
+ *
+ * FW update, CPU reset and DXRT_CMD_RECOVERY reboot the RTOS with the link
+ * up.  boot2nd may retrain LPDDR on that path (every runtime DFS level,
+ * twice after an update from older FW, plus the LPDDR5X clear), so the
+ * reboot can take far longer than a plain RTOS restart.
+ */
+#define DXRT_FW_REBOOT_READY_TIMEOUT_MS_DEFAULT 30000
+
+/*
+ * Late readiness watch (ms).
+ *
+ * After a readiness timeout lands in FW_HANG, keep polling DLMSG for this
+ * long and resume (PING -> READY) once the FW turns mailbox-ready, so a
+ * slow boot does not need a driver reload.  0 disables the watch.
+ */
+#define DXRT_LATE_READY_WINDOW_MS_DEFAULT       120000
+
+/*
  * Active PING timeout (ms).
  *
  * Once DLMSG says mailbox is ready, the driver sends DX_PCIE_PING and
@@ -51,5 +70,14 @@
  * the RTOS mailbox path is supposed to be healthy.
  */
 #define DXRT_PING_TIMEOUT_MS_DEFAULT            500
+
+/*
+ * Stable-check ack timeout (ms).
+ *
+ * The FW runs PcieHostDriverInit() for DX_PCIE_STABLE_CHECK before it acks,
+ * which takes about 200 ms on M1. The driver holds the mailbox until that ack,
+ * so the next command cannot take the stable-check ack as its own.
+ */
+#define DXRT_STABLE_CHECK_ACK_TIMEOUT_MS        1000
 
 #endif /* _DXRT_RECOVERY_CFG_H */

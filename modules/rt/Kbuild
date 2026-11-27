@@ -20,11 +20,7 @@ else
 $(error Error: No selected device)
 endif
 
-ifeq ($(CONFIG_DX_AI_ACCEL_PCIE_XILINX),m)
-ccflags-y += -DNUM_DEVICES=1 # temp for alveo fpga
-else
 ccflags-y += -DNUM_DEVICES=0
-endif
 
 ifeq ($(filter log all,$(BUILD_DEFAULT_DBG)),log all)
 ccflags-y += -DDEBUG

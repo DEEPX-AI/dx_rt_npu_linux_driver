@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
-* Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
+ * Derived from Linux kernel drivers/dma/dw-edma/:
+ * Copyright (c) 2018-2019 Synopsys, Inc. and/or its affiliates.
+ * Synopsys DesignWare eDMA driver, Author: Gustavo Pimentel <gustavo.pimentel@synopsys.com>
+ *
+* Modifications Copyright (c) 2022-2023 DeepX, Inc. and/or its affiliates.
 * DeepX eDMA PCIe driver
 *
 * Author: Taegyun An <atg@deepx.ai>

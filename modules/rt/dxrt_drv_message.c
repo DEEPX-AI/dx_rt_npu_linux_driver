@@ -5,6 +5,7 @@
  * Copyright (C) 2023 Deepx, Inc.
  *
  */
+#include <linux/module.h>
 #include "dxrt_drv.h"
 #include "dxrt_version.h"
 
@@ -814,18 +815,104 @@ static int dxrt_write_mem(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_fi
     return ret;
 }
 
+enum {
+    DXRT_QUEUE_PROTO_V1 = 1,    /* lock/flag/count/irq_done handshake */
+    DXRT_QUEUE_PROTO_V2 = 2,    /* front/rear doorbell */
+};
+
+static uint dxrt_queue_proto_param;
+module_param_named(queue_proto, dxrt_queue_proto_param, uint, 0444);
+MODULE_PARM_DESC(queue_proto,
+    "Inference queue protocol: 0=auto (FW capability), 1=force V1, 2=force V2");
+
+/* Latch = (recovery_epoch << 2) | proto, so every recovery forces a re-probe. */
+static u32 dxrt_queue_proto(struct dxdev *dev)
+{
+    u32 param = READ_ONCE(dxrt_queue_proto_param);
+    u32 latch = READ_ONCE(dev->queue_proto_latch);
+    u32 epoch, flags, proto;
+
+    if (param == DXRT_QUEUE_PROTO_V1 || param == DXRT_QUEUE_PROTO_V2)
+        return param;
+
+    epoch = (u32)atomic_read(&dev->recovery_epoch);
+    smp_rmb();
+
+    /* FW can also reboot into another image without a recovery cycle. */
+    if (latch && dev->dl && (latch >> 2) == (epoch & (U32_MAX >> 2))) {
+        flags = dx_read32(dev->dl, dx_download_msg, ready_flags);
+        /*
+         * Link down or FW resetting: keep the latch, the request fails either way.
+         * A warm downgrade to legacy FW (<2.7.0) without an epoch bump is not
+         * supported: the mailbox is unusable then too (dlmsg_contract_seen).
+         */
+        if (flags == U32_MAX || !(flags & DX_DLMSG_READY_RTOS_BOOTED))
+            return latch & 3;
+        if (!!(flags & DX_DLMSG_READY_QUEUE_V2) ==
+            ((latch & 3) == DXRT_QUEUE_PROTO_V2))
+            return latch & 3;
+    }
+
+    /*
+     * Legacy FW (no readiness block) or FW not up yet: V1, do not latch.
+     * MAILBOX_READY is not required: FW drops it alone during FW update and
+     * PERST while it keeps draining the queues.
+     */
+    if (!dx_dlmsg_rtos_up(dev->dl))
+        return DXRT_QUEUE_PROTO_V1;
+
+    flags = dx_read32(dev->dl, dx_download_msg, ready_flags);
+    if (flags == U32_MAX || !(flags & DX_DLMSG_READY_RTOS_BOOTED))
+        return DXRT_QUEUE_PROTO_V1;
+    proto = (flags & DX_DLMSG_READY_QUEUE_V2) ?
+        DXRT_QUEUE_PROTO_V2 : DXRT_QUEUE_PROTO_V1;
+
+    /* Readiness seen across a recovery kick may belong to the old image. */
+    smp_rmb();
+    if (atomic_read(&dev->recovering) ||
+        (u32)atomic_read(&dev->recovery_epoch) != epoch)
+        return proto;
+
+    if (proto != (latch & 3))
+        pr_info(MODULE_NAME "%d: inference queue protocol V%u\n", dev->id, proto);
+    WRITE_ONCE(dev->queue_proto_latch, (epoch << 2) | proto);
+    return proto;
+}
+
+/* Read-only view for sysfs: a latch from before the last recovery is not decided yet. */
+u32 dxrt_queue_proto_current(struct dxdev *dev)
+{
+    u32 param = READ_ONCE(dxrt_queue_proto_param);
+    u32 latch = READ_ONCE(dev->queue_proto_latch);
+    u32 epoch = (u32)atomic_read(&dev->recovery_epoch);
+
+    if (param == DXRT_QUEUE_PROTO_V1 || param == DXRT_QUEUE_PROTO_V2)
+        return param;
+    if (!latch || (latch >> 2) != (epoch & (U32_MAX >> 2)))
+        return 0;
+    return latch & 3;
+}
+
 static int dxrt_npu_run_requset_acc(struct dxdev* dev, dxrt_request_acc_t *req,
                                     dxrt_queue_t __iomem *queue,
                                     struct mutex *lock, int q_num)
 {
     int ret = 0, num = dev->id;
+    u32 proto;
 
     /* Reject requests while recovery is in progress */
     if (atomic_read(&dev->recovering))
         return -EBUSY;
 
+    proto = dxrt_queue_proto(dev);
+
     mutex_lock(lock);
-    if (dxrt_is_queue_full(queue)) {
+    if (proto == DXRT_QUEUE_PROTO_V2) {
+        /* Full or paused queue -> -EBUSY (host retries). */
+        ret = dxrt_enqueue_v2(queue, req);
+        if (ret == 0)
+            (void)dx_pcie_notify_req_to_device(num, q_num, 0);
+    } else if (dxrt_is_queue_full(queue)) {
         ret = -EBUSY;
         pr_debug( "%s: %d rejected.\n", __func__, req->req_id);
     } else {
@@ -988,9 +1075,11 @@ static int dxrt_write_input(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_
  * Return: 0 on success,
  *        -EFAULT   if an error occurs during the copy(user <-> kernel)
  *        -EBUSY    if an error occurs inserting queue as the queue is full (retry) 
+ *                  queue v2: also when the queue is disabled/paused (retry)
  *        -EINVAL   if an error occurs inserting queue as the queue is disable
  *                  if an error occurs as interrupt handshake is fail with device
  *                  if an error occurs as sub-command is not supported
+ *        -EIO      queue v2: invalid queue state read from the device (link down / FW re-init)
  *        -ENOENT   There are no matching queues in the list.
  */
 static int dxrt_npu_run_request(struct dxdev* dev, dxrt_message_t *msg, struct dxrt_file_ctx *ctx)
@@ -2209,7 +2298,7 @@ static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
 
     pr_info(MODULE_NAME "%d: %s: FW reboot cmd sent, watching MAILBOX_READY edge (ack_window=%ums, total=%ums)\n",
         num, __func__, DXRT_FW_CMD_ACK_WINDOW_MS,
-        dxrt_dlmsg_ready_timeout_ms);
+        dxrt_fw_reboot_ready_timeout_ms);
 
     if (!dev->dl) {
         /* No DLMSG region mapped (older FW / DX_STD path):
@@ -2219,7 +2308,7 @@ static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
         goto post_wait;
     }
 
-    total_deadline = jiffies + msecs_to_jiffies(dxrt_dlmsg_ready_timeout_ms);
+    total_deadline = jiffies + msecs_to_jiffies(dxrt_fw_reboot_ready_timeout_ms);
     ack_deadline   = jiffies + msecs_to_jiffies(DXRT_FW_CMD_ACK_WINDOW_MS);
     if (time_after(ack_deadline, total_deadline))
         ack_deadline = total_deadline;
@@ -2232,7 +2321,7 @@ static int dxrt_wait_fw_reboot_complete(struct dxdev *dev,
         }
         if (time_after_eq(jiffies, ack_deadline))
             break;
-        /* Recovery is a bounded (<=5s), device-wide critical operation that
+        /* Recovery is a bounded, device-wide critical operation that
          * may be invoked from the syscall context of an exiting/killed
          * process.  A fatal signal pending on the caller would make an
          * interruptible sleep return instantly, aborting recovery before
@@ -2307,18 +2396,17 @@ post_wait:
              * window -> FW did not act on the recovery cmd.  Most likely
              * the doorbell did not reach the FW MessageTask (e.g. stale
              * iATU after link-flap, or FW deaf for other reasons). */
-            pr_err(MODULE_NAME "%d: %s: FW did not acknowledge cmd within %ums (MAILBOX_READY never cleared, ready_flags=0x%x) — cmd lost or FW deaf\n",
+            pr_err(MODULE_NAME "%d: %s: FW did not acknowledge cmd within %ums (still mailbox-ready) — cmd lost or FW deaf\n",
                 num, __func__,
-                DXRT_FW_CMD_ACK_WINDOW_MS,
-                dev->dl ? dx_dlmsg_ready_flags(dev->dl) : 0u);
+                DXRT_FW_CMD_ACK_WINDOW_MS);
         } else {
             /* Phase B failure: FW started reboot but did not finish in
              * time.  Could be bootloader / RTOS init stall. */
-            pr_err(MODULE_NAME "%d: %s: FW reboot did not finish within %ums (MAILBOX_READY stayed cleared, ready_flags=0x%x)\n",
+            pr_err(MODULE_NAME "%d: %s: FW reboot did not finish within %ums (not mailbox-ready)\n",
                 num, __func__,
-                dxrt_dlmsg_ready_timeout_ms,
-                dev->dl ? dx_dlmsg_ready_flags(dev->dl) : 0u);
+                dxrt_fw_reboot_ready_timeout_ms);
         }
+        dx_dlmsg_log_state(dev->dl, num, __func__);
         /* FW state is uncertain, but the memory window metadata is an
          * invariant device property.  Keep the cache and rely on dev_state
          * gating to block normal ioctls until recovery succeeds. */
